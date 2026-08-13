@@ -52,8 +52,41 @@ apparaissent, alimentées par les mêmes données que le site (`/api/sync`) :
 **Reprendre** (avec `S2E5 · 80 %` dans le libellé), **Ma liste**, **Favoris**.
 
 > Le protocole Stremio ne permet pas à un addon de positionner la reprise de lecture :
-> la progression est affichée, mais la lecture redémarre au début. C'est une limite du
-> protocole, pas de l'implémentation.
+> la progression est affichée, mais la lecture redémarre au début. Pour une vraie
+> reprise, utilise le push vers Nuvio Sync ci-dessous.
+
+### Push vers Nuvio Sync (bibliothèque, vus, reprise de lecture)
+
+Nuvio possède un compte cloud avec une API de synchronisation. L'addon peut y **écrire**
+tes données Movix — ce qu'un addon Stremio ne peut pas faire, et qui donne la vraie
+reprise de lecture à la seconde près.
+
+Renseigne `NUVIO_EMAIL` / `NUVIO_PASSWORD` (le compte Nuvio, pas Movix), puis :
+
+```bash
+npm run nuvio:push:dry   # simule et affiche le résultat, n'écrit rien
+npm run nuvio:push       # applique
+# ou, serveur démarré :
+curl -X POST http://localhost:8787/nuvio/push
+curl -X POST "http://localhost:8787/nuvio/push?dryRun=1"
+```
+
+Ce qui est transféré :
+
+| Movix | → Nuvio |
+|-------|---------|
+| Watchlist + Favoris | Bibliothèque (`sync_push_library`) |
+| `watched_movie` / `watched_tv` / épisodes vus | Éléments vus (`sync_push_watched_items`) |
+| Clés `progress_*` (position + durée) | Reprise de lecture (`sync_push_watch_progress`) |
+
+`NUVIO_PUSH_INTERVAL_MS` (ex. `3600000`) active un push automatique périodique.
+
+> **La bibliothèque Nuvio est remplacée en totalité par cet appel.** L'addon lit donc
+> d'abord la bibliothèque existante et fusionne avant d'envoyer : ce que tu as ajouté
+> depuis Nuvio est préservé. Ne contourne pas cette étape.
+
+> Le sens est Movix → Nuvio uniquement. Ce que tu regardes *dans* Nuvio ne remonte pas
+> vers le site : Nuvio ne notifie pas les addons de la lecture.
 
 ### Sources agrégées
 

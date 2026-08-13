@@ -7,6 +7,7 @@ const { resolveId } = require('./src/idResolver');
 const { collectRawLinks } = require('./src/streamBuilder');
 const { detectHoster } = require('./src/hosterExtract');
 const { mainApi } = require('./src/movixClient');
+const { pushToNuvio } = require('./src/nuvioPush');
 
 const app = express();
 
@@ -113,6 +114,22 @@ app.get('/debug/sync', async (_req, res) => {
   });
 });
 
+// --- Push vers Nuvio Sync ------------------------------------------------
+// POST (et non GET) car l'operation ecrit dans le compte Nuvio.
+// ?dryRun=1 calcule et affiche le resultat sans rien envoyer.
+app.post('/nuvio/push', async (req, res) => {
+  const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
+  try {
+    const summary = await pushToNuvio({ dryRun });
+    res.status(summary.ok ? 200 : 400).json(summary);
+  } catch (err) {
+    const status = err.response?.status;
+    const body = err.response?.data;
+    console.error(`[nuvio-push] echec: status=${status ?? 'n/a'} msg=${err.message}`);
+    res.status(502).json({ ok: false, error: err.message, status, body });
+  }
+});
+
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
@@ -131,5 +148,13 @@ app.listen(config.PORT, () => {
   console.log(`Movix addon (perso) demarre sur le port ${config.PORT} (toutes interfaces)`);
   console.log(`Manifest local : http://127.0.0.1:${config.PORT}/manifest.json`);
   if (config.PUBLIC_URL) console.log(`Manifest public : ${config.PUBLIC_URL}/manifest.json`);
-  console.log(`Diagnostic     : /debug/movie/tmdb:157336  |  /health`);
+  console.log(`Diagnostic     : /debug/movie/tmdb:157336  |  /debug/sync  |  /health`);
+
+  if (config.NUVIO_PUSH_INTERVAL_MS > 0 && config.NUVIO_EMAIL) {
+    const minutes = Math.round(config.NUVIO_PUSH_INTERVAL_MS / 60000);
+    console.log(`Push Nuvio Sync automatique toutes les ${minutes} min`);
+    setInterval(() => {
+      pushToNuvio().catch((err) => console.error(`[nuvio-push] push periodique echoue: ${err.message}`));
+    }, config.NUVIO_PUSH_INTERVAL_MS).unref();
+  }
 });

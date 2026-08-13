@@ -195,4 +195,75 @@ async function getCollection(kind, type) {
   return merged.sort((a, b) => new Date(b.addedAt || 0) - new Date(a.addedAt || 0));
 }
 
-module.exports = { fetchSyncData, getContinueWatching, getCollection };
+/** Titres marques comme vus (`watched_movie` / `watched_tv`). */
+async function getWatched(type) {
+  const data = await fetchSyncData();
+  if (!data) return [];
+
+  const key = type === 'series' ? 'watched_tv' : 'watched_movie';
+  return parseCollection(data[key])
+    .map((item) => (typeof item === 'number' ? { id: item } : item))
+    .filter((item) => item?.id);
+}
+
+/**
+ * Episodes vus, stockes par serie dans `watched_episodes_tv_<showId>` sous la forme
+ * {"S1E1": true, ...} (cf. TVDetails.tsx:2916-2934).
+ */
+async function getWatchedEpisodes() {
+  const data = await fetchSyncData();
+  if (!data) return [];
+
+  const out = [];
+  for (const [key, value] of Object.entries(data)) {
+    const match = key.match(/^watched_episodes_tv_(\d+)$/);
+    if (!match) continue;
+
+    const parsed = parseValue(value);
+    if (!parsed || typeof parsed !== 'object') continue;
+
+    for (const [epKey, watched] of Object.entries(parsed)) {
+      if (!watched) continue;
+      const ep = epKey.match(/^s(\d+)e(\d+)$/i);
+      if (ep) out.push({ showId: Number(match[1]), season: Number(ep[1]), episode: Number(ep[2]) });
+    }
+  }
+  return out;
+}
+
+/**
+ * Toutes les positions de lecture enregistrees, depuis les cles
+ * `progress_<id>` et `progress_tv_<id>_s<saison>_e<episode>`.
+ */
+async function getAllProgress() {
+  const data = await fetchSyncData();
+  if (!data) return [];
+
+  const out = [];
+  for (const [key, value] of Object.entries(data)) {
+    const tv = key.match(/^progress_tv_(\d+)_s(\d+)_e(\d+)$/);
+    const movie = !tv && key.match(/^progress_(\d+)$/);
+    if (!tv && !movie) continue;
+
+    const entry = parseValue(value);
+    const position = Number(entry?.position);
+    const duration = Number(entry?.duration);
+    if (!Number.isFinite(position) || !Number.isFinite(duration) || duration <= 0) continue;
+
+    out.push(
+      tv
+        ? { type: 'series', id: Number(tv[1]), season: Number(tv[2]), episode: Number(tv[3]), position, duration }
+        : { type: 'movie', id: Number(movie[1]), position, duration },
+    );
+  }
+  return out;
+}
+
+module.exports = {
+  fetchSyncData,
+  getContinueWatching,
+  getCollection,
+  getWatched,
+  getWatchedEpisodes,
+  getAllProgress,
+};

@@ -41,6 +41,18 @@ const config = {
   MOVIX_PROFILE_ID: readEnv('MOVIX_PROFILE_ID', ''),
   SYNC_TTL_MS: Number(readEnv('SYNC_TTL_MS', 5 * 60 * 1000)),
 
+  // --- Push vers Nuvio Sync (API cloud officielle) ---
+  NUVIO_BASE_URL: readEnv('NUVIO_BASE_URL', 'https://api.nuvio.tv'),
+  // Cle "publishable" Supabase: publique par conception, sans acces sans jeton utilisateur.
+  NUVIO_API_KEY: readEnv('NUVIO_API_KEY', 'sb_publishable_1Clq8rlTVACkdcZuqr6_AD__xUUC_EN'),
+  NUVIO_EMAIL: readEnv('NUVIO_EMAIL', ''),
+  NUVIO_PASSWORD: readEnv('NUVIO_PASSWORD', ''),
+  NUVIO_PROFILE_INDEX: Number(readEnv('NUVIO_PROFILE_INDEX', 0)) || null,
+  // imdb (recommande, aligne sur Cinemeta) ou tmdb
+  NUVIO_ID_PREFERENCE: readEnv('NUVIO_ID_PREFERENCE', 'imdb'),
+  // Push periodique automatique. 0 = desactive (push manuel via POST /nuvio/push).
+  NUVIO_PUSH_INTERVAL_MS: Number(readEnv('NUVIO_PUSH_INTERVAL_MS', 0)),
+
   // Sources activees (noms tels qu'exportes par src/sources/*.js).
   ENABLED_SOURCES: readList('ENABLED_SOURCES', null), // null = toutes
 
