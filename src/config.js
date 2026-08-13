@@ -67,6 +67,16 @@ const config = {
   // Rangees "Recommandé pour vous" alimentees par l'algorithme Trakt.
   TRAKT_RECOMMENDATIONS: readBool('TRAKT_RECOMMENDATIONS', true),
 
+  // --- Simkl (tracker sans limite d'app connectee, integre nativement par Nuvio) ---
+  SIMKL_BASE_URL: readEnv('SIMKL_BASE_URL', 'https://api.simkl.com'),
+  SIMKL_CLIENT_ID: readEnv('SIMKL_CLIENT_ID', ''),
+  // Le jeton Simkl n'expire pas: pas de client secret ni de refresh a gerer.
+  SIMKL_TOKEN_FILE: readEnv('SIMKL_TOKEN_FILE', ''),
+  SIMKL_PUSH_INTERVAL_MS: Number(readEnv('SIMKL_PUSH_INTERVAL_MS', 0)),
+
+  // Rangee de recommandations calculees localement depuis l'historique Movix (sans compte tiers).
+  LOCAL_RECOMMENDATIONS: readBool('LOCAL_RECOMMENDATIONS', true),
+
   // Sources activees (noms tels qu'exportes par src/sources/*.js).
   ENABLED_SOURCES: readList('ENABLED_SOURCES', null), // null = toutes
 

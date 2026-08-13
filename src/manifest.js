@@ -33,6 +33,10 @@ function personalCatalogs(type) {
     { type, id: 'movix-continue', name: 'Movix · Reprendre', extra: [{ name: 'skip' }] },
     { type, id: 'movix-watchlist', name: 'Movix · Ma liste', extra: [{ name: 'skip' }] },
     { type, id: 'movix-favorites', name: 'Movix · Favoris', extra: [{ name: 'skip' }] },
+    // Deduite de l'historique Movix, sans compte tiers ni limite d'app connectee.
+    ...(config.LOCAL_RECOMMENDATIONS
+      ? [{ type, id: 'movix-reco', name: 'Movix · Parce que tu as regardé', extra: [{ name: 'skip' }] }]
+      : []),
   ];
 }
 
@@ -47,7 +51,7 @@ module.exports = {
   id: 'personal.movix.addon',
   // Stremio/Nuvio mettent le manifest en cache: toute modification visible (nom, logo,
   // catalogues) doit s'accompagner d'un changement de version pour etre reprise.
-  version: '1.4.0',
+  version: '1.5.0',
   name: 'Movix (perso)',
   description:
     'Catalogue, flux et sous-titres Movix agreges pour usage personnel -- non destine a etre partage ou publie.',

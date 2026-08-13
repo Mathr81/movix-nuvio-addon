@@ -40,7 +40,7 @@ affiché par le SDK est une chaîne fixe, pas le reflet du binding réel.
 
 | Ressource | Détail |
 |-----------|--------|
-| `catalog` | Catalogues personnels (sync compte) + Tendances / Populaires / Mieux notés / Nouveautés, filtrables par genre, avec recherche |
+| `catalog` | Catalogues personnels (sync compte), recommandations, Tendances / Populaires / Mieux notés / Nouveautés, filtrables par genre, avec recherche |
 | `meta` | Fiches complètes, épisodes par saison, casting, genres |
 | `stream` | Agrégation de 7 sources Movix + extraction serveur des embeds |
 | `subtitles` | OpenSubtitles, converti à la volée en WebVTT |
@@ -89,6 +89,44 @@ Ce qui est transféré :
 > vers le site : Nuvio ne notifie pas les addons de la lecture. Le pont Trakt ci-dessous
 > résout ce point.
 
+### Quel tracker choisir (⚠️ limite Trakt gratuit)
+
+Depuis 2026, **un compte Trakt gratuit n'autorise qu'une seule application tierce
+connectée à la fois** (les apps officielles Trakt sont exemptées). Nuvio occupe ce slot
+dès que tu y branches Trakt : cet addon ne peut alors pas rester connecté en parallèle
+sans Trakt VIP. Trakt renvoie un `420` quand une limite de compte est dépassée.
+
+Trois options, cumulables :
+
+| Option | Compte requis | Ce que ça donne |
+|--------|---------------|-----------------|
+| **Recommandations locales** | aucun | Rangée « Parce que tu as regardé », calculée depuis l'historique Movix. Activée par défaut. |
+| **Simkl** *(recommandé sans VIP)* | Simkl (gratuit) | Historique + listes partagés, **pas de limite d'app**, intégré nativement par Nuvio depuis août 2026. |
+| **Trakt** | Trakt (gratuit) | Le plus large écosystème d'addons — mais un seul slot : voir l'import ponctuel ci-dessous. |
+
+Les positions de reprise à la seconde près restent gérées par le push **Nuvio Sync**
+(section précédente) : l'API Simkl n'a pas d'endpoint de progression, et le slot Trakt
+sert mieux à Nuvio qu'à cet addon.
+
+### Pont Simkl (historique partagé, sans limite)
+
+```bash
+# 1. Crée une app sur https://simkl.com/settings/developer
+# 2. Renseigne SIMKL_CLIENT_ID dans .env (aucun secret nécessaire)
+npm run simkl:auth        # affiche un code à saisir sur simkl.com/pin
+npm run simkl:push:dry
+npm run simkl:push
+```
+
+| Movix | → Simkl |
+|-------|---------|
+| Films vus + épisodes vus | Historique (`/sync/history`) |
+| Watchlist + Favoris | `plantowatch` (Simkl n'a pas de favoris distincts) |
+
+Branche ensuite Simkl dans les réglages de Nuvio : il y scrobble tout seul, donc
+l'historique reste à jour sans relancer l'import. `SIMKL_PUSH_INTERVAL_MS` active
+malgré tout un import périodique depuis Movix si tu continues à utiliser le site.
+
 ### Pont Trakt (historique partagé + recommandations)
 
 Le sync cloud Nuvio est un silo : seul Nuvio le lit. **Trakt** est le hub d'historique de
@@ -134,8 +172,13 @@ périodique.
 > Trakt limite les écritures à environ une par seconde : l'import est volontairement
 > sérialisé, un premier push de plusieurs dizaines de reprises prend donc une minute.
 
-> **Simkl** fait la même chose mais est lu par bien moins d'addons ; Trakt est le bon
-> choix par défaut, sauf usage massivement orienté animé.
+> **Sans Trakt VIP, fais-en un import ponctuel** : autorise cet addon, lance
+> `npm run trakt:push`, puis révoque-le dans
+> [tes réglages Trakt](https://trakt.tv/settings/applications) et connecte Nuvio à la
+> place. L'historique est stocké côté Trakt : il reste en place après la révocation, et
+> c'est Nuvio qui l'alimente ensuite. La rangée « Recommandé pour vous » de cet addon
+> disparaît alors (elle exige une connexion active) — la rangée locale
+> « Parce que tu as regardé » prend le relais.
 
 ### Sources agrégées
 

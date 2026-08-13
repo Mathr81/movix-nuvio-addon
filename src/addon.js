@@ -9,6 +9,7 @@ const { buildSubtitles } = require('./subtitles');
 const { genreId } = require('./genres');
 const movixSync = require('./movixSync');
 const trakt = require('./traktCloud');
+const { personalRecommendations } = require('./recommend');
 
 const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500';
 const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280';
@@ -87,6 +88,15 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
     // sinon ajouter un film a sa liste sur le site mettrait 30 min a apparaitre.
     if (id.startsWith('movix-continue') || id.startsWith('movix-watchlist') || id.startsWith('movix-favorites')) {
       return { metas: await personalCatalog(id, type, page) };
+    }
+
+    // Recommandations locales: un calcul = 12 appels TMDB, a ne pas refaire a chaque
+    // ouverture de l'accueil.
+    if (id.startsWith('movix-reco')) {
+      const items = await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
+        personalRecommendations(type),
+      );
+      return { metas: items.map((item) => toCatalogMeta(item, type)) };
     }
 
     // Les recommandations changent lentement (Trakt les recalcule au fil de l'historique)

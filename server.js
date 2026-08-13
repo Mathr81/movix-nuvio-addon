@@ -10,6 +10,8 @@ const { mainApi } = require('./src/movixClient');
 const { pushToNuvio } = require('./src/nuvioPush');
 const { pushToTrakt } = require('./src/traktPush');
 const trakt = require('./src/traktCloud');
+const { pushToSimkl } = require('./src/simklPush');
+const simkl = require('./src/simklCloud');
 
 const app = express();
 
@@ -165,6 +167,32 @@ app.post('/trakt/push', async (req, res) => {
   }
 });
 
+// --- Simkl ---------------------------------------------------------------
+// Meme principe que Trakt, sans la limite d'une seule application connectee.
+app.post('/simkl/auth', async (_req, res) => {
+  try {
+    const started = await new Promise((resolve, reject) => {
+      const done = simkl.pinAuth({ onCode: (device) => resolve(device) });
+      done.catch(reject);
+      done.then(() => console.log('[simkl] autorisation terminee'), () => {});
+    });
+    res.json({ ok: true, code: started.user_code, url: started.verification_url, expiresInSeconds: started.expires_in });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/simkl/push', async (req, res) => {
+  const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
+  try {
+    const summary = await pushToSimkl({ dryRun });
+    res.status(summary.ok ? 200 : 400).json(summary);
+  } catch (err) {
+    console.error(`[simkl-push] echec: ${err.message}`);
+    res.status(502).json({ ok: false, error: err.message, status: err.status, body: err.body });
+  }
+});
+
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
@@ -174,6 +202,7 @@ app.get('/health', (_req, res) => {
     subtitlesEnabled: config.SUBTITLES_ENABLED,
     publicUrl: config.PUBLIC_URL || null,
     traktAuthenticated: trakt.isAuthenticated(),
+    simklAuthenticated: simkl.isAuthenticated(),
   });
 });
 
@@ -200,5 +229,13 @@ app.listen(config.PORT, () => {
     setInterval(() => {
       pushToTrakt().catch((err) => console.error(`[trakt-push] push periodique echoue: ${err.message}`));
     }, config.TRAKT_PUSH_INTERVAL_MS).unref();
+  }
+
+  if (config.SIMKL_PUSH_INTERVAL_MS > 0 && simkl.isAuthenticated()) {
+    const minutes = Math.round(config.SIMKL_PUSH_INTERVAL_MS / 60000);
+    console.log(`Push Simkl automatique toutes les ${minutes} min`);
+    setInterval(() => {
+      pushToSimkl().catch((err) => console.error(`[simkl-push] push periodique echoue: ${err.message}`));
+    }, config.SIMKL_PUSH_INTERVAL_MS).unref();
   }
 });

@@ -65,6 +65,12 @@ async function details(type, tmdbId) {
   return data;
 }
 
+/** Titres proches d'un titre donne, selon TMDB (base des recommandations locales). */
+async function recommendations(type, tmdbId, page = 1) {
+  const { data } = await tmdb.get(`/${mediaOf(type)}/${tmdbId}/recommendations`, { params: { page } });
+  return data.results || [];
+}
+
 async function season(tmdbId, seasonNumber) {
   const { data } = await tmdb.get(`/tv/${tmdbId}/season/${seasonNumber}`);
   return data;
@@ -95,6 +101,7 @@ module.exports = {
   search,
   details,
   detailsMany,
+  recommendations,
   season,
   findByImdbId,
   getImdbId,
