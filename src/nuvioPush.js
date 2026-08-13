@@ -33,6 +33,46 @@ function nuvioType(type) {
   return type === 'series' ? 'series' : 'movie';
 }
 
+/**
+ * Nuvio attend des timestamps en millisecondes depuis l'epoch (nombre), pas des
+ * chaines ISO: une date ISO est rejetee par l'API.
+ */
+function toEpochMs(value) {
+  if (!value) return Date.now();
+  if (typeof value === 'number') return value > 1e11 ? value : value * 1000;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+/**
+ * Positions et durees sont en MILLISECONDES cote Nuvio, alors que Movix les stocke
+ * en secondes (valeurs brutes de l'element <video>). Sans conversion, une position
+ * de 2400 s serait interpretee comme 2,4 s.
+ */
+function toMs(seconds) {
+  return Math.round(Number(seconds) * 1000);
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+/** Titre lisible, requis par l'API pour les elements vus. */
+async function titleFor(type, tmdbId) {
+  try {
+    const details = await cache.wrap(`meta:${type}:${tmdbId}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
+      tmdbClient.details(type, tmdbId),
+    );
+    return details.title || details.name || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Fiche TMDB enrichie pour la bibliotheque (Nuvio stocke le titre et les visuels). */
 async function libraryEntry(type, tmdbId, addedAt) {
   const details = await cache.wrap(`meta:${type}:${tmdbId}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
@@ -104,25 +144,29 @@ async function buildWatchedItems() {
         (async () => ({
           content_id: await contentId(type, item.id),
           content_type: nuvioType(type),
-          title: item.title || item.name || null,
-          watched_at: item.watchedAt || item.addedAt || new Date().toISOString(),
+          title: item.title || item.name || (await titleFor(type, item.id)) || `TMDB ${item.id}`,
+          watched_at: toEpochMs(item.watchedAt || item.addedAt),
         }))(),
       );
     }
   }
 
-  // Un episode vu est rattache a sa serie via l'id video `<content_id>:<saison>:<episode>`.
+  // Un episode vu porte le content_id de la SERIE, plus les champs season/episode --
+  // pas de video_id ici (contrairement a la progression, ou il est attendu).
   for (const ep of episodes) {
     tasks.push(
       (async () => {
-        const base = await contentId('series', ep.showId);
+        const [base, showTitle] = await Promise.all([
+          contentId('series', ep.showId),
+          titleFor('series', ep.showId),
+        ]);
         return {
           content_id: base,
           content_type: 'series',
-          video_id: `${base}:${ep.season}:${ep.episode}`,
+          title: `${showTitle || `TMDB ${ep.showId}`} S${pad2(ep.season)}E${pad2(ep.episode)}`,
           season: ep.season,
           episode: ep.episode,
-          watched_at: new Date().toISOString(),
+          watched_at: Date.now(),
         };
       })(),
     );
@@ -137,16 +181,24 @@ async function buildProgressEntries() {
   return settleAll(
     entries.map(async (e) => {
       const base = await contentId(e.type, e.id);
-      return {
+      const duration = toMs(e.duration);
+      // Rester strictement dans ]0, duree[: une position egale a la duree ferait
+      // passer le titre pour termine et non pour "en cours".
+      const position = clamp(toMs(e.position), 1, Math.max(1, duration - 1000));
+
+      const entry = {
         content_id: base,
         content_type: nuvioType(e.type),
         video_id: e.type === 'series' ? `${base}:${e.season}:${e.episode}` : base,
-        season: e.season ?? null,
-        episode: e.episode ?? null,
-        position: e.position,
-        duration: e.duration,
-        last_watched: new Date().toISOString(),
+        position,
+        duration,
+        last_watched: Date.now(),
       };
+      if (e.type === 'series') {
+        entry.season = e.season;
+        entry.episode = e.episode;
+      }
+      return entry;
     }),
     'la progression',
   );
@@ -200,12 +252,38 @@ async function pushToNuvio({ dryRun = false } = {}) {
 
   if (dryRun) {
     console.log('[nuvio-push] simulation (dryRun), aucun envoi:', JSON.stringify(summary));
+    summary.samples = {
+      library: finalLibrary.slice(-1),
+      watched: watchedItems.slice(0, 1),
+      progress: progressEntries.slice(0, 1),
+    };
     return summary;
   }
 
-  if (finalLibrary.length > 0) await nuvio.pushLibrary(profileId, finalLibrary);
-  if (watchedItems.length > 0) await nuvio.pushWatchedItems(profileId, watchedItems);
-  if (progressEntries.length > 0) await nuvio.pushWatchProgress(profileId, progressEntries);
+  // Les trois envois sont independants: un echec sur l'un ne doit pas empecher les
+  // autres, et le resume doit dire lequel a echoue plutot qu'un 400 anonyme.
+  const steps = [
+    ['library', () => nuvio.pushLibrary(profileId, finalLibrary), finalLibrary.length],
+    ['watched', () => nuvio.pushWatchedItems(profileId, watchedItems), watchedItems.length],
+    ['progress', () => nuvio.pushWatchProgress(profileId, progressEntries), progressEntries.length],
+  ];
+
+  summary.pushed = {};
+  summary.errors = {};
+  for (const [name, run, count] of steps) {
+    if (count === 0) {
+      summary.pushed[name] = 0;
+      continue;
+    }
+    try {
+      await run();
+      summary.pushed[name] = count;
+    } catch (err) {
+      summary.ok = false;
+      summary.errors[name] = err.message;
+      console.error(`[nuvio-push] ${name}: ${err.message}`);
+    }
+  }
 
   console.log('[nuvio-push] termine:', JSON.stringify(summary));
   return summary;

@@ -68,8 +68,21 @@ async function accessToken() {
 
 async function rpc(name, body = {}) {
   const token = await accessToken();
-  const { data } = await client.post(`/rest/v1/rpc/${name}`, body, { headers: authHeaders(token) });
-  return data;
+  try {
+    const { data } = await client.post(`/rest/v1/rpc/${name}`, body, { headers: authHeaders(token) });
+    return data;
+  } catch (err) {
+    // PostgREST renvoie un corps JSON explicite (message/details/hint/code); sans lui,
+    // un echec se resume a "Request failed with status code 400" et n'aide en rien.
+    const status = err.response?.status;
+    const payload = err.response?.data;
+    const detail = payload ? JSON.stringify(payload) : err.message;
+    const error = new Error(`RPC ${name} a echoue (status ${status ?? 'n/a'}): ${detail}`);
+    error.status = status;
+    error.body = payload;
+    error.rpc = name;
+    throw error;
+  }
 }
 
 async function pullProfiles() {
