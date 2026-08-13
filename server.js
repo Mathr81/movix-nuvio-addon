@@ -6,6 +6,7 @@ const { fetchAsVtt } = require('./src/subtitles');
 const { resolveId } = require('./src/idResolver');
 const { collectRawLinks } = require('./src/streamBuilder');
 const { detectHoster } = require('./src/hosterExtract');
+const { mainApi } = require('./src/movixClient');
 
 const app = express();
 
@@ -72,6 +73,44 @@ app.get('/debug/:type/:id', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Diagnostic sync: montre la reponse brute de Mainapi pour chaque forme d'URL testee,
+// sans le cache, pour identifier precisement pourquoi les catalogues personnels sont vides.
+app.get('/debug/sync', async (_req, res) => {
+  if (!config.MOVIX_JWT || !config.MOVIX_USER_ID) {
+    return res.json({ configured: false, hint: 'Renseigne MOVIX_JWT et MOVIX_USER_ID dans .env' });
+  }
+
+  const base = `/api/sync/${config.MOVIX_USER_TYPE}/${config.MOVIX_USER_ID}`;
+  const candidates = config.MOVIX_PROFILE_ID ? [`${base}/${config.MOVIX_PROFILE_ID}`, base] : [base];
+  const attempts = [];
+
+  for (const url of candidates) {
+    try {
+      const { status, data } = await mainApi.get(url, {
+        headers: { Authorization: `Bearer ${config.MOVIX_JWT}` },
+        validateStatus: () => true,
+      });
+      const body = typeof data === 'string' ? data.slice(0, 400) : data;
+      attempts.push({
+        url,
+        status,
+        keys: data?.data ? Object.keys(data.data) : undefined,
+        body: data?.data ? undefined : body,
+      });
+    } catch (err) {
+      attempts.push({ url, error: err.message });
+    }
+  }
+
+  res.json({
+    configured: true,
+    userType: config.MOVIX_USER_TYPE,
+    profileIdSet: !!config.MOVIX_PROFILE_ID,
+    spoofedOrigin: config.SPOOFED_ORIGIN,
+    attempts,
+  });
 });
 
 app.get('/health', (_req, res) => {
