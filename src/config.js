@@ -53,6 +53,20 @@ const config = {
   // Push periodique automatique. 0 = desactive (push manuel via POST /nuvio/push).
   NUVIO_PUSH_INTERVAL_MS: Number(readEnv('NUVIO_PUSH_INTERVAL_MS', 0)),
 
+  // --- Trakt (hub d'historique de l'ecosysteme Stremio/Nuvio) ---
+  TRAKT_BASE_URL: readEnv('TRAKT_BASE_URL', 'https://api.trakt.tv'),
+  TRAKT_CLIENT_ID: readEnv('TRAKT_CLIENT_ID', ''),
+  TRAKT_CLIENT_SECRET: readEnv('TRAKT_CLIENT_SECRET', ''),
+  // Jeton obtenu par device code, conserve sur disque pour survivre aux redemarrages.
+  TRAKT_TOKEN_FILE: readEnv('TRAKT_TOKEN_FILE', ''),
+  // Date attribuee aux visionnages Movix non horodates: "released" (date de sortie) ou "now".
+  TRAKT_WATCHED_AT: readEnv('TRAKT_WATCHED_AT', 'released'),
+  // Trakt limite les ecritures a ~1/s: delai minimal entre deux requetes d'ecriture.
+  TRAKT_WRITE_DELAY_MS: Number(readEnv('TRAKT_WRITE_DELAY_MS', 1100)),
+  TRAKT_PUSH_INTERVAL_MS: Number(readEnv('TRAKT_PUSH_INTERVAL_MS', 0)),
+  // Rangees "Recommandé pour vous" alimentees par l'algorithme Trakt.
+  TRAKT_RECOMMENDATIONS: readBool('TRAKT_RECOMMENDATIONS', true),
+
   // Sources activees (noms tels qu'exportes par src/sources/*.js).
   ENABLED_SOURCES: readList('ENABLED_SOURCES', null), // null = toutes
 

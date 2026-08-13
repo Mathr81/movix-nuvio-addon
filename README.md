@@ -86,7 +86,56 @@ Ce qui est transféré :
 > depuis Nuvio est préservé. Ne contourne pas cette étape.
 
 > Le sens est Movix → Nuvio uniquement. Ce que tu regardes *dans* Nuvio ne remonte pas
-> vers le site : Nuvio ne notifie pas les addons de la lecture.
+> vers le site : Nuvio ne notifie pas les addons de la lecture. Le pont Trakt ci-dessous
+> résout ce point.
+
+### Pont Trakt (historique partagé + recommandations)
+
+Le sync cloud Nuvio est un silo : seul Nuvio le lit. **Trakt** est le hub d'historique de
+tout l'écosystème — Nuvio s'y connecte nativement et y *scrobble automatiquement* ce que
+tu regardes, et les addons de recommandation/catalogue (AIOLists, Trakt…) lisent Trakt.
+
+Y importer l'historique Movix apporte deux choses que Nuvio Sync ne peut pas donner :
+
+1. **Des recommandations basées sur ce que tu regardes** — l'algorithme Trakt a besoin
+   d'un historique pour fonctionner, et c'est là qu'il le lit.
+2. **La bidirectionnalité** — Nuvio écrit dans Trakt en continu, donc l'historique reste
+   à jour sans rien relancer, quel que soit l'appareil.
+
+```bash
+# 1. Crée une app sur https://trakt.tv/oauth/applications (Redirect URI: urn:ietf:wg:oauth:2.0:oob)
+# 2. Renseigne TRAKT_CLIENT_ID / TRAKT_CLIENT_SECRET dans .env
+npm run trakt:auth        # affiche un code à saisir sur trakt.tv/activate
+npm run trakt:push:dry    # simule, n'écrit rien
+npm run trakt:push        # importe
+# ou, serveur démarré :
+curl -X POST http://localhost:8787/trakt/auth
+curl -X POST "http://localhost:8787/trakt/push?dryRun=1"
+```
+
+| Movix | → Trakt |
+|-------|---------|
+| Films vus + épisodes vus | Historique (`/sync/history`) |
+| Watchlist | Watchlist |
+| Favoris | Liste privée « Movix · Favoris » |
+| Clés `progress_*` | Points de reprise (`/scrobble/pause`) |
+
+Le jeton est enregistré dans `.trakt-token.json` (ignoré par git) et renouvelé
+automatiquement — l'autorisation n'est à faire qu'une fois.
+
+Une fois autorisé, **redémarre l'addon** : une rangée **« Movix · Recommandé pour vous »**
+apparaît, alimentée par l'algorithme Trakt. `TRAKT_PUSH_INTERVAL_MS` active un import
+périodique.
+
+> Les visionnages Movix ne sont pas horodatés : ils sont datés de la sortie du titre
+> (`TRAKT_WATCHED_AT=released`) pour ne pas remplir « vu récemment » avec 50 titres du jour.
+> `now` bascule sur la date courante.
+
+> Trakt limite les écritures à environ une par seconde : l'import est volontairement
+> sérialisé, un premier push de plusieurs dizaines de reprises prend donc une minute.
+
+> **Simkl** fait la même chose mais est lu par bien moins d'addons ; Trakt est le bon
+> choix par défaut, sauf usage massivement orienté animé.
 
 ### Sources agrégées
 

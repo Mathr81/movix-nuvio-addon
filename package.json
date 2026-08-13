@@ -11,7 +11,10 @@
     "pm2:restart": "pm2 restart movix-addon",
     "pm2:logs": "pm2 logs movix-addon",
     "nuvio:push": "node -e \"require('./src/nuvioPush').pushToNuvio().then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\"",
-    "nuvio:push:dry": "node -e \"require('./src/nuvioPush').pushToNuvio({dryRun:true}).then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\""
+    "nuvio:push:dry": "node -e \"require('./src/nuvioPush').pushToNuvio({dryRun:true}).then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\"",
+    "trakt:auth": "node -e \"require('./src/traktCloud').deviceAuth().catch(e=>{console.error(e.message);process.exit(1)})\"",
+    "trakt:push": "node -e \"require('./src/traktPush').pushToTrakt().then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\"",
+    "trakt:push:dry": "node -e \"require('./src/traktPush').pushToTrakt({dryRun:true}).then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\""
   },
   "dependencies": {
     "axios": "^1.7.7",

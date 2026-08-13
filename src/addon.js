@@ -8,6 +8,7 @@ const { buildStreams } = require('./streamBuilder');
 const { buildSubtitles } = require('./subtitles');
 const { genreId } = require('./genres');
 const movixSync = require('./movixSync');
+const trakt = require('./traktCloud');
 
 const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500';
 const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280';
@@ -58,6 +59,24 @@ async function personalCatalog(catalogId, type, page) {
   });
 }
 
+/**
+ * Recommandations Trakt. Trakt ne renvoie que des identifiants et des metadonnees
+ * textuelles: on repasse par TMDB pour les affiches, comme pour les catalogues perso.
+ */
+async function traktRecommendations(type, page) {
+  const perPage = 20;
+  const rows = await trakt.recommendations(type, { limit: 100 });
+
+  const tmdbIds = rows
+    .map((row) => (row.movie || row.show || row).ids?.tmdb)
+    .filter(Boolean)
+    .slice((page - 1) * perPage, page * perPage);
+  if (tmdbIds.length === 0) return [];
+
+  const detailed = await tmdbClient.detailsMany(tmdbIds.map((tmdbId) => ({ id: tmdbId, type })));
+  return detailed.map((d) => toCatalogMeta(d, type));
+}
+
 builder.defineCatalogHandler(async ({ type, id, extra }) => {
   const page = extra?.skip ? Math.floor(Number(extra.skip) / 20) + 1 : 1;
   const genre = extra?.genre;
@@ -68,6 +87,16 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
     // sinon ajouter un film a sa liste sur le site mettrait 30 min a apparaitre.
     if (id.startsWith('movix-continue') || id.startsWith('movix-watchlist') || id.startsWith('movix-favorites')) {
       return { metas: await personalCatalog(id, type, page) };
+    }
+
+    // Les recommandations changent lentement (Trakt les recalcule au fil de l'historique)
+    // mais chaque appel coute un aller-retour Trakt + N fiches TMDB: on memoise la page.
+    if (id.startsWith('movix-trakt-reco')) {
+      return {
+        metas: await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
+          traktRecommendations(type, page),
+        ),
+      };
     }
 
     const items = await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {

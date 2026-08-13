@@ -8,6 +8,8 @@ const { collectRawLinks } = require('./src/streamBuilder');
 const { detectHoster } = require('./src/hosterExtract');
 const { mainApi } = require('./src/movixClient');
 const { pushToNuvio } = require('./src/nuvioPush');
+const { pushToTrakt } = require('./src/traktPush');
+const trakt = require('./src/traktCloud');
 
 const app = express();
 
@@ -130,6 +132,39 @@ app.post('/nuvio/push', async (req, res) => {
   }
 });
 
+// --- Trakt ---------------------------------------------------------------
+// Autorisation par device code: la reponse renvoie immediatement le code a saisir,
+// l'attente de validation se poursuit cote serveur (elle peut durer plusieurs minutes).
+app.post('/trakt/auth', async (_req, res) => {
+  try {
+    const started = await new Promise((resolve, reject) => {
+      const done = trakt.deviceAuth({ onCode: (device) => resolve(device) });
+      done.catch(reject);
+      done.then(() => console.log('[trakt] autorisation terminee'), () => {});
+    });
+    res.json({
+      ok: true,
+      code: started.user_code,
+      url: started.verification_url,
+      expiresInSeconds: started.expires_in,
+      hint: 'Saisis le code sur cette URL, puis redemarre l\'addon pour activer la rangee de recommandations.',
+    });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/trakt/push', async (req, res) => {
+  const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
+  try {
+    const summary = await pushToTrakt({ dryRun });
+    res.status(summary.ok ? 200 : 400).json(summary);
+  } catch (err) {
+    console.error(`[trakt-push] echec: ${err.message}`);
+    res.status(502).json({ ok: false, error: err.message, status: err.status, body: err.body });
+  }
+});
+
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
@@ -138,6 +173,7 @@ app.get('/health', (_req, res) => {
     vipKeyConfigured: !!config.VIP_ACCESS_KEY,
     subtitlesEnabled: config.SUBTITLES_ENABLED,
     publicUrl: config.PUBLIC_URL || null,
+    traktAuthenticated: trakt.isAuthenticated(),
   });
 });
 
@@ -156,5 +192,13 @@ app.listen(config.PORT, () => {
     setInterval(() => {
       pushToNuvio().catch((err) => console.error(`[nuvio-push] push periodique echoue: ${err.message}`));
     }, config.NUVIO_PUSH_INTERVAL_MS).unref();
+  }
+
+  if (config.TRAKT_PUSH_INTERVAL_MS > 0 && trakt.isAuthenticated()) {
+    const minutes = Math.round(config.TRAKT_PUSH_INTERVAL_MS / 60000);
+    console.log(`Push Trakt automatique toutes les ${minutes} min`);
+    setInterval(() => {
+      pushToTrakt().catch((err) => console.error(`[trakt-push] push periodique echoue: ${err.message}`));
+    }, config.TRAKT_PUSH_INTERVAL_MS).unref();
   }
 });
