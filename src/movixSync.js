@@ -74,36 +74,81 @@ async function fetchSyncData() {
   });
 }
 
-/** Les valeurs synchronisees sont parfois des chaines JSON (copie brute du localStorage). */
-function parseCollection(value) {
-  if (Array.isArray(value)) return value;
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
+/** Les valeurs synchronisees sont des copies brutes du localStorage: parfois deja
+ * desserialisees, parfois encore sous forme de chaine JSON. */
+function parseValue(value) {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
   }
-  return [];
 }
 
-function normalizeType(item) {
-  const raw = item.media_type || item.type;
-  return raw === 'tv' || raw === 'series' ? 'series' : 'movie';
+function parseCollection(value) {
+  const parsed = parseValue(value);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+/**
+ * Progression d'un titre, en pourcentage.
+ * Le site ne la stocke PAS dans continueWatching mais dans des cles dediees
+ * `progress_<id>` / `progress_tv_<id>_s<saison>_e<episode>` valant {position, duration}
+ * en secondes (cf. EmblaCarousel.tsx:609-652).
+ */
+function progressPercent(data, type, id, currentEpisode) {
+  const key =
+    type === 'series' && currentEpisode
+      ? `progress_tv_${id}_s${currentEpisode.season}_e${currentEpisode.episode}`
+      : `progress_${id}`;
+
+  const entry = parseValue(data[key]);
+  const position = Number(entry?.position);
+  const duration = Number(entry?.duration);
+  if (!Number.isFinite(position) || !Number.isFinite(duration) || duration <= 0) return undefined;
+
+  return Math.min((position / duration) * 100, 100);
 }
 
 /**
  * Elements "reprendre la lecture", tries du plus recent au plus ancien.
- * Structure cote site: {id, title|name, poster_path, media_type, progress, lastAccessed|lastWatched,
- * currentEpisode:{season,episode}} (cf. src/pages/Home.tsx:138-155).
+ *
+ * ATTENTION: `continueWatching` n'est pas un tableau mais un objet
+ * {movies: [...], tv: [...]} (cf. WatchMovie.tsx:692-717, WatchTv.tsx:1204-1239).
+ * Les entrees ne portent que {id, lastAccessed} (+ currentEpisode pour les series);
+ * ni titre, ni affiche, ni progression -- d'ou le passage par TMDB et par les cles
+ * `progress_*` ci-dessus. Un ancien format stocke les films comme de simples nombres.
  */
 async function getContinueWatching(type) {
   const data = await fetchSyncData();
   if (!data) return [];
 
-  return parseCollection(data.continueWatching)
-    .filter((item) => item && item.id && normalizeType(item) === type)
+  const root = parseValue(data.continueWatching);
+  if (!root || typeof root !== 'object') return [];
+
+  const list = Array.isArray(root)
+    ? root // format historique: liste plate portant media_type
+    : type === 'series'
+      ? root.tv
+      : root.movies;
+
+  if (!Array.isArray(list)) return [];
+
+  return list
+    .map((item) => (typeof item === 'number' ? { id: item } : item))
+    .filter((item) => {
+      if (!item?.id) return false;
+      // Liste plate historique: filtrer sur media_type; sinon la cle a deja fait le tri.
+      if (Array.isArray(root)) {
+        const raw = item.media_type || item.type;
+        return (raw === 'tv' || raw === 'series' ? 'series' : 'movie') === type;
+      }
+      return true;
+    })
+    .map((item) => ({
+      ...item,
+      progress: item.progress ?? progressPercent(data, type, item.id, item.currentEpisode),
+    }))
     .sort((a, b) => new Date(b.lastAccessed || b.lastWatched || 0) - new Date(a.lastAccessed || a.lastWatched || 0));
 }
 
