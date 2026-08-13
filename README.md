@@ -16,6 +16,22 @@ npm start
 
 Puis installe `http://<host>:8787/manifest.json` dans Stremio ou Nuvio.
 
+### En arrière-plan avec PM2
+
+```bash
+npm install -g pm2
+pm2 start ecosystem.config.cjs
+pm2 logs movix-addon          # suivre les logs
+pm2 save && pm2 startup       # relance automatique au reboot (suivre l'instruction affichée)
+```
+
+Raccourcis : `npm run pm2:start|pm2:stop|pm2:restart|pm2:logs`.
+Les logs sont écrits dans `logs/` (ignoré par git).
+
+> Une seule instance est lancée volontairement : le cache vit dans la mémoire du
+> process, donc plusieurs instances multiplieraient les appels aux scrapers sans rien
+> partager.
+
 Le serveur écoute sur **toutes les interfaces** — l'IP LAN ou Tailscale du serveur
 fonctionne donc directement. Le message `HTTP addon accessible at: http://127.0.0.1:...`
 affiché par le SDK est une chaîne fixe, pas le reflet du binding réel.
@@ -41,8 +57,11 @@ apparaissent, alimentées par les mêmes données que le site (`/api/sync`) :
 
 ### Sources agrégées
 
-`PurStream` (liens directs), `Coflix`, `FrenchStream`, `FStream`, `Wiflix`, `Cpasmal`,
-`1jour1film`. Les embeds sont résolus en URLs directes pour **12 hosters** — soit tous
+`PurStream` (liens directs), `Links` (liens communautaires Movix — les `.mp4` sont
+directement jouables), `Coflix`, `FrenchStream`, `FStream`, `Wiflix`, `Cpasmal`,
+`1jour1film`, `Voirdrama` (séries asiatiques).
+
+Les embeds sont résolus en URLs directes pour **12 hosters** — soit tous
 ceux que le site sait extraire côté serveur : voe, uqload, vidzy, fsvid, vidmoly, sibnet,
 doodstream, seekstreaming (via `proxiesembed`), supervideo, dropload (via Mainapi),
 darkibox et oneupload (scraping HTML direct).
@@ -77,5 +96,12 @@ La console détaille aussi, par source, le nombre de liens et la raison d'un éc
   `p2pstream.vip` n'ont pas d'extracteur côté Movix (le site les lit via l'extension
   navigateur, qui n'a pas d'équivalent serveur). `SHOW_UNPLAYABLE_EMBEDS=true` les
   expose en « ouvrir dans le navigateur » plutôt que de les masquer.
+- **Les lecteurs iframe du site ne sont pas portables** : Frembed
+  (`frembed.click/api/film.php`), Videasy, VidSrc, Rivestream sont des pages web
+  embarquées, pas des flux vidéo. Le site les affiche dans un iframe ; Stremio et
+  Nuvio attendent une URL vidéo directe et ne peuvent donc pas les lire. C'est la
+  principale raison d'un écart de nombre de liens avec le site.
+- **Darkino / Nightflix est retiré côté site** (`WatchMovie.tsx:313`), il n'y a donc
+  rien à intégrer de ce côté.
 - **Sous-titres** : nécessite `PUBLIC_URL` correctement renseignée, sinon l'appareil de
   lecture ne saura pas joindre la route de conversion.

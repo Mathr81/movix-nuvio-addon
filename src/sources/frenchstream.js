@@ -23,6 +23,15 @@ function collectMoviePlayers(data) {
 }
 
 function collectEpisodePlayers(data, season, episode) {
+  // Forme courte: la route peut renvoyer directement un tableau `players` deja cible
+  // sur l'episode, sans passer par series[].seasons[] (cf. extractOmegaPlayers,
+  // WatchTv.tsx:412-414).
+  if (Array.isArray(data.players)) {
+    return data.players
+      .filter((p) => p.link || p.url)
+      .map((p) => ({ url: p.link || p.url, player: p.name || p.player, lang: p.lang, sourceName: 'FrenchStream' }));
+  }
+
   const seriesList = Array.isArray(data.series) ? data.series : [];
   const results = [];
 
