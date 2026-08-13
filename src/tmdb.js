@@ -26,6 +26,40 @@ async function search(type, query, page = 1) {
   return data.results || [];
 }
 
+async function topRated(type, page = 1) {
+  const { data } = await tmdb.get(`/${mediaOf(type)}/top_rated`, { params: { page } });
+  return data.results || [];
+}
+
+/** Nouveautes: sorties en salles / a l'affiche pour les films, series en cours de diffusion. */
+async function nowPlaying(type, page = 1) {
+  const path = type === 'series' ? '/tv/on_the_air' : '/movie/now_playing';
+  const { data } = await tmdb.get(path, { params: { page, region: config.TMDB_REGION } });
+  return data.results || [];
+}
+
+/** Discover, utilise pour le filtrage par genre. */
+async function discover(type, { genreId: gid, page = 1, sortBy = 'popularity.desc' } = {}) {
+  const { data } = await tmdb.get(`/discover/${mediaOf(type)}`, {
+    params: {
+      page,
+      sort_by: sortBy,
+      with_genres: gid,
+      // Evite que les titres confidentiels sans votes remontent devant les vrais succes.
+      'vote_count.gte': sortBy.startsWith('vote_average') ? 200 : undefined,
+    },
+  });
+  return data.results || [];
+}
+
+/** Recupere plusieurs fiches TMDB en parallele (catalogues personnels issus du sync). */
+async function detailsMany(items) {
+  const settled = await Promise.allSettled(
+    items.map((item) => details(item.type, item.id).then((d) => ({ ...d, __source: item }))),
+  );
+  return settled.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+}
+
 async function details(type, tmdbId) {
   const { data } = await tmdb.get(`/${mediaOf(type)}/${tmdbId}`, { params: { append_to_response: 'credits' } });
   return data;
@@ -52,4 +86,16 @@ async function getImdbId(type, tmdbId) {
   return data.imdb_id || null;
 }
 
-module.exports = { trending, popular, search, details, season, findByImdbId, getImdbId };
+module.exports = {
+  trending,
+  popular,
+  topRated,
+  nowPlaying,
+  discover,
+  search,
+  details,
+  detailsMany,
+  season,
+  findByImdbId,
+  getImdbId,
+};

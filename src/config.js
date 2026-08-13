@@ -31,6 +31,15 @@ const config = {
 
   TMDB_API_KEY: readEnv('TMDB_API_KEY'),
   TMDB_LANGUAGE: readEnv('TMDB_LANGUAGE', 'fr-FR'),
+  TMDB_REGION: readEnv('TMDB_REGION', 'FR'),
+
+  // --- Sync compte Movix (catalogues personnels) ---
+  // Valeurs a recuperer dans le localStorage du site: auth_token, user_id, selected_profile_id.
+  MOVIX_JWT: readEnv('MOVIX_JWT', ''),
+  MOVIX_USER_ID: readEnv('MOVIX_USER_ID', ''),
+  MOVIX_USER_TYPE: readEnv('MOVIX_USER_TYPE', 'bip39'),
+  MOVIX_PROFILE_ID: readEnv('MOVIX_PROFILE_ID', ''),
+  SYNC_TTL_MS: Number(readEnv('SYNC_TTL_MS', 5 * 60 * 1000)),
 
   // Sources activees (noms tels qu'exportes par src/sources/*.js).
   ENABLED_SOURCES: readList('ENABLED_SOURCES', null), // null = toutes

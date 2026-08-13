@@ -24,16 +24,32 @@ affiché par le SDK est une chaîne fixe, pas le reflet du binding réel.
 
 | Ressource | Détail |
 |-----------|--------|
-| `catalog` | Tendances + populaires (films & séries), avec recherche — via TMDB |
+| `catalog` | Catalogues personnels (sync compte) + Tendances / Populaires / Mieux notés / Nouveautés, filtrables par genre, avec recherche |
 | `meta` | Fiches complètes, épisodes par saison, casting, genres |
 | `stream` | Agrégation de 7 sources Movix + extraction serveur des embeds |
 | `subtitles` | OpenSubtitles, converti à la volée en WebVTT |
 
+### Catalogues personnels (sync compte Movix)
+
+Si `MOVIX_JWT` + `MOVIX_USER_ID` sont renseignés, trois rangées supplémentaires
+apparaissent, alimentées par les mêmes données que le site (`/api/sync`) :
+**Reprendre** (avec `S2E5 · 80 %` dans le libellé), **Ma liste**, **Favoris**.
+
+> Le protocole Stremio ne permet pas à un addon de positionner la reprise de lecture :
+> la progression est affichée, mais la lecture redémarre au début. C'est une limite du
+> protocole, pas de l'implémentation.
+
 ### Sources agrégées
 
 `PurStream` (liens directs), `Coflix`, `FrenchStream`, `FStream`, `Wiflix`, `Cpasmal`,
-`1jour1film`. Les embeds sont résolus en URLs directes via `proxiesembed` pour 10 hosters
-(voe, uqload, vidzy, fsvid, vidmoly, sibnet, doodstream, seekstreaming, supervideo, dropload).
+`1jour1film`. Les embeds sont résolus en URLs directes pour **12 hosters** — soit tous
+ceux que le site sait extraire côté serveur : voe, uqload, vidzy, fsvid, vidmoly, sibnet,
+doodstream, seekstreaming (via `proxiesembed`), supervideo, dropload (via Mainapi),
+darkibox et oneupload (scraping HTML direct).
+
+`smoothpre` et `minochinos` figurent dans le registre du site mais n'ont **aucun**
+extracteur (ni serveur, ni extension) — ce sont uniquement des motifs de détection pour
+l'ordre de priorité. Rien à porter.
 
 Les streams sont triés : langue préférée d'abord (français par défaut), puis résolution
 décroissante.
@@ -57,7 +73,7 @@ La console détaille aussi, par source, le nombre de liens et la raison d'un éc
 
 - **Pas de DRM** : le sous-système `drmproxy` (Netflix, Canal+, etc.) est volontairement
   exclu — contourner un DRM commercial reste illégal, y compris en usage privé.
-- **Certains embeds sont inexploitables** : `vidara.to`, `lecteurvideo.com`,
+- **Certains embeds restent inexploitables** : `vidara.to`, `lecteurvideo.com`,
   `p2pstream.vip` n'ont pas d'extracteur côté Movix (le site les lit via l'extension
   navigateur, qui n'a pas d'équivalent serveur). `SHOW_UNPLAYABLE_EMBEDS=true` les
   expose en « ouvrir dans le navigateur » plutôt que de les masquer.

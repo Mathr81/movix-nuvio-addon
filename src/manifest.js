@@ -1,17 +1,52 @@
+const config = require('./config');
+const { genreNames } = require('./genres');
+
+const syncEnabled = !!(config.MOVIX_JWT && config.MOVIX_USER_ID);
+
+function genreExtra(type) {
+  return { name: 'genre', options: genreNames(type), isRequired: false };
+}
+
+function browseCatalogs(type) {
+  return [
+    { type, id: 'movix-trending', name: 'Movix · Tendances', extra: [{ name: 'skip' }] },
+    {
+      type,
+      id: 'movix-popular',
+      name: 'Movix · Populaires',
+      extra: [{ name: 'search' }, { name: 'skip' }, genreExtra(type)],
+    },
+    { type, id: 'movix-toprated', name: 'Movix · Les mieux notés', extra: [{ name: 'skip' }, genreExtra(type)] },
+    { type, id: 'movix-new', name: type === 'series' ? 'Movix · En cours de diffusion' : 'Movix · Au cinéma', extra: [{ name: 'skip' }] },
+  ];
+}
+
+// Les catalogues personnels ne sont declares que si le sync est configure -- sinon ils
+// apparaitraient vides dans Nuvio sans explication.
+function personalCatalogs(type) {
+  if (!syncEnabled) return [];
+  return [
+    { type, id: 'movix-continue', name: 'Movix · Reprendre', extra: [{ name: 'skip' }] },
+    { type, id: 'movix-watchlist', name: 'Movix · Ma liste', extra: [{ name: 'skip' }] },
+    { type, id: 'movix-favorites', name: 'Movix · Favoris', extra: [{ name: 'skip' }] },
+  ];
+}
+
 module.exports = {
   id: 'personal.movix.addon',
-  version: '1.0.0',
+  version: '1.2.0',
   name: 'Movix (perso)',
-  description: 'Catalogue et flux Movix agreges pour usage personnel -- non destine a etre partage ou publie.',
+  description:
+    'Catalogue, flux et sous-titres Movix agreges pour usage personnel -- non destine a etre partage ou publie.',
   logo: 'https://movix.cash/favicon.ico',
   resources: ['catalog', 'meta', 'stream', 'subtitles'],
   types: ['movie', 'series'],
   idPrefixes: ['tmdb', 'tt'],
   catalogs: [
-    { type: 'movie', id: 'movix-trending', name: 'Movix - Tendances', extra: [{ name: 'skip' }] },
-    { type: 'movie', id: 'movix-popular', name: 'Movix - Films populaires', extra: [{ name: 'search' }, { name: 'skip' }] },
-    { type: 'series', id: 'movix-trending', name: 'Movix - Tendances', extra: [{ name: 'skip' }] },
-    { type: 'series', id: 'movix-popular', name: 'Movix - Series populaires', extra: [{ name: 'search' }, { name: 'skip' }] },
+    ...personalCatalogs('movie'),
+    ...personalCatalogs('series'),
+    ...browseCatalogs('movie'),
+    ...browseCatalogs('series'),
   ],
   behaviorHints: {
     configurable: false,
