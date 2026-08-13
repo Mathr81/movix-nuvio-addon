@@ -1,4 +1,5 @@
 const { mainApi } = require('../movixClient');
+const log = require('../log');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -28,13 +29,21 @@ async function pollUntilReady(path, params) {
 
 async function getStreams({ tmdbId, type, season, episode }) {
   try {
+    let data;
     if (type === 'movie') {
-      const data = await pollUntilReady(`/api/wiflix/movie/${tmdbId}`);
-      return data ? extractPlayers(data) : [];
+      data = await pollUntilReady(`/api/wiflix/movie/${tmdbId}`);
+    } else {
+      data = await pollUntilReady(`/api/wiflix/tv/${tmdbId}/${season}`, { episode });
     }
-    const data = await pollUntilReady(`/api/wiflix/tv/${tmdbId}/${season}`, { episode });
-    return data ? extractPlayers(data) : [];
+    if (!data) {
+      log.ok('Wiflix', tmdbId, 'pas de reponse exploitable (toujours pending ou statut inattendu)');
+      return [];
+    }
+    const results = extractPlayers(data);
+    log.ok('Wiflix', tmdbId, `${results.length} lien(s) (success=${data.success}, cles: ${Object.keys(data).join(',')})`);
+    return results;
   } catch (err) {
+    log.fail('Wiflix', tmdbId, err);
     return [];
   }
 }

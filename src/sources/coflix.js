@@ -1,4 +1,5 @@
 const { mainApi } = require('../movixClient');
+const log = require('../log');
 
 // Coflix, monte sur /api/tmdb/:type/:id malgre le nom de la route (Mainapi/routes/tmdb.js:302).
 async function getStreams({ tmdbId, type, season, episode }) {
@@ -18,8 +19,11 @@ async function getStreams({ tmdbId, type, season, episode }) {
       }));
 
     if (data.iframe_src) results.push({ url: data.iframe_src, sourceName: 'Coflix' });
+
+    log.ok('Coflix', tmdbId, `${results.length} lien(s) (cles reponse: ${Object.keys(data).join(',')})`);
     return results;
   } catch (err) {
+    log.fail('Coflix', tmdbId, err);
     return [];
   }
 }

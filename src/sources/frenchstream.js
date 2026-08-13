@@ -1,4 +1,5 @@
 const { mainApi } = require('../movixClient');
+const log = require('../log');
 
 // FrenchStream, monte sur /api/imdb/:type/:id (Mainapi/routes/tmdb.js:553).
 // Film: {iframe_src, player_links}. Serie: series[].seasons[].episodes[].versions.<lang>.players[].
@@ -13,6 +14,7 @@ async function getStreams({ tmdbId, type, season, episode }) {
         .filter((p) => p.link || p.url)
         .map((p) => ({ url: p.link || p.url, player: p.player || p.name, sourceName: 'FrenchStream' }));
       if (data.iframe_src) results.push({ url: data.iframe_src, sourceName: 'FrenchStream' });
+      log.ok('FrenchStream', tmdbId, `${results.length} lien(s) (cles reponse: ${Object.keys(data).join(',')})`);
       return results;
     }
 
@@ -30,9 +32,13 @@ async function getStreams({ tmdbId, type, season, episode }) {
           if (p.link || p.url) results.push({ url: p.link || p.url, player: p.name, lang, sourceName: 'FrenchStream' });
         }
       }
+    } else {
+      log.ok('FrenchStream', tmdbId, `episode S${season}E${episode} introuvable dans la reponse (saisons trouvees: ${seasons.length})`);
     }
+    log.ok('FrenchStream', tmdbId, `${results.length} lien(s) pour S${season}E${episode}`);
     return results;
   } catch (err) {
+    log.fail('FrenchStream', tmdbId, err);
     return [];
   }
 }

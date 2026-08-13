@@ -20,6 +20,13 @@ async function mapLimit(items, limit, fn) {
 
 async function buildStreams({ tmdbId, type, season, episode }) {
   const settled = await Promise.allSettled(sources.map((s) => s.getStreams({ tmdbId, type, season, episode })));
+
+  settled.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      console.warn(`[streamBuilder] source "${sources[i].name}" a rejete sa promesse: ${r.reason?.message || r.reason}`);
+    }
+  });
+
   const raw = settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
 
   const direct = raw.filter((r) => r.direct && r.url);
@@ -38,6 +45,12 @@ async function buildStreams({ tmdbId, type, season, episode }) {
     seen.add(r.url);
     return true;
   });
+
+  console.log(
+    `[streamBuilder] tmdbId=${tmdbId} type=${type} S${season ?? '-'}E${episode ?? '-'} -- ` +
+      `${raw.length} lien(s) brut(s) (${direct.length} direct, ${embeds.length} embed), ` +
+      `${extracted.filter(Boolean).length}/${embeds.length} embed(s) extrait(s), ${deduped.length} stream(s) final(aux)`,
+  );
 
   return deduped.map((r) => {
     const label = [r.sourceName, r.lang, r.quality, r.hoster].filter(Boolean).join(' · ');

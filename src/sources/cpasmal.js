@@ -1,4 +1,5 @@
 const { mainApi } = require('../movixClient');
+const log = require('../log');
 
 // Cpasmal: {links: {vf: [...], vostfr: [...]}} (Mainapi/routes/cpasmal.js:61-63).
 function extractLinks(data) {
@@ -14,13 +15,17 @@ function extractLinks(data) {
 
 async function getStreams({ tmdbId, type, season, episode }) {
   try {
+    let data;
     if (type === 'movie') {
-      const { data } = await mainApi.get(`/api/cpasmal/movie/${tmdbId}`);
-      return extractLinks(data);
+      ({ data } = await mainApi.get(`/api/cpasmal/movie/${tmdbId}`));
+    } else {
+      ({ data } = await mainApi.get(`/api/cpasmal/tv/${tmdbId}/${season}/${episode}`));
     }
-    const { data } = await mainApi.get(`/api/cpasmal/tv/${tmdbId}/${season}/${episode}`);
-    return extractLinks(data);
+    const results = extractLinks(data);
+    log.ok('Cpasmal', tmdbId, `${results.length} lien(s) (notFound=${data.notFound}, cles: ${Object.keys(data).join(',')})`);
+    return results;
   } catch (err) {
+    log.fail('Cpasmal', tmdbId, err);
     return [];
   }
 }
