@@ -53,19 +53,35 @@ async function fetchSyncData() {
     const base = `/api/sync/${config.MOVIX_USER_TYPE}/${config.MOVIX_USER_ID}`;
     const candidates = config.MOVIX_PROFILE_ID ? [`${base}/${config.MOVIX_PROFILE_ID}`, base] : [base];
 
+    async function attempt(url) {
+      const { data } = await mainApi.get(url, {
+        headers: { Authorization: `Bearer ${config.MOVIX_JWT}` },
+      });
+      const payload = data?.data || {};
+      console.log(`[sync] OK sur ${url} (${Object.keys(payload).length} cles)`);
+      return payload;
+    }
+
     let lastError = null;
     for (const url of candidates) {
       try {
-        const { data } = await mainApi.get(url, {
-          headers: { Authorization: `Bearer ${config.MOVIX_JWT}` },
-        });
-        const payload = data?.data || {};
-        console.log(`[sync] OK sur ${url} (${Object.keys(payload).length} cles)`);
-        return payload;
+        return await attempt(url);
       } catch (err) {
         lastError = { err, url };
-        // Un 400 PROFILE_ID_REQUIRED sur la forme sans profil est informatif: on le remonte.
-        if (err.response?.status === 400 && err.response?.data?.code === 'PROFILE_ID_REQUIRED') break;
+
+        // Le serveur repond 400 PROFILE_ID_REQUIRED en indiquant le profil par defaut:
+        // autant l'utiliser directement plutot que d'exiger MOVIX_PROFILE_ID dans .env.
+        const body = err.response?.data;
+        if (err.response?.status === 400 && body?.code === 'PROFILE_ID_REQUIRED' && body.defaultProfileId) {
+          const retryUrl = `${base}/${body.defaultProfileId}`;
+          console.log(`[sync] profil requis -> nouvel essai avec le profil par defaut ${body.defaultProfileId}`);
+          try {
+            return await attempt(retryUrl);
+          } catch (retryErr) {
+            lastError = { err: retryErr, url: retryUrl };
+          }
+          break;
+        }
       }
     }
 

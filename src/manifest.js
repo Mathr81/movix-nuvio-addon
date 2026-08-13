@@ -34,11 +34,13 @@ function personalCatalogs(type) {
 
 module.exports = {
   id: 'personal.movix.addon',
-  version: '1.2.0',
+  // Stremio/Nuvio mettent le manifest en cache: toute modification visible (nom, logo,
+  // catalogues) doit s'accompagner d'un changement de version pour etre reprise.
+  version: '1.3.0',
   name: 'Movix (perso)',
   description:
     'Catalogue, flux et sous-titres Movix agreges pour usage personnel -- non destine a etre partage ou publie.',
-  logo: 'https://movix.cash/favicon.ico',
+  logo: config.LOGO_URL,
   resources: ['catalog', 'meta', 'stream', 'subtitles'],
   types: ['movie', 'series'],
   idPrefixes: ['tmdb', 'tt'],

@@ -26,7 +26,7 @@ const config = {
 
   MAIN_API_BASE_URL: readEnv('MAIN_API_BASE_URL'),
   PROXIES_EMBED_BASE_URL: readEnv('PROXIES_EMBED_BASE_URL'),
-  SPOOFED_ORIGIN: readEnv('SPOOFED_ORIGIN', 'https://movix.cash'),
+  SPOOFED_ORIGIN: readEnv('SPOOFED_ORIGIN', 'https://movix.fun'),
   VIP_ACCESS_KEY: readEnv('VIP_ACCESS_KEY', ''),
 
   TMDB_API_KEY: readEnv('TMDB_API_KEY'),
@@ -58,6 +58,10 @@ const config = {
   // Langues privilegiees dans le tri des streams (prefixes matches sur le libelle).
   PREFERRED_LANGS: readList('PREFERRED_LANGS', ['MULTI', 'VFF', 'VFQ', 'VF', 'TRUEFRENCH', 'FRENCH']),
 };
+
+// Icone de l'addon. Derivee de SPOOFED_ORIGIN par defaut pour suivre automatiquement
+// les changements de domaine du site (.cash -> .fun -> ...) sans edition de code.
+config.LOGO_URL = readEnv('LOGO_URL', `${config.SPOOFED_ORIGIN.replace(/\/+$/, '')}/favicon.ico`);
 
 if (!config.MAIN_API_BASE_URL) console.warn('[config] MAIN_API_BASE_URL manquant -- voir .env.example');
 if (!config.PROXIES_EMBED_BASE_URL) console.warn('[config] PROXIES_EMBED_BASE_URL manquant -- voir .env.example');
