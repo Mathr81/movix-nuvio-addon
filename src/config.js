@@ -67,6 +67,14 @@ const config = {
   // Rangees "Recommandé pour vous" alimentees par l'algorithme Trakt.
   TRAKT_RECOMMENDATIONS: readBool('TRAKT_RECOMMENDATIONS', true),
 
+  // --- Hub de synchronisation bidirectionnel ---
+  HUB_ENABLED: readBool('HUB_ENABLED', false),
+  // Delai entre deux cycles. C'est ce qui determine la latence percue quand on regarde
+  // quelque chose sur le site: plus bas = plus reactif, mais un cycle interroge Movix
+  // et Nuvio a chaque fois. Plancher a 15 s.
+  HUB_INTERVAL_MS: Math.max(Number(readEnv('HUB_INTERVAL_MS', 45000)), 15000),
+  HUB_STATE_FILE: readEnv('HUB_STATE_FILE', ''),
+
   // --- Simkl (tracker sans limite d'app connectee, integre nativement par Nuvio) ---
   SIMKL_BASE_URL: readEnv('SIMKL_BASE_URL', 'https://api.simkl.com'),
   SIMKL_CLIENT_ID: readEnv('SIMKL_CLIENT_ID', ''),
@@ -76,6 +84,18 @@ const config = {
 
   // Rangee de recommandations calculees localement depuis l'historique Movix (sans compte tiers).
   LOCAL_RECOMMENDATIONS: readBool('LOCAL_RECOMMENDATIONS', true),
+
+  // --- Catalogues ---
+  // Rangees integrees affichees, dans l'ordre. Vide = l'ordre par defaut.
+  // Pour renommer une rangee ou en creer de nouvelles, utiliser catalogs.json.
+  CATALOGS: readList('CATALOGS', null),
+  CATALOGS_FILE: readEnv('CATALOGS_FILE', ''),
+
+  // --- Streams ---
+  // Mesure du debit reel (BANDWIDTH d'un master HLS, ou taille/duree pour un fichier).
+  // Ajoute un aller-retour par lien: desactivable si l'ouverture des fiches devient lente.
+  PROBE_BITRATE: readBool('PROBE_BITRATE', true),
+  PROBE_TIMEOUT_MS: Number(readEnv('PROBE_TIMEOUT_MS', 3500)),
 
   // Sources activees (noms tels qu'exportes par src/sources/*.js).
   ENABLED_SOURCES: readList('ENABLED_SOURCES', null), // null = toutes

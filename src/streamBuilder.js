@@ -2,6 +2,8 @@ const allSources = require('./sources');
 const { extractDirectUrl } = require('./hosterExtract');
 const config = require('./config');
 const cache = require('./cache');
+const tmdbClient = require('./tmdb');
+const { probe, formatBitrate } = require('./probe');
 
 const MAX_CONCURRENT_EXTRACTIONS = 6;
 
@@ -55,6 +57,15 @@ function formatQuality(height) {
   return height >= 2160 ? '4K' : `${height}p`;
 }
 
+/** Duree du titre en secondes, depuis TMDB (runtime film ou duree moyenne d'episode). */
+async function runtimeSeconds(type, tmdbId) {
+  const details = await cache.wrap(`meta:${type}:${tmdbId}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
+    tmdbClient.details(type, tmdbId),
+  );
+  const minutes = type === 'series' ? details.episode_run_time?.[0] : details.runtime;
+  return Number(minutes) > 0 ? Number(minutes) * 60 : null;
+}
+
 async function collectRawLinks({ tmdbId, type, season, episode }) {
   const settled = await Promise.allSettled(sources.map((s) => s.getStreams({ tmdbId, type, season, episode })));
 
@@ -102,15 +113,28 @@ async function buildStreams({ tmdbId, type, season, episode }) {
       return true;
     });
 
-    const enriched = deduped.map((r) => {
-      const height = parseQuality(r.quality, r.player, r.sourceName, r.lang);
-      return { ...r, height, langRank: langScore(r.lang, r.sourceName, r.quality, r.player) };
+    // La duree sert a estimer le debit d'un fichier direct (taille / duree).
+    const durationSeconds = await runtimeSeconds(type, tmdbId).catch(() => null);
+
+    const enriched = await mapLimit(deduped, MAX_CONCURRENT_EXTRACTIONS, async (r) => {
+      const labelled = parseQuality(r.quality, r.player, r.sourceName, r.lang);
+      const measured = r.externalUrl ? {} : await probe(r.url, { durationSeconds });
+      return {
+        ...r,
+        // Une RESOLUTION lue dans un master HLS vaut mieux qu'un libelle "HD" approximatif.
+        height: measured.height || labelled,
+        bitrate: measured.bitrate,
+        bitrateEstimated: measured.estimated,
+        langRank: langScore(r.lang, r.sourceName, r.quality, r.player),
+      };
     });
 
-    // Tri: langue preferee, puis resolution, puis liens directs avant les externes.
+    // Tri: langue preferee, resolution, puis debit -- a resolution egale, c'est le debit
+    // qui separe un vrai 1080p d'un upscale compresse. Les liens externes en dernier.
     enriched.sort((a, b) => {
       if (a.langRank !== b.langRank) return a.langRank - b.langRank;
       if (b.height !== a.height) return b.height - a.height;
+      if ((b.bitrate || 0) !== (a.bitrate || 0)) return (b.bitrate || 0) - (a.bitrate || 0);
       return (a.externalUrl ? 1 : 0) - (b.externalUrl ? 1 : 0);
     });
 
@@ -135,9 +159,13 @@ async function buildStreams({ tmdbId, type, season, episode }) {
       const details = [r.lang, r.hoster || r.player]
         .filter((part) => part && !label.toLowerCase().includes(String(part).toLowerCase()))
         .join(' · ');
+      // Le debit mesure sur un fichier est une estimation (taille/duree): le "~" evite
+      // de le faire passer pour une valeur annoncee par la source.
+      const bitrate = formatBitrate(r.bitrate);
+      const bitrateLabel = bitrate ? `${r.bitrateEstimated ? '~' : ''}${bitrate}` : null;
       const stream = {
-        name: `Movix${quality ? `\n${quality}` : ''}`,
-        title: [label, details].filter(Boolean).join('\n'),
+        name: `Movix${quality ? `\n${quality}` : ''}${bitrateLabel ? `\n${bitrateLabel}` : ''}`,
+        title: [label, [details, bitrateLabel].filter(Boolean).join(' · ')].filter(Boolean).join('\n'),
         behaviorHints: { bingeGroup: `movix-${r.sourceName || 'source'}-${r.height || 'na'}` },
       };
 

@@ -12,6 +12,7 @@ const { pushToTrakt } = require('./src/traktPush');
 const trakt = require('./src/traktCloud');
 const { pushToSimkl } = require('./src/simklPush');
 const simkl = require('./src/simklCloud');
+const hub = require('./src/hub');
 
 const app = express();
 
@@ -167,6 +168,21 @@ app.post('/trakt/push', async (req, res) => {
   }
 });
 
+// --- Hub de synchronisation ----------------------------------------------
+// Declenchement manuel d'un cycle (le hub tourne aussi en boucle si HUB_ENABLED).
+app.post('/hub/sync', async (req, res) => {
+  const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
+  try {
+    const summary = await hub.runCycle({ dryRun });
+    res.status(summary.ok === false ? 400 : 200).json(summary);
+  } catch (err) {
+    console.error(`[hub] echec: ${err.message}`);
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/hub/status', (_req, res) => res.json(hub.status()));
+
 // --- Simkl ---------------------------------------------------------------
 // Meme principe que Trakt, sans la limite d'une seule application connectee.
 app.post('/simkl/auth', async (_req, res) => {
@@ -230,6 +246,8 @@ app.listen(config.PORT, () => {
       pushToTrakt().catch((err) => console.error(`[trakt-push] push periodique echoue: ${err.message}`));
     }, config.TRAKT_PUSH_INTERVAL_MS).unref();
   }
+
+  hub.start();
 
   if (config.SIMKL_PUSH_INTERVAL_MS > 0 && simkl.isAuthenticated()) {
     const minutes = Math.round(config.SIMKL_PUSH_INTERVAL_MS / 60000);

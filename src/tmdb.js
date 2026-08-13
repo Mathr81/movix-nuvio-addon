@@ -52,6 +52,15 @@ async function discover(type, { genreId: gid, page = 1, sortBy = 'popularity.des
   return data.results || [];
 }
 
+/**
+ * Discover brut: les parametres declares dans catalogs.json sont transmis tels quels a
+ * TMDB, ce qui rend une rangee personnalisee aussi expressive que l'API elle-meme.
+ */
+async function discoverWith(type, params = {}, page = 1) {
+  const { data } = await tmdb.get(`/discover/${mediaOf(type)}`, { params: { page, ...params } });
+  return data.results || [];
+}
+
 /** Recupere plusieurs fiches TMDB en parallele (catalogues personnels issus du sync). */
 async function detailsMany(items) {
   const settled = await Promise.allSettled(
@@ -98,6 +107,7 @@ module.exports = {
   topRated,
   nowPlaying,
   discover,
+  discoverWith,
   search,
   details,
   detailsMany,

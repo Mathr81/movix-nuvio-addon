@@ -50,4 +50,8 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000).unref();
 
-module.exports = { get, set, wrap };
+function del(key) {
+  store.delete(key);
+}
+
+module.exports = { get, set, del, wrap };

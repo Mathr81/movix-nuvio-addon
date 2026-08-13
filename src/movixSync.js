@@ -44,6 +44,16 @@ function explainFailure(err, url) {
   }
 }
 
+// Profil reellement utilise par le dernier GET reussi. Le serveur peut nous imposer son
+// profil par defaut (400 PROFILE_ID_REQUIRED); les ecritures doivent viser le meme,
+// sinon elles atterriraient dans un autre profil que celui qu'on vient de lire.
+let resolvedProfileId = config.MOVIX_PROFILE_ID || null;
+
+/** Force la relecture au prochain appel (le hub veut des donnees fraiches, pas le cache TTL). */
+function invalidate() {
+  cache.del('sync:data');
+}
+
 async function fetchSyncData() {
   if (!config.MOVIX_JWT || !config.MOVIX_USER_ID) return null;
 
@@ -58,6 +68,9 @@ async function fetchSyncData() {
         headers: { Authorization: `Bearer ${config.MOVIX_JWT}` },
       });
       const payload = data?.data || {};
+      // Memorise le profil effectivement lu, pour que les ecritures visent le meme.
+      const profileMatch = url.slice(base.length).match(/^\/(.+)$/);
+      resolvedProfileId = profileMatch ? profileMatch[1] : null;
       console.log(`[sync] OK sur ${url} (${Object.keys(payload).length} cles)`);
       return payload;
     }
@@ -259,8 +272,61 @@ async function getAllProgress() {
   return out;
 }
 
+/**
+ * Ecrit dans le compte Movix (POST /api/sync).
+ *
+ * Le serveur n'accepte que des operations sur une liste blanche de cles
+ * (continueWatching, watchlist_*, favorite_*, watched_*, progress_*, cf. syncPolicy.js)
+ * et exige des valeurs deja serialisees en chaine -- d'ou le JSON.stringify ici plutot
+ * qu'au niveau des appelants.
+ */
+async function writeSync(entries) {
+  if (!config.MOVIX_JWT || !config.MOVIX_USER_ID) throw new Error('MOVIX_JWT / MOVIX_USER_ID non renseignes');
+  if (entries.length === 0) return { applied: 0 };
+
+  // Le profil doit etre celui de la derniere lecture: sans lecture prealable on ne sait
+  // pas lequel viser, et ecrire dans le mauvais profil serait pire que ne rien faire.
+  if (!resolvedProfileId) await fetchSyncData();
+
+  const ops = entries.map(({ key, value }) => ({
+    op: 'set',
+    key,
+    value: typeof value === 'string' ? value : JSON.stringify(value),
+  }));
+
+  // maxOpsPerRequest cote serveur: on decoupe pour ne pas se faire rejeter en bloc.
+  const CHUNK = 50;
+  let applied = 0;
+  for (let i = 0; i < ops.length; i += CHUNK) {
+    const chunk = ops.slice(i, i + CHUNK);
+    try {
+      await mainApi.post(
+        '/api/sync',
+        {
+          userType: config.MOVIX_USER_TYPE,
+          userId: config.MOVIX_USER_ID,
+          profileId: resolvedProfileId || undefined,
+          ops: chunk,
+        },
+        { headers: { Authorization: `Bearer ${config.MOVIX_JWT}` } },
+      );
+      applied += chunk.length;
+    } catch (err) {
+      const body = err.response?.data;
+      const detail = body ? JSON.stringify(body).slice(0, 300) : err.message;
+      throw new Error(`ecriture Movix refusee (status ${err.response?.status ?? 'n/a'}): ${detail}`);
+    }
+  }
+
+  // Les donnees locales ne refletent plus le serveur: forcer une relecture au prochain tour.
+  invalidate();
+  return { applied };
+}
+
 module.exports = {
   fetchSyncData,
+  invalidate,
+  writeSync,
   getContinueWatching,
   getCollection,
   getWatched,

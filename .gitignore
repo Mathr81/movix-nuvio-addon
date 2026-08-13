@@ -3,3 +3,4 @@ node_modules/
 logs/
 .trakt-token.json
 .simkl-token.json
+data/

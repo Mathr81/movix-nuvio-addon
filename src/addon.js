@@ -10,6 +10,7 @@ const { genreId } = require('./genres');
 const movixSync = require('./movixSync');
 const trakt = require('./traktCloud');
 const { personalRecommendations } = require('./recommend');
+const catalogs = require('./catalogs');
 
 const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500';
 const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280';
@@ -31,12 +32,12 @@ function toCatalogMeta(item, type) {
  * Catalogues personnels: les entrees synchronisees ne portent qu'un id + un titre,
  * on repasse par TMDB pour obtenir des fiches completes (affiche, synopsis...).
  */
-async function personalCatalog(catalogId, type, page) {
+async function personalCatalog(kind, type, page) {
   const perPage = 20;
   const entries =
-    catalogId.endsWith('continue')
+    kind === 'continue'
       ? await movixSync.getContinueWatching(type)
-      : await movixSync.getCollection(catalogId.endsWith('watchlist') ? 'watchlist' : 'favorites', type);
+      : await movixSync.getCollection(kind === 'watchlist' ? 'watchlist' : 'favorites', type);
 
   const slice = entries.slice((page - 1) * perPage, page * perPage);
   if (slice.length === 0) return [];
@@ -82,17 +83,19 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
   const page = extra?.skip ? Math.floor(Number(extra.skip) / 20) + 1 : 1;
   const genre = extra?.genre;
   const cacheKey = `catalog:${type}:${id}:${extra?.search || ''}:${genre || ''}:${page}`;
+  const def = catalogs.find(id);
+  const kind = def?.builtin;
 
   try {
     // Les catalogues personnels ont leur propre cache (TTL sync) et ne sont pas memoises ici,
     // sinon ajouter un film a sa liste sur le site mettrait 30 min a apparaitre.
-    if (id.startsWith('movix-continue') || id.startsWith('movix-watchlist') || id.startsWith('movix-favorites')) {
-      return { metas: await personalCatalog(id, type, page) };
+    if (kind === 'continue' || kind === 'watchlist' || kind === 'favorites') {
+      return { metas: await personalCatalog(kind, type, page) };
     }
 
     // Recommandations locales: un calcul = 12 appels TMDB, a ne pas refaire a chaque
     // ouverture de l'accueil.
-    if (id.startsWith('movix-reco')) {
+    if (kind === 'reco') {
       const items = await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
         personalRecommendations(type),
       );
@@ -101,7 +104,7 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
 
     // Les recommandations changent lentement (Trakt les recalcule au fil de l'historique)
     // mais chaque appel coute un aller-retour Trakt + N fiches TMDB: on memoise la page.
-    if (id.startsWith('movix-trakt-reco')) {
+    if (kind === 'trakt-reco') {
       return {
         metas: await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
           traktRecommendations(type, page),
@@ -112,15 +115,22 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
     const items = await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
       if (extra?.search) return tmdbClient.search(type, extra.search, page);
 
+      // Rangee personnalisee (catalogs.json): les parametres Discover font foi, le genre
+      // choisi dans l'interface vient s'y ajouter sans les ecraser.
+      if (def && !kind) {
+        const gid = genreId(type, genre);
+        return tmdbClient.discoverWith(type, { ...def.discover, ...(gid ? { with_genres: gid } : {}) }, page);
+      }
+
       const gid = genreId(type, genre);
       if (gid) {
-        const sortBy = id.endsWith('toprated') ? 'vote_average.desc' : 'popularity.desc';
+        const sortBy = kind === 'toprated' ? 'vote_average.desc' : 'popularity.desc';
         return tmdbClient.discover(type, { genreId: gid, page, sortBy });
       }
 
-      if (id.endsWith('trending')) return tmdbClient.trending(type, page);
-      if (id.endsWith('toprated')) return tmdbClient.topRated(type, page);
-      if (id.endsWith('new')) return tmdbClient.nowPlaying(type, page);
+      if (kind === 'trending') return tmdbClient.trending(type, page);
+      if (kind === 'toprated') return tmdbClient.topRated(type, page);
+      if (kind === 'new') return tmdbClient.nowPlaying(type, page);
       return tmdbClient.popular(type, page);
     });
 

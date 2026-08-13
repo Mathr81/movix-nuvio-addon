@@ -1,0 +1,29 @@
+[
+  { "id": "continue" },
+  { "id": "watchlist" },
+  { "id": "reco", "name": "À voir ensuite" },
+  { "id": "trending" },
+
+  {
+    "id": "films-fr-recents",
+    "name": "Films français récents",
+    "types": ["movie"],
+    "discover": {
+      "with_original_language": "fr",
+      "sort_by": "primary_release_date.desc",
+      "vote_count.gte": 30
+    }
+  },
+  {
+    "id": "anime",
+    "name": "Animation japonaise",
+    "types": ["series"],
+    "discover": { "with_genres": 16, "with_original_language": "ja", "sort_by": "popularity.desc" }
+  },
+  {
+    "id": "pepites",
+    "name": "Pépites méconnues",
+    "genres": true,
+    "discover": { "sort_by": "vote_average.desc", "vote_count.gte": 200, "vote_count.lte": 2000 }
+  }
+]

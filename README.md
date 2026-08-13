@@ -45,6 +45,36 @@ affiché par le SDK est une chaîne fixe, pas le reflet du binding réel.
 | `stream` | Agrégation de 7 sources Movix + extraction serveur des embeds |
 | `subtitles` | OpenSubtitles, converti à la volée en WebVTT |
 
+### Catalogues personnalisables
+
+Trois niveaux, du plus simple au plus libre :
+
+1. **Choisir et ordonner** les rangées intégrées — `CATALOGS` dans `.env` :
+   ```bash
+   CATALOGS=continue,watchlist,reco,trending,popular
+   ```
+   Ids disponibles : `continue`, `watchlist`, `favorites`, `reco`, `trakt-reco`,
+   `trending`, `popular`, `toprated`, `new`. L'ordre de la liste est l'ordre d'affichage.
+
+2. **Renommer / créer des rangées** — copie `catalogs.example.json` en `catalogs.json`
+   (il prend alors le pas sur `CATALOGS`). Une rangée personnalisée est un jeu de
+   paramètres **TMDB Discover** transmis tels quels, donc aussi expressive que l'API :
+   ```json
+   [
+     { "id": "watchlist" },
+     { "id": "trending", "name": "Le moment" },
+     { "id": "films-fr", "name": "Films français", "types": ["movie"],
+       "discover": { "with_original_language": "fr", "sort_by": "primary_release_date.desc" } }
+   ]
+   ```
+   `types` restreint aux films ou aux séries, `genres: true` ajoute le filtre par genre,
+   `disabled: true` masque sans supprimer.
+
+3. Tout ce qui n'est pas déclaré n'apparaît pas.
+
+> Après modification, **redémarre l'addon** et incrémente `version` dans `src/manifest.js`
+> si Nuvio garde l'ancienne liste en cache.
+
 ### Catalogues personnels (sync compte Movix)
 
 Si `MOVIX_JWT` + `MOVIX_USER_ID` sont renseignés, trois rangées supplémentaires
@@ -85,9 +115,48 @@ Ce qui est transféré :
 > d'abord la bibliothèque existante et fusionne avant d'envoyer : ce que tu as ajouté
 > depuis Nuvio est préservé. Ne contourne pas cette étape.
 
-> Le sens est Movix → Nuvio uniquement. Ce que tu regardes *dans* Nuvio ne remonte pas
-> vers le site : Nuvio ne notifie pas les addons de la lecture. Le pont Trakt ci-dessous
-> résout ce point.
+> Ce push est unidirectionnel. Pour les deux sens, voir le **hub** ci-dessous.
+
+### Hub de synchronisation (les deux sens, en continu)
+
+Le hub fait circuler les données **Movix ↔ Nuvio Sync**, et recopie le tout vers Simkl.
+Tu peux commencer un film sur le site et le reprendre dans Nuvio, ou l'inverse.
+
+```bash
+HUB_ENABLED=true
+HUB_INTERVAL_MS=45000   # plancher 15000
+```
+
+```bash
+npm run hub:dry     # montre ce qui serait propagé, n'écrit rien
+npm run hub:once    # un cycle
+curl http://localhost:8787/hub/status
+curl -X POST http://localhost:8787/hub/sync
+```
+
+**Comment il décide.** Le hub compare chaque côté à un instantané du tour précédent
+(`data/hub-state.json`) plutôt que de se fier à des horodatages : Movix n'estampille pas
+ses clés `progress_*`, donc « qui est le plus récent » est indécidable — alors que
+« qu'est-ce qui a changé depuis le dernier tour » est exact des deux côtés. Le premier
+cycle, sans instantané, traite tout comme nouveau et produit l'union des deux comptes.
+
+| | Sens | Contenu |
+|---|---|---|
+| Movix ↔ Nuvio | bidirectionnel | listes, titres et épisodes vus, positions de lecture |
+| → Simkl | miroir seulement | historique et listes (jamais une source) |
+
+- **Conflit sur une même position** (les deux côtés ont bougé) : la position la plus
+  avancée gagne.
+- **Simkl ne reçoit pas les positions** : son API n'a pas d'endpoint de progression, et
+  sa progression n'est de toute façon conservée qu'une semaine.
+- L'instantané n'est enregistré qu'en cas de succès complet — un échec partiel est
+  rejoué au cycle suivant plutôt qu'oublié.
+- Les objets écrits côté Movix reproduisent exactement les formes du site
+  (`{id, type, title, poster_path, addedAt}`, `continueWatching`, `watched_episodes_tv_*`),
+  pour que l'interface du site les affiche normalement.
+
+> La latence perçue est `HUB_INTERVAL_MS`. Descendre à 15–20 s rend la reprise quasi
+> immédiate, au prix d'un aller-retour Movix + Nuvio à chaque cycle.
 
 ### Quel tracker choisir (⚠️ limite Trakt gratuit)
 
@@ -195,8 +264,19 @@ darkibox et oneupload (scraping HTML direct).
 extracteur (ni serveur, ni extension) — ce sont uniquement des motifs de détection pour
 l'ordre de priorité. Rien à porter.
 
-Les streams sont triés : langue préférée d'abord (français par défaut), puis résolution
-décroissante.
+### Débit affiché
+
+Chaque stream annonce son **débit** à côté de la résolution :
+
+- **HLS** — le master playlist déclare lui-même `BANDWIDTH` et `RESOLUTION` par variante.
+  Valeur exacte, et la résolution lue là est plus fiable qu'un libellé « HD » de la source.
+- **Fichier direct** — taille (`HEAD`, ou `GET Range` si le hoster refuse `HEAD`) divisée
+  par la durée TMDB. C'est une estimation, préfixée `~`.
+
+Les streams sont triés : langue préférée d'abord (français par défaut), puis résolution,
+puis **débit** — à résolution égale, c'est lui qui sépare un vrai 1080p d'un upscale
+compressé. `PROBE_BITRATE=false` désactive la mesure si l'ouverture des fiches devient
+lente (elle coûte un aller-retour par lien, mis en cache ensuite).
 
 ## Diagnostic
 

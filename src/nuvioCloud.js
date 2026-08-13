@@ -103,6 +103,26 @@ async function pullLibrary(profileId) {
   return all;
 }
 
+/**
+ * Lectures symetriques des push. Elles alimentent le hub: c'est par la que remonte ce
+ * qui a ete regarde DANS Nuvio, invisible autrement (le protocole d'addon ne notifie
+ * jamais la lecture).
+ */
+async function pullPaginated(name, profileId) {
+  const limit = 500;
+  const all = [];
+  for (let offset = 0; offset < 100000; offset += limit) {
+    const batch = await rpc(name, { p_profile_id: profileId, p_limit: limit, p_offset: offset });
+    const rows = Array.isArray(batch) ? batch : [];
+    all.push(...rows);
+    if (rows.length < limit) break;
+  }
+  return all;
+}
+
+const pullWatchedItems = (profileId) => pullPaginated('sync_pull_watched_items', profileId);
+const pullWatchProgress = (profileId) => pullPaginated('sync_pull_watch_progress', profileId);
+
 async function pushLibrary(profileId, items) {
   return rpc('sync_push_library', { p_profile_id: profileId, p_items: items });
 }
@@ -115,4 +135,13 @@ async function pushWatchProgress(profileId, entries) {
   return rpc('sync_push_watch_progress', { p_profile_id: profileId, p_entries: entries });
 }
 
-module.exports = { rpc, pullProfiles, pullLibrary, pushLibrary, pushWatchedItems, pushWatchProgress };
+module.exports = {
+  rpc,
+  pullProfiles,
+  pullLibrary,
+  pullWatchedItems,
+  pullWatchProgress,
+  pushLibrary,
+  pushWatchedItems,
+  pushWatchProgress,
+};
