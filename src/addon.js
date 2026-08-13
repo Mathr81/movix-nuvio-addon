@@ -1,8 +1,11 @@
 const { addonBuilder } = require('stremio-addon-sdk');
 const manifest = require('./manifest');
 const tmdbClient = require('./tmdb');
+const config = require('./config');
+const cache = require('./cache');
 const { resolveId } = require('./idResolver');
 const { buildStreams } = require('./streamBuilder');
+const { buildSubtitles } = require('./subtitles');
 
 const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500';
 const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280';
@@ -22,22 +25,24 @@ function toCatalogMeta(item, type) {
 
 builder.defineCatalogHandler(async ({ type, id, extra }) => {
   const page = extra?.skip ? Math.floor(Number(extra.skip) / 20) + 1 : 1;
+  const cacheKey = `catalog:${type}:${id}:${extra?.search || ''}:${page}`;
 
-  let items = [];
-  if (extra?.search) {
-    items = await tmdbClient.search(type, extra.search, page);
-  } else if (id.endsWith('trending')) {
-    items = await tmdbClient.trending(type, page);
-  } else {
-    items = await tmdbClient.popular(type, page);
-  }
+  const items = await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
+    if (extra?.search) return tmdbClient.search(type, extra.search, page);
+    if (id.endsWith('trending')) return tmdbClient.trending(type, page);
+    return tmdbClient.popular(type, page);
+  });
 
   return { metas: items.map((item) => toCatalogMeta(item, type)) };
 });
 
 builder.defineMetaHandler(async ({ type, id }) => {
   const { tmdbId } = await resolveId(type, id);
-  const details = await tmdbClient.details(type, tmdbId);
+  // Une serie declenche un fetch TMDB par saison -- sans cache, chaque ouverture de fiche
+  // repaye la totalite de ces appels.
+  const details = await cache.wrap(`meta:${type}:${tmdbId}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
+    tmdbClient.details(type, tmdbId),
+  );
 
   const meta = {
     id: `tmdb:${tmdbId}`,
@@ -54,7 +59,9 @@ builder.defineMetaHandler(async ({ type, id }) => {
 
   if (type === 'series') {
     const seasonNumbers = (details.seasons || []).map((s) => s.season_number).filter((n) => n > 0);
-    const seasonsData = await Promise.all(seasonNumbers.map((n) => tmdbClient.season(tmdbId, n).catch(() => null)));
+    const seasonsData = await cache.wrap(`seasons:${tmdbId}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
+      Promise.all(seasonNumbers.map((n) => tmdbClient.season(tmdbId, n).catch(() => null))),
+    );
 
     meta.videos = seasonsData
       .filter(Boolean)
@@ -81,6 +88,20 @@ builder.defineStreamHandler(async ({ type, id }) => {
   } catch (err) {
     console.error('[stream] erreur:', err.message);
     return { streams: [] };
+  }
+});
+
+builder.defineSubtitlesHandler(async ({ type, id }) => {
+  try {
+    const { tmdbId, season, episode } = await resolveId(type, id);
+    // Les sous-titres sont servis par notre propre route /subtitle.vtt (conversion .gz -> .vtt),
+    // il faut donc une URL que l'appareil de lecture sait joindre.
+    const publicBaseUrl = config.PUBLIC_URL || `http://127.0.0.1:${config.PORT}`;
+    const subtitles = await buildSubtitles({ type, tmdbId, season, episode, publicBaseUrl });
+    return { subtitles };
+  } catch (err) {
+    console.error('[subtitles] erreur:', err.message);
+    return { subtitles: [] };
   }
 });
 

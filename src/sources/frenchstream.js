@@ -1,41 +1,73 @@
 const { mainApi } = require('../movixClient');
+const tmdbClient = require('../tmdb');
 const log = require('../log');
 
-// FrenchStream, monte sur /api/imdb/:type/:id (Mainapi/routes/tmdb.js:553).
+// FrenchStream ("Omega" cote site), monte sur /api/imdb/:type/:id (Mainapi/routes/tmdb.js:553).
+// ATTENTION: cette route attend un id IMDB (ttXXXXXXX), pas un id TMDB -- le frontend resout
+// d'abord l'imdb_id via TMDB (WatchMovie.tsx:759-762). Passer un id TMDB renvoie
+// systematiquement {message:'Contenu non disponible'}.
+//
 // Film: {iframe_src, player_links}. Serie: series[].seasons[].episodes[].versions.<lang>.players[].
-async function getStreams({ tmdbId, type, season, episode }) {
-  try {
-    const mediaType = type === 'series' ? 'tv' : 'movie';
-    const { data } = await mainApi.get(`/api/imdb/${mediaType}/${tmdbId}`);
 
-    if (mediaType === 'movie') {
-      const links = data.player_links || [];
-      const results = links
-        .filter((p) => p.link || p.url)
-        .map((p) => ({ url: p.link || p.url, player: p.player || p.name, sourceName: 'FrenchStream' }));
-      if (data.iframe_src) results.push({ url: data.iframe_src, sourceName: 'FrenchStream' });
-      log.ok('FrenchStream', tmdbId, `${results.length} lien(s) (cles reponse: ${Object.keys(data).join(',')})`);
-      return results;
-    }
+function collectMoviePlayers(data) {
+  const results = (data.player_links || [])
+    .filter((p) => p.link || p.url)
+    .map((p) => ({
+      url: p.link || p.url,
+      player: p.player || p.name,
+      quality: p.is_hd ? '1080p' : undefined,
+      sourceName: 'FrenchStream',
+    }));
+  if (data.iframe_src) results.push({ url: data.iframe_src, sourceName: 'FrenchStream' });
+  return results;
+}
 
-    const seasons = data.series?.[0]?.seasons || data.seasons || [];
+function collectEpisodePlayers(data, season, episode) {
+  const seriesList = Array.isArray(data.series) ? data.series : [];
+  const results = [];
+
+  for (const serie of seriesList) {
+    const seasons = serie.seasons || [];
     const seasonData =
-      seasons.find((s) => Number(s.season_number || s.number) === Number(season)) || seasons[Number(season) - 1];
-    const ep =
-      seasonData?.episodes?.find((e) => Number(e.episode_number || e.number) === Number(episode)) ||
-      seasonData?.episodes?.[Number(episode) - 1];
+      seasons.find((s) => Number(s.season_number ?? s.number ?? s.season) === Number(season)) ||
+      seasons[Number(season) - 1];
+    if (!seasonData) continue;
 
-    const results = [];
-    if (ep?.versions) {
-      for (const [lang, versionData] of Object.entries(ep.versions)) {
-        for (const p of versionData.players || []) {
-          if (p.link || p.url) results.push({ url: p.link || p.url, player: p.name, lang, sourceName: 'FrenchStream' });
+    const episodes = seasonData.episodes || [];
+    const ep =
+      episodes.find((e) => Number(e.episode_number ?? e.number ?? e.episode) === Number(episode)) ||
+      episodes[Number(episode) - 1];
+    if (!ep?.versions) continue;
+
+    for (const [lang, versionData] of Object.entries(ep.versions)) {
+      for (const p of versionData?.players || []) {
+        if (p.link || p.url) {
+          results.push({ url: p.link || p.url, player: p.name || p.player, lang, sourceName: 'FrenchStream' });
         }
       }
-    } else {
-      log.ok('FrenchStream', tmdbId, `episode S${season}E${episode} introuvable dans la reponse (saisons trouvees: ${seasons.length})`);
     }
-    log.ok('FrenchStream', tmdbId, `${results.length} lien(s) pour S${season}E${episode}`);
+  }
+  return results;
+}
+
+async function getStreams({ tmdbId, type, season, episode }) {
+  try {
+    const imdbId = await tmdbClient.getImdbId(type, tmdbId);
+    if (!imdbId) {
+      log.ok('FrenchStream', tmdbId, 'pas d\'id IMDB sur TMDB -- source ignoree');
+      return [];
+    }
+
+    const mediaType = type === 'series' ? 'tv' : 'movie';
+    const { data } = await mainApi.get(`/api/imdb/${mediaType}/${imdbId}`);
+
+    if (data.message === 'Contenu non disponible') {
+      log.ok('FrenchStream', tmdbId, `indisponible sur FrenchStream (imdb=${imdbId})`);
+      return [];
+    }
+
+    const results = mediaType === 'movie' ? collectMoviePlayers(data) : collectEpisodePlayers(data, season, episode);
+    log.ok('FrenchStream', tmdbId, `${results.length} lien(s) (imdb=${imdbId}, cles: ${Object.keys(data).join(',')})`);
     return results;
   } catch (err) {
     log.fail('FrenchStream', tmdbId, err);

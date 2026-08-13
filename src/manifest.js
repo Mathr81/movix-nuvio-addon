@@ -4,7 +4,7 @@ module.exports = {
   name: 'Movix (perso)',
   description: 'Catalogue et flux Movix agreges pour usage personnel -- non destine a etre partage ou publie.',
   logo: 'https://movix.cash/favicon.ico',
-  resources: ['catalog', 'meta', 'stream'],
+  resources: ['catalog', 'meta', 'stream', 'subtitles'],
   types: ['movie', 'series'],
   idPrefixes: ['tmdb', 'tt'],
   catalogs: [

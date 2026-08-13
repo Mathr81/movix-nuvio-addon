@@ -41,4 +41,15 @@ async function findByImdbId(imdbId) {
   return data;
 }
 
-module.exports = { trending, popular, search, details, season, findByImdbId };
+/**
+ * Recupere l'id IMDB (ttXXXXXXX) a partir d'un id TMDB.
+ * Necessaire pour /api/imdb/:type/:id cote Mainapi, qui attend un id IMDB et pas TMDB
+ * (le frontend fait exactement ce detour, cf. WatchMovie.tsx:759-762).
+ */
+async function getImdbId(type, tmdbId) {
+  const path = type === 'series' ? `/tv/${tmdbId}/external_ids` : `/movie/${tmdbId}/external_ids`;
+  const { data } = await tmdb.get(path);
+  return data.imdb_id || null;
+}
+
+module.exports = { trending, popular, search, details, season, findByImdbId, getImdbId };

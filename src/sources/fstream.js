@@ -6,8 +6,11 @@ const log = require('../log');
 function flattenOrganized(organized) {
   const out = [];
   for (const [lang, players] of Object.entries(organized || {})) {
-    for (const p of players || []) {
-      if (p.url) out.push({ url: p.url, player: p.player, quality: p.quality, lang, sourceName: 'FStream' });
+    if (!Array.isArray(players)) continue;
+    for (const p of players) {
+      if (p && p.url) {
+        out.push({ url: p.url, player: p.player, quality: p.quality, lang, episode: p.episode, sourceName: 'FStream' });
+      }
     }
   }
   return out;
@@ -17,23 +20,35 @@ async function getStreams({ tmdbId, type, season, episode }) {
   try {
     if (type === 'movie') {
       const { data } = await mainApi.get(`/api/fstream/movie/${tmdbId}`);
-      const results = flattenOrganized(data.players?.organized);
-      log.ok('FStream', tmdbId, `${results.length} lien(s) (success=${data.success}, cles: ${Object.keys(data).join(',')})`);
+      // La route renvoie `players: players.organized` (fstream.js:1571) -- `data.players` EST
+      // deja la map {VFQ,VFF,VOSTFR,Default}, il n'y a pas de niveau `.organized` en dessous.
+      const results = flattenOrganized(data.players);
+      log.ok('FStream', tmdbId, `${results.length} lien(s) (total annonce=${data.total}, success=${data.success})`);
       return results;
     }
 
-    // Route saison entiere -- l'episode precis se filtre cote reponse si presente (structure
-    // exacte non entierement documentee: a ajuster si le format differe en pratique).
+    // Series: la route renvoie l'ensemble de la saison. Les players portent un champ
+    // `episode` (voir getSeriesPlayersForUrl -> apiEpisodes), on filtre dessus.
     const { data } = await mainApi.get(`/api/fstream/tv/${tmdbId}/season/${season}`);
-    const episodes = data.episodes || data.players?.episodes;
-    let results;
-    if (Array.isArray(episodes)) {
-      const ep = episodes.find((e) => Number(e.episode_number || e.episode) === Number(episode));
-      results = flattenOrganized(ep?.players?.organized || ep?.organized);
-    } else {
-      results = flattenOrganized(data.players?.organized);
+
+    // Forme 1: `episodes` = map/array indexee par numero d'episode.
+    const episodes = data.episodes;
+    if (episodes && typeof episodes === 'object') {
+      const entry = Array.isArray(episodes)
+        ? episodes.find((e) => Number(e.episode_number ?? e.episode) === Number(episode))
+        : episodes[String(episode)];
+      if (entry) {
+        const organized = entry.languages || entry.players || entry.organized || entry;
+        const results = flattenOrganized(organized);
+        log.ok('FStream', tmdbId, `${results.length} lien(s) pour S${season}E${episode} (via data.episodes)`);
+        return results;
+      }
     }
-    log.ok('FStream', tmdbId, `${results.length} lien(s) pour S${season}E${episode} (cles reponse: ${Object.keys(data).join(',')})`);
+
+    // Forme 2: map de langues a plat, chaque player portant son numero d'episode.
+    const all = flattenOrganized(data.players);
+    const results = all.filter((p) => p.episode === undefined || Number(p.episode) === Number(episode));
+    log.ok('FStream', tmdbId, `${results.length}/${all.length} lien(s) pour S${season}E${episode} (filtre par episode)`);
     return results;
   } catch (err) {
     log.fail('FStream', tmdbId, err);

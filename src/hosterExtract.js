@@ -20,7 +20,6 @@ function detectHoster(url, playerNameHint) {
   for (const [hoster, patterns] of Object.entries(HOSTER_PATTERNS)) {
     if (patterns.some((pattern) => pattern.test(haystack))) return hoster;
   }
-  console.warn(`[extract] hoster non reconnu pour "${url}" (player="${playerNameHint || ''}") -- lien ignore`);
   return null;
 }
 
@@ -28,7 +27,9 @@ function detectHoster(url, playerNameHint) {
 // src/utils/extractM3u8.ts cote frontend (verifie ligne par ligne).
 async function extractDirectUrl(embedUrl, playerNameHint) {
   const hoster = detectHoster(embedUrl, playerNameHint);
-  if (!hoster) return null;
+  // Pas d'extracteur connu: le lien reste un embed HTML, injouable tel quel par
+  // Stremio/Nuvio qui attendent une URL video directe.
+  if (!hoster) return { ok: false, reason: 'no-extractor' };
 
   let data;
   try {
@@ -71,12 +72,12 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
         ({ data } = await mainApi.get('/api/extract-dropload', { params: { url: embedUrl } }));
         break;
       default:
-        return null;
+        return { ok: false, reason: 'no-extractor', hoster };
     }
   } catch (err) {
     const status = err.response?.status;
     console.warn(`[extract:${hoster}] echec HTTP pour ${embedUrl}: status=${status ?? 'n/a'} msg=${err.message}`);
-    return null;
+    return { ok: false, reason: 'http-error', hoster, status };
   }
 
   const url =
@@ -84,10 +85,10 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
 
   if (!url) {
     console.warn(`[extract:${hoster}] reponse OK mais aucun champ URL reconnu pour ${embedUrl} -- reponse: ${JSON.stringify(data).slice(0, 300)}`);
-    return null;
+    return { ok: false, reason: 'no-url-field', hoster };
   }
 
-  return { url, hoster };
+  return { ok: true, url, hoster };
 }
 
 module.exports = { detectHoster, extractDirectUrl };

@@ -5,11 +5,16 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function extractPlayers(data) {
-  const players = data.players || data.links || [];
-  return (Array.isArray(players) ? players : [])
-    .filter((p) => p.url || p.link)
-    .map((p) => ({ url: p.url || p.link, player: p.player || p.name, quality: p.quality, lang: p.lang, sourceName: 'Wiflix' }));
+// Les players Wiflix ont la forme {name, url, episode, type} ou `type` porte la version
+// (vf/vostfr) et `name` le domaine du hoster (wiflix.js:389-394, 432-437).
+function extractPlayers(data, episode) {
+  const players = Array.isArray(data.players) ? data.players : [];
+  return players
+    .filter((p) => p.url)
+    // La route TV renvoie TOUTE la saison: sans ce filtre, l'episode 1 remonterait
+    // les liens de tous les episodes.
+    .filter((p) => episode === undefined || p.episode === undefined || Number(p.episode) === Number(episode))
+    .map((p) => ({ url: p.url, player: p.name, lang: p.type, sourceName: 'Wiflix' }));
 }
 
 // Wiflix scrape en tache de fond et repond 202 {pending:true} pendant la premiere recherche
@@ -33,14 +38,15 @@ async function getStreams({ tmdbId, type, season, episode }) {
     if (type === 'movie') {
       data = await pollUntilReady(`/api/wiflix/movie/${tmdbId}`);
     } else {
-      data = await pollUntilReady(`/api/wiflix/tv/${tmdbId}/${season}`, { episode });
+      data = await pollUntilReady(`/api/wiflix/tv/${tmdbId}/${season}`);
     }
     if (!data) {
       log.ok('Wiflix', tmdbId, 'pas de reponse exploitable (toujours pending ou statut inattendu)');
       return [];
     }
-    const results = extractPlayers(data);
-    log.ok('Wiflix', tmdbId, `${results.length} lien(s) (success=${data.success}, cles: ${Object.keys(data).join(',')})`);
+    const total = Array.isArray(data.players) ? data.players.length : 0;
+    const results = extractPlayers(data, type === 'movie' ? undefined : episode);
+    log.ok('Wiflix', tmdbId, `${results.length}/${total} lien(s) retenus (success=${data.success})`);
     return results;
   } catch (err) {
     log.fail('Wiflix', tmdbId, err);
