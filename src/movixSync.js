@@ -288,11 +288,15 @@ async function writeSync(entries) {
   // pas lequel viser, et ecrire dans le mauvais profil serait pire que ne rien faire.
   if (!resolvedProfileId) await fetchSyncData();
 
-  const ops = entries.map(({ key, value }) => ({
-    op: 'set',
-    key,
-    value: typeof value === 'string' ? value : JSON.stringify(value),
-  }));
+  // L'operation demandee fait foi. Forcer `set` partout transformait un `remove` en
+  // `set` sans valeur: JSON.stringify(undefined) rend undefined, pas une chaine, et le
+  // serveur rejetait tout le lot en INVALID_SET_VALUE.
+  const ops = entries.map(({ key, value, op = 'set' }) =>
+    op === 'set' ? { op, key, value: typeof value === 'string' ? value : JSON.stringify(value) } : { op, key },
+  );
+
+  const unsupported = ops.find((o) => !['set', 'remove', 'arrayClear'].includes(o.op));
+  if (unsupported) throw new Error(`operation de sync non supportee: ${unsupported.op}`);
 
   // maxOpsPerRequest cote serveur: on decoupe pour ne pas se faire rejeter en bloc.
   const CHUNK = 50;

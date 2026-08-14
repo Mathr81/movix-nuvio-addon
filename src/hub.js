@@ -291,7 +291,7 @@ async function readSimkl() {
  * relance une propagation inutile et, pire, annule une vraie suppression faite entre
  * temps (notre echo compterait comme un ajout concurrent).
  */
-function snapshot(model, additions, removals) {
+function snapshot(model, additions, removals, readable = ['library', 'watched', 'progress']) {
   const library = new Set(model.library.keys());
   const watched = new Set(model.watched.keys());
   // La position arrondie a la seconde suffit a detecter une lecture; la garder brute
@@ -299,9 +299,17 @@ function snapshot(model, additions, removals) {
   const progress = Object.fromEntries([...model.progress].map(([k, v]) => [k, Math.round(v.position)]));
 
   if (additions) {
-    for (const e of additions.library) library.add(libKey(e.type, e.id));
-    for (const e of additions.watched) watched.add(watchedKey(e.type, e.id, e.season, e.episode));
-    for (const e of additions.progress) progress[progressKey(e.type, e.id, e.season, e.episode)] = Math.round(e.position);
+    // On ne projette que ce que la source sait relire. Projeter une categorie ecrite
+    // mais jamais relue (les positions cote Simkl, envoyees en scrobble et absentes de
+    // /sync/all-items) la ferait passer pour disparue au tour suivant -- et le hub
+    // propagerait cette fausse disparition en suppression chez les deux autres.
+    if (readable.includes('library')) for (const e of additions.library) library.add(libKey(e.type, e.id));
+    if (readable.includes('watched')) {
+      for (const e of additions.watched) watched.add(watchedKey(e.type, e.id, e.season, e.episode));
+    }
+    if (readable.includes('progress')) {
+      for (const e of additions.progress) progress[progressKey(e.type, e.id, e.season, e.episode)] = Math.round(e.position);
+    }
   }
   if (removals) {
     for (const key of removals.library) library.delete(key);
@@ -993,7 +1001,9 @@ async function runCycle({ dryRun = false } = {}) {
       saveState({
         movix: snapshot(movix, toMovix, removeInMovix),
         nuvio: snapshot(nuvioModel, toNuvio, removeInNuvio),
-        simkl: snapshot(simklModel, toSimkl, removeInSimkl),
+        // Simkl n'expose pas les positions en lecture: elles partent en scrobble et ne
+        // reviennent jamais. Les inscrire dans son instantane serait une fausse promesse.
+        simkl: snapshot(simklModel, toSimkl, removeInSimkl, ['library', 'watched']),
       });
     }
 
