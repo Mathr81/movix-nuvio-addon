@@ -120,6 +120,38 @@ const config = {
   // Sources activees (noms tels qu'exportes par src/sources/*.js).
   ENABLED_SOURCES: readList('ENABLED_SOURCES', null), // null = toutes
 
+  // --- Addons (sources autonomes, hors Movix) ------------------------------
+  // Ids tels qu'exportes par src/addons/*.js. null = tous ceux qui sont installes.
+  ENABLED_ADDONS: readList('ENABLED_ADDONS', null),
+
+  // Proxy de flux interne: c'est lui qui rejoue les en-tetes (Origin/Referer/UA...) que
+  // les CDN de ces sources exigent et que Nuvio/Stremio ne savent pas poser eux-memes.
+  // Le desactiver rend injouables tous les addons qui en dependent.
+  STREAM_PROXY_ENABLED: readBool('STREAM_PROXY_ENABLED', true),
+  // Secret de signature des URLs proxifiees. Sans lui, la route serait un relais HTTP
+  // ouvert. Vide = secret aleatoire au demarrage: les liens deja distribues a Nuvio
+  // cessent alors de fonctionner a chaque redemarrage.
+  STREAM_PROXY_SECRET: readEnv('STREAM_PROXY_SECRET', ''),
+  STREAM_PROXY_TIMEOUT_MS: Number(readEnv('STREAM_PROXY_TIMEOUT_MS', 20000)),
+
+  // --- Aether (aether.bar -- serveurs aurora/lul/link) ---------------------
+  AETHER_SITE_ORIGIN: readEnv('AETHER_SITE_ORIGIN', 'https://aether.bar'),
+  AETHER_API_DOMAIN: readEnv('AETHER_API_DOMAIN', 'aether.cx'),
+  AETHER_SERVERS: readList('AETHER_SERVERS', ['aurora', 'lul', 'link']),
+  // Proxy HLS officiel du site, par lequel passe le serveur "link" (son CDN n'accepte que
+  // l'Origin d'un tiers). Change de nom d'hote de temps en temps.
+  AETHER_M3U8_PROXY: readEnv('AETHER_M3U8_PROXY', 'https://jbam.aether.bar/m3u8-proxy'),
+  // Aucune des trois API n'annonce la langue de la piste: on l'etiquette a la main pour
+  // que le tri par PREFERRED_LANGS reste coherent.
+  AETHER_LANG: readEnv('AETHER_LANG', 'VO'),
+
+  // --- Obrigoz (obrigoz.com) ------------------------------------------------
+  OBRIGOZ_BASE_URL: readEnv('OBRIGOZ_BASE_URL', 'https://obrigoz.com'),
+  // Segment de chemin volatil du site (https://obrigoz.com/<prefix>/home/obrigoz).
+  // A mettre a jour ici quand le site le fait tourner, sans toucher au code.
+  OBRIGOZ_PATH_PREFIX: readEnv('OBRIGOZ_PATH_PREFIX', '2662df1'),
+  OBRIGOZ_LANG: readEnv('OBRIGOZ_LANG', 'VF'),
+
   // Langues de sous-titres proposees (codes OpenSubtitles ISO 639-2, ex: fre,eng).
   SUBTITLE_LANGS: readList('SUBTITLE_LANGS', ['fre', 'eng']),
   SUBTITLES_ENABLED: readBool('SUBTITLES_ENABLED', true),

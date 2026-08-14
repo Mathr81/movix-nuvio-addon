@@ -2,6 +2,7 @@ const axios = require('axios');
 const https = require('https');
 const config = require('./config');
 const cache = require('./cache');
+const streamProxy = require('./streamProxy');
 
 /**
  * Mesure du debit d'un lien, pour l'afficher a cote de la resolution.
@@ -116,7 +117,9 @@ function makeClient(headers) {
 }
 
 function directAccess(url, refererUrl) {
-  return { http: makeClient(headersFor(url, refererUrl)), resolve: (u) => u, label: 'direct' };
+  // Les liens des addons pointent deja sur notre proxy, qui pose lui-meme les en-tetes
+  // attendus: la sonde n'a qu'a le suivre, en restant sur la boucle locale.
+  return { http: makeClient(headersFor(url, refererUrl)), resolve: (u) => streamProxy.localize(u), label: 'direct' };
 }
 
 function proxyAccess() {
@@ -209,7 +212,11 @@ async function probeFile(access, url, durationSeconds) {
 }
 
 async function attempt(access, url, durationSeconds) {
-  const isHls = /\.m3u8(\?|$)/i.test(url);
+  // Un lien d'addon est une URL de proxy: son extension ne dit plus rien du flux, c'est
+  // celle de la cible qu'elle transporte qui compte. Le motif n'est pas ancre en fin
+  // d'URL, car certaines cibles sont elles-memes des proxys HLS qui portent la vraie
+  // playlist en parametre (jbam.aether.bar/m3u8-proxy?url=...master.m3u8&...).
+  const isHls = /\.m3u8/i.test(streamProxy.targetOf(url) || url);
   return isHls ? probeHls(access, url) : probeFile(access, url, durationSeconds);
 }
 

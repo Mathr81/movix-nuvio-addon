@@ -42,7 +42,7 @@ affiché par le SDK est une chaîne fixe, pas le reflet du binding réel.
 |-----------|--------|
 | `catalog` | Catalogues personnels (sync compte), recommandations, Tendances / Populaires / Mieux notés / Nouveautés, filtrables par genre, avec recherche |
 | `meta` | Fiches complètes, épisodes par saison, casting, genres |
-| `stream` | Agrégation de 7 sources Movix + extraction serveur des embeds |
+| `stream` | Agrégation des sources Movix + addons autonomes, extraction serveur des embeds |
 | `subtitles` | OpenSubtitles, converti à la volée en WebVTT |
 
 ### Catalogues personnalisables
@@ -303,9 +303,11 @@ périodique.
 
 ### Sources agrégées
 
-`PurStream` (liens directs), `Links` (liens communautaires Movix — les `.mp4` sont
-directement jouables), `Coflix`, `FrenchStream`, `FStream`, `Wiflix`, `Cpasmal`,
-`1jour1film`, `Voirdrama` (séries asiatiques).
+**Via Movix** — `PurStream` (liens directs), `Links` (liens communautaires Movix — les
+`.mp4` sont directement jouables), `Coflix`, `FrenchStream`, `FStream`, `Wiflix`,
+`Cpasmal`, `1jour1film`, `Voirdrama` (séries asiatiques).
+
+**Addons autonomes** — `Aether` (3 serveurs), `Obrigoz`. Voir [Addons](#addons-sources-autonomes).
 
 Les embeds sont résolus en URLs directes pour **12 hosters** — soit tous
 ceux que le site sait extraire côté serveur : voe, uqload, vidzy, fsvid, vidmoly, sibnet,
@@ -315,6 +317,120 @@ darkibox et oneupload (scraping HTML direct).
 `smoothpre` et `minochinos` figurent dans le registre du site mais n'ont **aucun**
 extracteur (ni serveur, ni extension) — ce sont uniquement des motifs de détection pour
 l'ordre de priorité. Rien à porter.
+
+### Addons (sources autonomes)
+
+Un **addon** est une source qui ne passe pas par Movix : ni Mainapi, ni clé VIP, ni
+domaine spoofé. Il apporte son propre chemin de résolution (API tierce, scraping) et
+déclare les en-têtes que ses CDN exigent. C'est la voie d'ajout d'un site reverse-engineeré.
+
+| Addon | Contenu | Serveurs | Résolution |
+|---|---|---|---|
+| `aether` | Films | `aurora`, `lul`, `link` | par id TMDB |
+| `obrigoz` | Films | — | par **titre** TMDB + année |
+
+```bash
+curl http://localhost:8787/debug/addons   # lesquels sont chargés, lesquels sont écartés et pourquoi
+```
+
+`ENABLED_ADDONS` restreint la liste (vide = tous). C'est un réglage **distinct** de
+`ENABLED_SOURCES`, qui ne concerne que les sources Movix.
+
+#### Le proxy de flux
+
+Ces CDN ne servent leurs segments que si la requête porte l'`Origin` et le `Referer` de la
+page de lecture officielle. Nuvio et Stremio ne savent pas poser d'en-têtes arbitraires sur
+un flux HLS — ils demandent une URL, point. L'addon leur donne donc **une URL à nous**, et
+`/proxy/stream` rejoue la signature attendue vers l'amont. C'est le même rôle que
+`proxiesembed` côté site, mais piloté par la recette que chaque addon déclare.
+
+À chaque requête, le proxy :
+
+1. **vérifie la signature HMAC** de l'URL — sans elle, la route serait un relais HTTP
+   ouvert (même précaution que `/subtitle.vtt`) ;
+2. **rejoue les en-têtes** de l'addon, en relayant le `Range` du lecteur ;
+3. **réécrit les playlists m3u8** — chaque URI (segment, sous-playlist, clé AES-128,
+   `EXT-X-MAP`) repasse par le proxy, sinon le lecteur irait chercher les segments en
+   direct et se ferait refuser. Les URI relatives héritent des query params du parent :
+   les CDN à jeton signent la playlist *et* ses segments avec la même query ;
+4. **applique les règles par URL** de l'addon. Aurora sert par exemple ses segments
+   déguisés en images TikTok, précédées de 8 octets d'amorce qu'aucun démuxeur ne lit :
+   ils sont retirés et le vrai type MIME rétabli. Sur une requête `Range`, l'intervalle
+   est décalé vers l'amont puis ramené au référentiel du lecteur.
+
+Aucun octet de vidéo n'est bufferisé : tout le reste est un passe-plat en streaming.
+
+> ⚠️ **`PUBLIC_URL` est obligatoire** pour les addons : les liens proxifiés sont bâtis
+> dessus. Vide, ils pointent sur `127.0.0.1` et l'iPad ou la TV qui les reçoit ne les
+> lira jamais. Renseigne aussi **`STREAM_PROXY_SECRET`** : sans lui un secret aléatoire
+> est tiré à chaque démarrage, et les liens déjà ouverts dans Nuvio cessent de fonctionner
+> après un redémarrage.
+
+La sonde de débit suit ces liens comme les autres — elle les ramène sur la boucle locale
+au passage, `PUBLIC_URL` visant l'appareil de lecture et non cette machine.
+
+#### Ajouter une source
+
+Un fichier dans `src/addons/`, une ligne dans `MODULES` (`src/addons/index.js`). Rien d'autre :
+
+```js
+const kit = require('./kit');
+
+async function getStreams({ tmdbId, type, season, episode }) {
+  const { title, year, slug } = await kit.titleOf(type, tmdbId);   // TMDB, mis en cache
+  const http = kit.createHttp({ headers: { Referer: 'https://monsite.tld/' } });
+  const m3u8 = /* ...ta résolution... */;
+
+  return [{
+    url: kit.proxied(m3u8, {
+      headers: { origin: 'https://monsite.tld', referer: `https://monsite.tld/film/${slug}` },
+      // facultatif: octets d'amorce à jeter / type MIME à forcer, par motif d'URL
+      rules: [{ match: 'cdn\\.monsite\\.tld', skipBytes: 8, contentType: 'video/mp2t' }],
+      // facultatif: playlists servies sans extension .m3u8
+      playlistHints: ['/stream-proxy'],
+    }),
+    direct: true,
+    sourceName: 'MonSite',
+    quality: '1080p',
+    lang: 'VF',
+  }];
+}
+
+module.exports = {
+  id: 'monsite',
+  name: 'MonSite',
+  supports: { movie: true, series: false },
+  available: () => true,          // false = mal configuré, écarté avec un log
+  getStreams,
+};
+```
+
+L'adaptateur du registre porte deux garanties que l'addon n'a alors plus à redire : une
+source n'est pas interrogée pour un type qu'elle ne gère pas, et une source qui échoue rend
+une liste vide au lieu de faire tomber la collecte. Le tri, la déduplication sur l'URL
+finale, la mesure de débit et l'affichage sont communs à toutes les sources.
+
+#### Détail des deux addons livrés
+
+**Aether** interroge ses trois serveurs en parallèle, chacun rendant le flux à sa façon :
+`aurora` renvoie l'URL m3u8 dans son JSON, `lul` une URL intermédiaire qui répond `302`
+vers le master (la redirection ne survivrait pas au passage dans un proxy HLS, elle est
+donc résolue en amont), `link` une URL brute à encapsuler dans le `m3u8-proxy` officiel du
+site — son CDN n'accepte que l'`Origin` d'un tiers.
+
+**Obrigoz** ne connaît ni TMDB ni IMDb, seulement des titres : TMDB donne le titre français
+et l'année, une recherche sur le site rend une grille de fiches (l'**année** départage les
+remakes et homonymes ; à défaut, le premier résultat), et la page de la fiche porte un
+iframe dont le HTML contient le bloc `sources:` d'un JWPlayer. Le `Referer` attendu par le
+CDN n'est pas deviné : il est dérivé de l'URL de l'iframe réellement rencontrée.
+
+Ni l'une ni l'autre de ces API n'annonce la **langue** des pistes. `AETHER_LANG` (`VO` par
+défaut) et `OBRIGOZ_LANG` (`VF`) posent l'étiquette utilisée par le tri `PREFERRED_LANGS` —
+à ajuster si l'usage montre le contraire.
+
+`OBRIGOZ_PATH_PREFIX` isole le segment de chemin volatil du site
+(`obrigoz.com/<prefix>/home/obrigoz`) : quand la recherche cesse de renvoyer quoi que ce
+soit, c'est en général lui qui a tourné, et il se corrige dans `.env` sans toucher au code.
 
 ### Débit affiché
 
@@ -362,6 +478,7 @@ Quand Nuvio affiche « aucun stream », deux endpoints donnent l'état réel :
 ```bash
 curl http://localhost:8787/health                      # config chargée, clé VIP présente ?
 curl http://localhost:8787/debug/movie/tmdb:157336     # ce que chaque source a renvoyé
+curl http://localhost:8787/debug/addons                # addons chargés / écartés, état du proxy
 ```
 
 `/debug` liste chaque lien brut avec sa source et l'extracteur détecté — un lien marqué
@@ -387,3 +504,10 @@ La console détaille aussi, par source, le nombre de liens et la raison d'un éc
   rien à intégrer de ce côté.
 - **Sous-titres** : nécessite `PUBLIC_URL` correctement renseignée, sinon l'appareil de
   lecture ne saura pas joindre la route de conversion.
+- **Addons : films uniquement** pour l'instant. Seule la forme `/movie/<id>` a été
+  observée côté Aether, et la grille de recherche d'Obrigoz est une grille de films, sans
+  notion de saison ni d'épisode. L'équivalent série s'ajoute en une ligne dans chaque
+  résolveur le jour où il est identifié (`supports.series`).
+- **Les flux des addons dépendent du proxy** : ils passent tous par `PUBLIC_URL`, qui doit
+  être joignable depuis l'appareil de lecture. `STREAM_PROXY_ENABLED=false` sert le lien
+  brut, que la plupart de ces CDN refuseront.

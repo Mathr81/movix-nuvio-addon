@@ -7,6 +7,8 @@ const { resolveId } = require('./src/idResolver');
 const { collectRawLinks } = require('./src/streamBuilder');
 const { detectHoster } = require('./src/hosterExtract');
 const { mainApi } = require('./src/movixClient');
+const streamProxy = require('./src/streamProxy');
+const addons = require('./src/addons');
 const { pushToNuvio } = require('./src/nuvioPush');
 const { pushToTrakt } = require('./src/traktPush');
 const trakt = require('./src/traktCloud');
@@ -51,6 +53,13 @@ app.get('/subtitle.vtt', async (req, res) => {
   }
 });
 
+// --- Proxy de flux --------------------------------------------------------
+// Rejoue les en-tetes (Origin/Referer/User-Agent...) exiges par les CDN des addons, que
+// Nuvio/Stremio ne savent pas poser eux-memes, et reecrit les playlists m3u8 pour que les
+// segments repassent par ici. Les URLs sont signees: sans ca, la route serait un relais
+// HTTP ouvert (meme precaution que /subtitle.vtt ci-dessus).
+streamProxy.mount(app);
+
 // --- Diagnostic -----------------------------------------------------------
 // Montre ce que chaque source a reellement renvoye, avant extraction. Utile quand
 // Nuvio affiche "aucun stream" sans qu'on sache quelle etape a lache.
@@ -79,6 +88,16 @@ app.get('/debug/:type/:id', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Etat du registre d'addons: lesquels sont charges, lesquels sont ecartes et pourquoi.
+app.get('/debug/addons', (_req, res) => {
+  res.json({
+    proxyEnabled: config.STREAM_PROXY_ENABLED,
+    proxyBaseUrl: streamProxy.publicBase(),
+    proxySecretConfigured: !!config.STREAM_PROXY_SECRET,
+    addons: addons.describe(),
+  });
 });
 
 // Diagnostic sync: montre la reponse brute de Mainapi pour chaque forme d'URL testee,
@@ -217,6 +236,12 @@ app.get('/health', (_req, res) => {
     vipKeyConfigured: !!config.VIP_ACCESS_KEY,
     subtitlesEnabled: config.SUBTITLES_ENABLED,
     publicUrl: config.PUBLIC_URL || null,
+    streamProxy: {
+      enabled: config.STREAM_PROXY_ENABLED,
+      baseUrl: streamProxy.publicBase(),
+      secretConfigured: !!config.STREAM_PROXY_SECRET,
+    },
+    addons: addons.describe().filter((a) => a.enabled).map((a) => a.id),
     traktAuthenticated: trakt.isAuthenticated(),
     simklAuthenticated: simkl.isAuthenticated(),
   });
@@ -229,7 +254,7 @@ app.listen(config.PORT, () => {
   console.log(`Movix addon (perso) demarre sur le port ${config.PORT} (toutes interfaces)`);
   console.log(`Manifest local : http://127.0.0.1:${config.PORT}/manifest.json`);
   if (config.PUBLIC_URL) console.log(`Manifest public : ${config.PUBLIC_URL}/manifest.json`);
-  console.log(`Diagnostic     : /debug/movie/tmdb:157336  |  /debug/sync  |  /health`);
+  console.log(`Diagnostic     : /debug/movie/tmdb:157336  |  /debug/sync  |  /debug/addons  |  /health`);
 
   if (config.NUVIO_PUSH_INTERVAL_MS > 0 && config.NUVIO_EMAIL) {
     const minutes = Math.round(config.NUVIO_PUSH_INTERVAL_MS / 60000);

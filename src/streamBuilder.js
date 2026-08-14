@@ -1,4 +1,5 @@
-const allSources = require('./sources');
+const movixSources = require('./sources');
+const addons = require('./addons');
 const { extractDirectUrl } = require('./hosterExtract');
 const config = require('./config');
 const cache = require('./cache');
@@ -7,13 +8,17 @@ const { probe, formatBitrate, formatSize } = require('./probe');
 
 const MAX_CONCURRENT_EXTRACTIONS = 6;
 
-const sources = config.ENABLED_SOURCES
-  ? allSources.filter((s) => config.ENABLED_SOURCES.some((n) => n.toLowerCase() === s.name.toLowerCase()))
-  : allSources;
+// Deux familles, deux reglages: ENABLED_SOURCES borne les sources qui passent par Movix,
+// ENABLED_ADDONS celles qui sont autonomes (cf. src/addons/index.js).
+const enabledMovixSources = config.ENABLED_SOURCES
+  ? movixSources.filter((s) => config.ENABLED_SOURCES.some((n) => n.toLowerCase() === s.name.toLowerCase()))
+  : movixSources;
 
 if (config.ENABLED_SOURCES) {
-  console.log(`[streamBuilder] sources actives: ${sources.map((s) => s.name).join(', ') || '(aucune)'}`);
+  console.log(`[streamBuilder] sources Movix actives: ${enabledMovixSources.map((s) => s.name).join(', ') || '(aucune)'}`);
 }
+
+const sources = [...enabledMovixSources, ...addons.asSources()];
 
 async function mapLimit(items, limit, fn) {
   const results = new Array(items.length);
