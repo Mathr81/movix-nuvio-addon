@@ -52,6 +52,14 @@ function emptyModel() {
   return { library: new Map(), watched: new Map(), progress: new Map() };
 }
 
+/** Nuvio stocke ses horodatages en millisecondes epoch (bigint), jamais en ISO. */
+function toEpochMs(value) {
+  if (!value) return Date.now();
+  if (typeof value === 'number') return value > 1e11 ? value : value * 1000;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
 const libKey = (type, id) => `${type}:${id}`;
 const watchedKey = (type, id, season, episode) =>
   type === 'series' && season ? `series:${id}:${season}:${episode}` : `movie:${id}`;
@@ -202,6 +210,75 @@ async function readNuvio(profileId) {
   return model;
 }
 
+// --- Lecture Simkl ---------------------------------------------------------
+
+/**
+ * Simkl est la seule des trois sources a avoir de vrais statuts (plantowatch / watching /
+ * completed), la ou Nuvio n'a qu'une bibliotheque plate. On les traduit vers le modele
+ * canonique: plantowatch + watching alimentent la bibliotheque, completed l'historique.
+ *
+ * Formes confirmees sur un compte reel via `npm run simkl:probe`:
+ *   /sync/all-items/movies/<statut> -> {movies: [{status, movie: {ids: {tmdb: "9919"}}}]}
+ *   /sync/all-items/shows/<statut>  -> {shows:  [{status, show:  {ids}, seasons: [...]}]}
+ * Attention: `ids.tmdb` est une CHAINE cote Simkl.
+ */
+function simklTmdbId(node) {
+  const raw = node?.ids?.tmdb;
+  const id = Number(raw);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+async function readSimkl() {
+  const model = emptyModel();
+  if (!simkl.isAuthenticated()) return model;
+
+  const buckets = await Promise.all([
+    simkl.allItems('movies', 'plantowatch').catch(() => null),
+    simkl.allItems('shows', 'plantowatch').catch(() => null),
+    simkl.allItems('shows', 'watching').catch(() => null),
+    simkl.allItems('movies', 'completed').catch(() => null),
+    simkl.allItems('shows', 'completed').catch(() => null),
+  ]);
+
+  const addLibrary = (rows, type, key) => {
+    for (const row of rows || []) {
+      const id = simklTmdbId(row[key]);
+      if (id) model.library.set(libKey(type, id), { type, id, kind: 'watchlist', addedAt: row.added_to_watchlist_at });
+    }
+  };
+
+  addLibrary(buckets[0]?.movies, 'movie', 'movie');
+  addLibrary(buckets[1]?.shows, 'series', 'show');
+  addLibrary(buckets[2]?.shows, 'series', 'show');
+
+  for (const row of buckets[3]?.movies || []) {
+    const id = simklTmdbId(row.movie);
+    if (id) model.watched.set(watchedKey('movie', id), { type: 'movie', id, watchedAt: row.last_watched_at });
+  }
+
+  // Les episodes vus sont dans `seasons`, present sur les series en cours comme terminees.
+  for (const row of [...(buckets[2]?.shows || []), ...(buckets[4]?.shows || [])]) {
+    const id = simklTmdbId(row.show);
+    if (!id) continue;
+    for (const season of row.seasons || []) {
+      const seasonNumber = Number(season.number);
+      if (!Number.isFinite(seasonNumber)) continue;
+      for (const ep of season.episodes || []) {
+        const episode = Number(ep.number);
+        if (!Number.isFinite(episode)) continue;
+        model.watched.set(watchedKey('series', id, seasonNumber, episode), {
+          type: 'series',
+          id,
+          season: seasonNumber,
+          episode,
+        });
+      }
+    }
+  }
+
+  return model;
+}
+
 // --- Diff ------------------------------------------------------------------
 
 /** Empreinte comparable d'un modele: c'est elle qui est persistee entre deux tours. */
@@ -245,6 +322,20 @@ function notYetIn(delta, target) {
 }
 
 const deltaSize = (d) => d.library.length + d.watched.length + d.progress.length;
+
+/** Fusion de deux deltas, dedupliquee par cle canonique. */
+function union(a, b) {
+  const dedupe = (items, keyOf) => {
+    const map = new Map();
+    for (const item of [...items]) map.set(keyOf(item), item);
+    return [...map.values()];
+  };
+  return {
+    library: dedupe([...a.library, ...b.library], (e) => libKey(e.type, e.id)),
+    watched: dedupe([...a.watched, ...b.watched], (e) => watchedKey(e.type, e.id, e.season, e.episode)),
+    progress: dedupe([...a.progress, ...b.progress], (e) => progressKey(e.type, e.id, e.season, e.episode)),
+  };
+}
 
 // --- Ecriture vers Movix ---------------------------------------------------
 
@@ -371,7 +462,8 @@ async function libraryRow(item) {
     description: details.overview || null,
     release_info: (details.release_date || details.first_air_date || '').slice(0, 4) || null,
     genres: (details.genres || []).map((g) => g.name),
-    added_at: item.addedAt || new Date().toISOString(),
+    // bigint cote Nuvio: une date ISO se fait rejeter par Postgres (22P02).
+    added_at: toEpochMs(item.addedAt),
   };
 }
 
@@ -382,7 +474,14 @@ async function applyToNuvio(profileId, delta, nuvioModel) {
     // sync_push_library REMPLACE toute la bibliotheque: il faut renvoyer l'union,
     // pas seulement les nouveautes, sous peine d'effacer le reste.
     const existing = await nuvio.pullLibrary(profileId);
-    const merged = new Map(existing.filter((r) => r?.content_id).map((r) => [r.content_id, r]));
+    // Les lignes relues sont renvoyees telles quelles: si l'API les rend avec une date
+    // ISO alors que l'ecriture attend un bigint, le push entier casse (22P02). On
+    // normalise donc aussi ce qui vient de Nuvio, pas seulement ce qu'on fabrique.
+    const merged = new Map(
+      existing
+        .filter((r) => r?.content_id)
+        .map((r) => [r.content_id, { ...r, added_at: toEpochMs(r.added_at) }]),
+    );
     for (const item of delta.library) {
       const row = await libraryRow(item);
       if (!merged.has(row.content_id)) merged.set(row.content_id, row);
@@ -433,6 +532,36 @@ async function applyToNuvio(profileId, delta, nuvioModel) {
 }
 
 // --- Ecriture vers Simkl ---------------------------------------------------
+
+/**
+ * Position de lecture vers Simkl, via un scrobble (Simkl calque Trakt: il n'y a pas
+ * d'import de progression, seulement une pause simulee). Simkl ne conserve ces points
+ * qu'une semaine, ce qui est sans consequence tant que le hub les repousse a chaque
+ * cycle -- c'est meme la raison pour laquelle on les renvoie systematiquement, sans
+ * filtrer sur le delta.
+ */
+async function scrobbleToSimkl(progressEntries) {
+  let ok = 0;
+  let failed = 0;
+  for (const item of progressEntries) {
+    const percent = (item.position / item.duration) * 100;
+    if (!Number.isFinite(percent) || percent <= 0 || percent >= 95) continue;
+
+    const payload =
+      item.type === 'series'
+        ? { show: { ids: { tmdb: String(item.id) } }, episode: { season: item.season, number: item.episode }, progress: Number(percent.toFixed(2)) }
+        : { movie: { ids: { tmdb: String(item.id) } }, progress: Number(percent.toFixed(2)) };
+
+    try {
+      await simkl.scrobble('pause', payload);
+      ok += 1;
+    } catch (err) {
+      failed += 1;
+      if (failed === 1) console.warn(`[hub] scrobble Simkl refuse: ${err.message}`);
+    }
+  }
+  return { enregistrees: ok, echecs: failed };
+}
 
 async function applyToSimkl(delta) {
   if (!simkl.isAuthenticated()) return null;
@@ -497,12 +626,21 @@ async function runCycle({ dryRun = false } = {}) {
     const profiles = await nuvio.pullProfiles();
     const profileId = config.NUVIO_PROFILE_INDEX || Number(profiles[0]?.profile_index) || 1;
 
-    const [movix, nuvioModel] = await Promise.all([readMovix(), readNuvio(profileId)]);
+    const [movix, nuvioModel, simklModel] = await Promise.all([readMovix(), readNuvio(profileId), readSimkl()]);
     const previous = loadState();
 
-    const movixDelta = notYetIn(changesSince(movix, previous?.movix), nuvioModel);
-    const nuvioDelta = notYetIn(changesSince(nuvioModel, previous?.nuvio), movix);
+    const changes = {
+      movix: changesSince(movix, previous?.movix),
+      nuvio: changesSince(nuvioModel, previous?.nuvio),
+      simkl: changesSince(simklModel, previous?.simkl),
+    };
 
+    // Chaque cible recoit ce qui a bouge chez les deux autres, moins ce qu'elle a deja.
+    const toNuvio = notYetIn(union(changes.movix, changes.simkl), nuvioModel);
+    const toMovix = notYetIn(union(changes.nuvio, changes.simkl), movix);
+    const toSimkl = notYetIn(union(changes.movix, changes.nuvio), simklModel);
+
+    const count = (d) => ({ library: d.library.length, watched: d.watched.length, progress: d.progress.length });
     const summary = {
       ok: true,
       dryRun,
@@ -510,12 +648,14 @@ async function runCycle({ dryRun = false } = {}) {
       premierTour: !previous,
       movix: { library: movix.library.size, watched: movix.watched.size, progress: movix.progress.size },
       nuvio: { library: nuvioModel.library.size, watched: nuvioModel.watched.size, progress: nuvioModel.progress.size },
-      versNuvio: { library: movixDelta.library.length, watched: movixDelta.watched.length, progress: movixDelta.progress.length },
-      versMovix: { library: nuvioDelta.library.length, watched: nuvioDelta.watched.length, progress: nuvioDelta.progress.length },
+      simkl: { library: simklModel.library.size, watched: simklModel.watched.size },
+      versNuvio: count(toNuvio),
+      versMovix: count(toMovix),
+      versSimkl: count(toSimkl),
     };
 
     if (dryRun) {
-      summary.samples = { versNuvio: movixDelta.progress.slice(0, 2), versMovix: nuvioDelta.progress.slice(0, 2) };
+      summary.samples = { versNuvio: toNuvio.progress.slice(0, 2), versMovix: toMovix.progress.slice(0, 2) };
       running = false;
       return summary;
     }
@@ -532,23 +672,25 @@ async function runCycle({ dryRun = false } = {}) {
       }
     };
 
-    if (deltaSize(movixDelta) > 0) await step('pousseVersNuvio', () => applyToNuvio(profileId, movixDelta, nuvioModel));
-    if (deltaSize(nuvioDelta) > 0) await step('pousseVersMovix', () => applyToMovix(nuvioDelta));
+    if (deltaSize(toNuvio) > 0) await step('pousseVersNuvio', () => applyToNuvio(profileId, toNuvio, nuvioModel));
+    if (deltaSize(toMovix) > 0) await step('pousseVersMovix', () => applyToMovix(toMovix));
+    if (deltaSize(toSimkl) > 0) await step('pousseVersSimkl', () => applyToSimkl(toSimkl));
 
-    // Simkl recoit l'union des deux cotes: c'est un miroir, jamais une source.
-    const forSimkl = {
-      library: [...movixDelta.library, ...nuvioDelta.library],
-      watched: [...movixDelta.watched, ...nuvioDelta.watched],
-      progress: [],
-    };
-    if (deltaSize(forSimkl) > 0) await step('pousseVersSimkl', () => applyToSimkl(forSimkl));
+    // Les positions partent vers Simkl a chaque cycle, sans filtrage par delta: il ne les
+    // conserve qu'une semaine, donc les repousser est justement ce qui les maintient.
+    if (config.SIMKL_SCROBBLE && simkl.isAuthenticated()) {
+      const positions = [...movix.progress.values()];
+      if (positions.length > 0) await step('scrobbleSimkl', () => scrobbleToSimkl(positions));
+    }
 
     // L'instantane n'est enregistre qu'en cas de succes complet: un echec partiel doit
     // etre rejoue au tour suivant, pas oublie.
-    if (summary.ok) saveState({ movix: snapshot(movix), nuvio: snapshot(nuvioModel) });
+    if (summary.ok) {
+      saveState({ movix: snapshot(movix), nuvio: snapshot(nuvioModel), simkl: snapshot(simklModel) });
+    }
 
     lastRun = { at: new Date().toISOString(), summary };
-    if (deltaSize(movixDelta) + deltaSize(nuvioDelta) > 0 || !summary.ok) {
+    if (deltaSize(toNuvio) + deltaSize(toMovix) + deltaSize(toSimkl) > 0 || !summary.ok) {
       console.log('[hub] cycle:', JSON.stringify(summary));
     }
     return summary;

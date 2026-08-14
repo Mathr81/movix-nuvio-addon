@@ -88,7 +88,8 @@ async function libraryEntry(type, tmdbId, addedAt) {
     description: details.overview || null,
     release_info: (details.release_date || details.first_air_date || '').slice(0, 4) || null,
     genres: (details.genres || []).map((g) => g.name),
-    added_at: addedAt || new Date().toISOString(),
+    // bigint cote Nuvio: une date ISO se fait rejeter par Postgres (22P02).
+    added_at: toEpochMs(addedAt),
   };
 }
 

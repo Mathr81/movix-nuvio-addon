@@ -81,6 +81,9 @@ const config = {
   // Le jeton Simkl n'expire pas: pas de client secret ni de refresh a gerer.
   SIMKL_TOKEN_FILE: readEnv('SIMKL_TOKEN_FILE', ''),
   SIMKL_PUSH_INTERVAL_MS: Number(readEnv('SIMKL_PUSH_INTERVAL_MS', 0)),
+  // Renvoi des positions de lecture vers Simkl a chaque cycle du hub (il ne les garde
+  // qu'une semaine, donc les repousser est ce qui les maintient en vie).
+  SIMKL_SCROBBLE: readBool('SIMKL_SCROBBLE', true),
 
   // Rangee de recommandations calculees localement depuis l'historique Movix (sans compte tiers).
   LOCAL_RECOMMENDATIONS: readBool('LOCAL_RECOMMENDATIONS', true),
@@ -96,6 +99,10 @@ const config = {
   // Ajoute un aller-retour par lien: desactivable si l'ouverture des fiches devient lente.
   PROBE_BITRATE: readBool('PROBE_BITRATE', true),
   PROBE_TIMEOUT_MS: Number(readEnv('PROBE_TIMEOUT_MS', 3500)),
+  // Proxy utilise en repli quand un CDN de hoster refuse l'acces direct. Meme valeur que
+  // VITE_PROXY_BASE_URL cote site (ou l'URL du service bypass403): tous deux exposent
+  // /proxy/<url> et posent les Origin/Referer attendus par domaine.
+  PROBE_PROXY_BASE_URL: readEnv('PROBE_PROXY_BASE_URL', ''),
 
   // Sources activees (noms tels qu'exportes par src/sources/*.js).
   ENABLED_SOURCES: readList('ENABLED_SOURCES', null), // null = toutes

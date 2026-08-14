@@ -90,7 +90,9 @@ async function buildStreams({ tmdbId, type, season, episode }) {
     const unplayable = [];
     const extracted = await mapLimit(embeds, MAX_CONCURRENT_EXTRACTIONS, async (item) => {
       const result = await extractDirectUrl(item.url, item.player);
-      if (result.ok) return { ...item, url: result.url, hoster: result.hoster };
+      // On conserve la page d'embed: c'est elle que le CDN attend en Referer, pas sa
+      // propre origine. Sans ca, la mesure de debit repart en 403.
+      if (result.ok) return { ...item, url: result.url, hoster: result.hoster, embedUrl: item.url };
       if (result.reason === 'no-extractor') unplayable.push(item);
       return null;
     });
@@ -118,7 +120,7 @@ async function buildStreams({ tmdbId, type, season, episode }) {
 
     const enriched = await mapLimit(deduped, MAX_CONCURRENT_EXTRACTIONS, async (r) => {
       const labelled = parseQuality(r.quality, r.player, r.sourceName, r.lang);
-      const measured = r.externalUrl ? {} : await probe(r.url, { durationSeconds });
+      const measured = r.externalUrl ? {} : await probe(r.url, { durationSeconds, refererUrl: r.embedUrl });
       return {
         ...r,
         // Une RESOLUTION lue dans un master HLS vaut mieux qu'un libelle "HD" approximatif.

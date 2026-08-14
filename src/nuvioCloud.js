@@ -108,20 +108,42 @@ async function pullLibrary(profileId) {
  * qui a ete regarde DANS Nuvio, invisible autrement (le protocole d'addon ne notifie
  * jamais la lecture).
  */
-async function pullPaginated(name, profileId) {
-  const limit = 500;
+/**
+ * Chaque fonction a sa propre signature cote Postgres -- il n'y a pas de convention
+ * commune, et un mauvais jeu de parametres part en 404 PGRST202 (la fonction est
+ * introuvable, pas la ligne). Les signatures ci-dessous sont celles que l'API annonce
+ * elle-meme dans le champ `hint` de ses erreurs.
+ */
+
+/** sync_pull_watched_items(p_page, p_page_size, p_profile_id) -- pagination par page. */
+async function pullWatchedItems(profileId) {
+  const pageSize = 500;
   const all = [];
-  for (let offset = 0; offset < 100000; offset += limit) {
-    const batch = await rpc(name, { p_profile_id: profileId, p_limit: limit, p_offset: offset });
+  for (let page = 1; page <= 200; page += 1) {
+    const batch = await rpc('sync_pull_watched_items', {
+      p_profile_id: profileId,
+      p_page: page,
+      p_page_size: pageSize,
+    });
     const rows = Array.isArray(batch) ? batch : [];
     all.push(...rows);
-    if (rows.length < limit) break;
+    if (rows.length < pageSize) break;
   }
   return all;
 }
 
-const pullWatchedItems = (profileId) => pullPaginated('sync_pull_watched_items', profileId);
-const pullWatchProgress = (profileId) => pullPaginated('sync_pull_watch_progress', profileId);
+/**
+ * sync_pull_watch_progress(p_limit, p_profile_id, p_since_last_watched) -- pas de
+ * pagination par offset: le curseur est temporel. `null` = tout depuis le debut.
+ */
+async function pullWatchProgress(profileId, sinceLastWatched = null) {
+  const rows = await rpc('sync_pull_watch_progress', {
+    p_profile_id: profileId,
+    p_limit: 1000,
+    p_since_last_watched: sinceLastWatched,
+  });
+  return Array.isArray(rows) ? rows : [];
+}
 
 async function pushLibrary(profileId, items) {
   return rpc('sync_push_library', { p_profile_id: profileId, p_items: items });
