@@ -3,7 +3,7 @@ const { extractDirectUrl } = require('./hosterExtract');
 const config = require('./config');
 const cache = require('./cache');
 const tmdbClient = require('./tmdb');
-const { probe, formatBitrate } = require('./probe');
+const { probe, formatBitrate, formatSize } = require('./probe');
 
 const MAX_CONCURRENT_EXTRACTIONS = 6;
 
@@ -124,6 +124,7 @@ async function buildStreams({ tmdbId, type, season, episode }) {
         // Une RESOLUTION lue dans un master HLS vaut mieux qu'un libelle "HD" approximatif.
         height: measured.height || labelled,
         bitrate: measured.bitrate,
+        bytes: measured.bytes,
         bitrateEstimated: measured.estimated,
         langRank: langScore(r.lang, r.sourceName, r.quality, r.player),
       };
@@ -161,8 +162,9 @@ async function buildStreams({ tmdbId, type, season, episode }) {
         .join(' · ');
       // Le debit mesure sur un fichier est une estimation (taille/duree): le "~" evite
       // de le faire passer pour une valeur annoncee par la source.
+      // A defaut de debit (duree inconnue), la taille du fichier reste comparable.
       const bitrate = formatBitrate(r.bitrate);
-      const bitrateLabel = bitrate ? `${r.bitrateEstimated ? '~' : ''}${bitrate}` : null;
+      const bitrateLabel = bitrate ? `${r.bitrateEstimated ? '~' : ''}${bitrate}` : formatSize(r.bytes);
       const stream = {
         name: `Movix${quality ? `\n${quality}` : ''}${bitrateLabel ? `\n${bitrateLabel}` : ''}`,
         title: [label, [details, bitrateLabel].filter(Boolean).join(' · ')].filter(Boolean).join('\n'),

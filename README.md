@@ -190,7 +190,21 @@ npm run simkl:push
 | Movix | → Simkl |
 |-------|---------|
 | Films vus + épisodes vus | Historique (`/sync/history`) |
-| Watchlist + Favoris | `plantowatch` (Simkl n'a pas de favoris distincts) |
+| Watchlist + Favoris | `plantowatch` |
+| Titres en cours de lecture | `watching` |
+
+Contrairement à Nuvio, qui n'a qu'une bibliothèque plate, Simkl distingue
+`plantowatch` / `watching` / `completed` — le push s'en sert. Un titre n'ayant qu'un
+seul statut, une lecture en cours l'emporte sur « à voir ».
+
+```bash
+npm run simkl:probe   # lecture seule: affiche la forme réelle des réponses de l'API
+```
+
+`simkl:probe` sert à câbler la synchronisation **Simkl → hub** : la documentation
+publique de Simkl est incomplète (le fichier apiary figé sur GitHub ne contient ni
+`/scrobble` ni les formes de réponse de `/sync/all-items`), donc on interroge le compte
+réel plutôt que de coder sur des suppositions.
 
 Branche ensuite Simkl dans les réglages de Nuvio : il y scrobble tout seul, donc
 l'historique reste à jour sans relancer l'import. `SIMKL_PUSH_INTERVAL_MS` active
@@ -268,10 +282,17 @@ l'ordre de priorité. Rien à porter.
 
 Chaque stream annonce son **débit** à côté de la résolution :
 
-- **HLS** — le master playlist déclare lui-même `BANDWIDTH` et `RESOLUTION` par variante.
-  Valeur exacte, et la résolution lue là est plus fiable qu'un libellé « HD » de la source.
+- **Master HLS** — il déclare lui-même `BANDWIDTH` et `RESOLUTION` par variante. Valeur
+  exacte, et la résolution lue là est plus fiable qu'un libellé « HD » de la source.
+- **Playlist de segments** (ce que renvoie la plupart des hosters une fois extraits) —
+  pas de `BANDWIDTH`, mais on pèse un segment et on le divise par sa durée `EXTINF`.
 - **Fichier direct** — taille (`HEAD`, ou `GET Range` si le hoster refuse `HEAD`) divisée
-  par la durée TMDB. C'est une estimation, préfixée `~`.
+  par la durée TMDB. Estimation, préfixée `~`. Si la durée est inconnue (épisode dont
+  TMDB ignore le runtime), la **taille** est affichée à la place.
+
+> Les hosters exigent presque tous un `Referer` de leur propre domaine, sinon `HEAD` et
+> `GET` répondent 403 — c'est pourquoi seul PurStream (master HLS servi sans contrôle)
+> était mesuré au départ. La sonde envoie désormais `Referer`/`Origin` déduits de l'URL.
 
 Les streams sont triés : langue préférée d'abord (français par défaut), puis résolution,
 puis **débit** — à résolution égale, c'est lui qui sépare un vrai 1080p d'un upscale

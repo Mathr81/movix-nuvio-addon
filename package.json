@@ -18,6 +18,7 @@
     "hub:once": "node -e \"require('./src/hub').runCycle().then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\"",
     "hub:dry": "node -e \"require('./src/hub').runCycle({dryRun:true}).then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\"",
     "simkl:auth": "node -e \"require('./src/simklCloud').pinAuth().catch(e=>{console.error(e.message);process.exit(1)})\"",
+    "simkl:probe": "node -e \"require('./src/simklProbe').probeSimkl()\"",
     "simkl:push": "node -e \"require('./src/simklPush').pushToSimkl().then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\"",
     "simkl:push:dry": "node -e \"require('./src/simklPush').pushToSimkl({dryRun:true}).then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\""
   },

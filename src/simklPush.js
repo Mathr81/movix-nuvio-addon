@@ -99,8 +99,13 @@ async function buildHistory() {
 }
 
 /**
- * Watchlist et favoris Movix vont tous deux dans "plantowatch": Simkl n'a pas de notion
- * de favori distincte, et dupliquer un titre dans deux statuts n'est pas possible.
+ * Repartition dans les statuts Simkl. Contrairement a Nuvio, qui n'a qu'une
+ * bibliotheque plate, Simkl distingue plantowatch / watching / completed -- autant s'en
+ * servir, c'est une information que Movix possede et que le reste perdait.
+ *
+ * Un titre n'ayant qu'un seul statut, l'ordre de priorite est: en cours de lecture
+ * l'emporte sur "a voir". Les titres termines passent par /sync/history, qui les met en
+ * "completed" tout seul.
  */
 async function buildList() {
   const groups = await Promise.all([
@@ -108,7 +113,15 @@ async function buildList() {
     movixSync.getCollection('watchlist', 'series'),
     movixSync.getCollection('favorites', 'movie'),
     movixSync.getCollection('favorites', 'series'),
+    movixSync.getAllProgress(),
   ]);
+
+  const inProgress = new Set(
+    groups[4]
+      // Au-dela de 95 % le titre est fini: il releve de l'historique, pas de "en cours".
+      .filter((p) => p.duration > 0 && (p.position / p.duration) * 100 < 95)
+      .map((p) => `${p.type}:${p.id}`),
+  );
 
   const wanted = new Map();
   [
@@ -122,9 +135,22 @@ async function buildList() {
       if (!wanted.has(key)) wanted.set(key, { type, id: item.id });
     }
   });
+  // Un titre en cours de lecture merite sa place dans la liste meme s'il n'a jamais ete
+  // ajoute a la watchlist du site.
+  for (const key of inProgress) {
+    if (!wanted.has(key)) {
+      const [type, id] = key.split(':');
+      wanted.set(key, { type, id: Number(id) });
+    }
+  }
 
   const entries = await settleAll(
-    [...wanted.values()].map((e) => entry(e.type, e.id, { to: 'plantowatch' }).then((v) => ({ ...v, __type: e.type }))),
+    [...wanted.values()].map((e) =>
+      entry(e.type, e.id, { to: inProgress.has(`${e.type}:${e.id}`) ? 'watching' : 'plantowatch' }).then((v) => ({
+        ...v,
+        __type: e.type,
+      })),
+    ),
     'la liste',
   );
 

@@ -89,23 +89,73 @@ async function pinAuth({ onCode } = {}) {
   throw new Error('[simkl] delai depasse, le code n\'a pas ete valide a temps');
 }
 
+function wrapError(method, url, err) {
+  const status = err.response?.status;
+  const payload = err.response?.data;
+  const detail = payload ? JSON.stringify(payload).slice(0, 300) : err.message;
+  const error = new Error(`Simkl ${method} ${url} a echoue (status ${status ?? 'n/a'}): ${detail}`);
+  error.status = status;
+  error.body = payload;
+  return error;
+}
+
 async function post(url, body) {
   if (!loadToken()) throw new Error('Simkl non autorise -- lance `npm run simkl:auth` une fois');
   try {
     const { data } = await client.post(url, body, { headers: headers() });
     return data;
   } catch (err) {
-    const status = err.response?.status;
-    const payload = err.response?.data;
-    const detail = payload ? JSON.stringify(payload).slice(0, 300) : err.message;
-    const error = new Error(`Simkl POST ${url} a echoue (status ${status ?? 'n/a'}): ${detail}`);
-    error.status = status;
-    error.body = payload;
-    throw error;
+    throw wrapError('POST', url, err);
+  }
+}
+
+async function get(url, params = {}) {
+  if (!loadToken()) throw new Error('Simkl non autorise -- lance `npm run simkl:auth` une fois');
+  try {
+    const { data } = await client.get(url, { params, headers: headers() });
+    return data;
+  } catch (err) {
+    throw wrapError('GET', url, err);
   }
 }
 
 const addToHistory = (payload) => post('/sync/history', payload);
 const addToList = (payload) => post('/sync/add-to-list', payload);
 
-module.exports = { isAuthenticated, pinAuth, addToHistory, addToList, TOKEN_FILE };
+/**
+ * Horodatages de derniere modification par categorie. C'est le mecanisme de detection de
+ * changement de Simkl: bien plus fiable et bien moins couteux que de relire toutes les
+ * listes a chaque cycle du hub.
+ */
+const activities = () => get('/sync/activities');
+
+/**
+ * Contenu d'une liste. `type`: movies | shows | anime.
+ * `status`: watching | plantowatch | completed | hold | dropped.
+ */
+const allItems = (type, status) => get(`/sync/all-items/${type}/${status}`, { extended: 'full' });
+
+const settings = () => post('/users/settings', {});
+
+/**
+ * Position de lecture. Simkl calque Trakt: /scrobble/{start,pause,stop} avec un
+ * pourcentage. La progression n'est conservee qu'une semaine cote Simkl, ce qui n'est
+ * pas genant tant que le hub la repousse a chaque cycle.
+ */
+async function scrobble(action, payload) {
+  return post(`/scrobble/${action}`, payload);
+}
+
+module.exports = {
+  isAuthenticated,
+  pinAuth,
+  addToHistory,
+  addToList,
+  activities,
+  allItems,
+  settings,
+  scrobble,
+  get,
+  post,
+  TOKEN_FILE,
+};
