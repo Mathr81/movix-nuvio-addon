@@ -434,6 +434,19 @@ segments (timeouts à 20 s, pesées de débit en échec). C'est le même raisonn
 la sonde : le proxy du site n'existe que pour le navigateur. `AETHER_LINK_VIA_JBAM=true`
 rétablit le chemin du site si son CDN venait à refuser l'accès direct.
 
+Quand `link` ne rend rien, un diagnostic rejoue **la même requête** avec plusieurs jeux
+d'en-têtes et affiche ce que chacun obtient — c'est la réponse du CDN qui tranche, pas une
+supposition :
+
+```bash
+npm run aether:diag -- 157336
+```
+
+Il teste l'API, l'accès direct au CDN (sans en-tête, avec ceux du CDN, avec ceux du site),
+le passage par jbam avec son temps de réponse, puis le premier segment de la playlist
+obtenue — une playlist qui répond `200` ne prouve pas qu'un segment sortira. Il termine par
+le réglage à appliquer.
+
 **Obrigoz** ne connaît ni TMDB ni IMDb, seulement des titres : TMDB donne le titre français
 et l'année, une recherche sur le site rend une grille de fiches (l'**année** départage les
 remakes et homonymes ; à défaut, le premier résultat), et la page de la fiche porte un
@@ -447,6 +460,36 @@ défaut) et `OBRIGOZ_LANG` (`VF`) posent l'étiquette utilisée par le tri `PREF
 `OBRIGOZ_PATH_PREFIX` isole le segment de chemin volatil du site
 (`obrigoz.com/<prefix>/home/obrigoz`) : quand la recherche cesse de renvoyer quoi que ce
 soit, c'est en général lui qui a tourné, et il se corrige dans `.env` sans toucher au code.
+
+### Lisibilité de la liste
+
+Nuvio regroupe déjà les streams sous le nom de l'addon. Chaque ligne se limite donc à ce
+qui distingue *ce* lien des autres :
+
+```
+1080p                          au lieu de     Movix
+~2.3 Mb/s                                     1036p
+FStream · VFQ · uqload                        ~2.3 Mb/s
+                                              FStream
+                                              VFQ · uqload · ~2.3 Mb/s
+```
+
+- le nom de l'addon n'est plus répété sur chaque ligne ;
+- le débit n'apparaît plus deux fois ;
+- les hauteurs exotiques des masters HLS (`1036p`, `468p` — recadrages, encodages
+  anamorphiques) sont ramenées au **palier** correspondant, à 10 % près ;
+- un libellé de source déjà composé (`pulse | 1080p | MULTI`) perd la résolution qui y
+  faisait doublon.
+
+Deux réglages réduisent le **nombre** d'entrées :
+
+| Réglage | Défaut | Effet |
+|---|---|---|
+| `PRUNE_DOMINATED` | `true` | Écarte les liens qu'un autre de la **même source** surclasse à la fois en résolution et en débit. Ce ne sont pas des choix, juste du bruit. |
+| `MAX_STREAMS_PER_SOURCE` | `2` | Au plus N liens par source. En garder plus d'un préserve un repli quand un hébergeur est en panne ; `0` lève la limite. |
+
+L'élagage est **purement un choix d'affichage** : `/debug/streams` continue de montrer tout
+ce qui a été résolu et mesuré.
 
 ### Débit affiché
 

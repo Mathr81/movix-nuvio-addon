@@ -122,6 +122,14 @@ const config = {
   // /proxy/<url> et posent les Origin/Referer attendus par domaine.
   PROBE_PROXY_BASE_URL: readEnv('PROBE_PROXY_BASE_URL', ''),
 
+  // --- Lisibilite de la liste de streams -----------------------------------
+  // Ecarter les liens qu'un autre de la MEME source surclasse a la fois en resolution et
+  // en debit. Ce ne sont pas des choix, juste du bruit.
+  PRUNE_DOMINATED: readBool('PRUNE_DOMINATED', true),
+  // Au plus N liens par source. Garder plus d'un preserve un repli quand un hebergeur est
+  // en panne. 0 = pas de limite.
+  MAX_STREAMS_PER_SOURCE: Number(readEnv('MAX_STREAMS_PER_SOURCE', 2)),
+
   // Sources activees (noms tels qu'exportes par src/sources/*.js).
   ENABLED_SOURCES: readList('ENABLED_SOURCES', null), // null = toutes
 

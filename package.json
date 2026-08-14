@@ -22,7 +22,8 @@
     "hub:undo": "node -e \"require('./src/hub').undoRemovals(process.argv[1]||null).then(r=>console.log(JSON.stringify(r,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\"",
     "simkl:probe": "node -e \"require('./src/simklProbe').probeSimkl()\"",
     "simkl:push": "node -e \"require('./src/simklPush').pushToSimkl().then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\"",
-    "simkl:push:dry": "node -e \"require('./src/simklPush').pushToSimkl({dryRun:true}).then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\""
+    "simkl:push:dry": "node -e \"require('./src/simklPush').pushToSimkl({dryRun:true}).then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\"",
+    "aether:diag": "node src/addons/aetherDiag.js"
   },
   "dependencies": {
     "axios": "^1.7.7",

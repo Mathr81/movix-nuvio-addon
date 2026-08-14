@@ -57,9 +57,71 @@ function langScore(...labels) {
   return config.PREFERRED_LANGS.some((lang) => haystack.includes(lang.toUpperCase())) ? 0 : 1;
 }
 
+// Paliers auxquels on pense en choisissant un stream. Les masters HLS annoncent parfois
+// des hauteurs exotiques (1036, 468: recadrages, encodages anamorphiques) qui n'apportent
+// aucune information de plus que le palier, et donnent une liste difficile a parcourir.
+const QUALITY_TIERS = [2160, 1440, 1080, 720, 480, 360, 240];
+
 function formatQuality(height) {
   if (!height) return null;
-  return height >= 2160 ? '4K' : `${height}p`;
+  // 10% de tolerance: 1036 se lit "1080p", mais un vrai 720p reste un 720p.
+  const tier = QUALITY_TIERS.find((value) => height >= value * 0.9);
+  if (!tier) return `${height}p`;
+  return tier >= 2160 ? '4K' : `${tier}p`;
+}
+
+/**
+ * Ecarte les liens qu'un autre de la MEME source surclasse sur les deux criteres a la
+ * fois (resolution ET debit). Ce ne sont pas des choix, seulement du bruit: personne ne
+ * prendra volontairement le 468p a 1,1 Mb/s quand le meme fournisseur propose 1080p a
+ * 2,3 Mb/s.
+ *
+ * Volontairement limite a une meme source: garder un lien par fournisseur preserve un
+ * repli quand un hebergeur est en panne, ce qu'un simple "garder les N meilleurs" perdrait.
+ */
+function pruneDominated(streams) {
+  return streams.filter((candidate, index) => {
+    if (candidate.externalUrl) return true; // liens "ouvrir dans le navigateur": hors comparaison
+    return !streams.some((other, otherIndex) => {
+      if (otherIndex === index || other.externalUrl) return false;
+      if (other.sourceName !== candidate.sourceName || other.langRank !== candidate.langRank) return false;
+      // Sans debit mesure des deux cotes, la comparaison n'a pas de sens: on garde.
+      if (!other.bitrate || !candidate.bitrate) return false;
+      const betterOrEqual = other.height >= candidate.height && other.bitrate >= candidate.bitrate;
+      const strictlyBetter = other.height > candidate.height || other.bitrate > candidate.bitrate;
+      // A egalite parfaite, seul le premier survit (sinon les deux s'eliminent).
+      return betterOrEqual && (strictlyBetter || otherIndex < index);
+    });
+  });
+}
+
+/**
+ * Nettoie le libelle d'une source pour l'affichage.
+ *
+ * Certaines sources renvoient un nom deja compose ("pulse | 1080p | MULTI"): la resolution
+ * y fait doublon avec celle qu'on affiche en gras juste au-dessus, et le separateur en
+ * barre verticale jure avec le reste de la ligne.
+ */
+function tidySourceName(sourceName) {
+  if (!sourceName) return 'Movix';
+  return String(sourceName)
+    .split(/\s*[|·]\s*/)
+    .map((part) => part.trim())
+    .filter((part) => part && !/^(4k|\d{3,4}p)$/i.test(part))
+    .join(' · ');
+}
+
+/** Au plus N liens par source, les meilleurs d'abord (la liste est deja triee). */
+function capPerSource(streams, max) {
+  if (!max || max <= 0) return streams;
+  const kept = new Map();
+  return streams.filter((stream) => {
+    const key = stream.sourceName || 'source';
+    const count = kept.get(key) || 0;
+    if (count >= max) return false;
+    kept.set(key, count + 1);
+    return true;
+  });
 }
 
 /** Duree du titre en secondes, depuis TMDB (runtime film ou duree moyenne d'episode). */
@@ -172,7 +234,7 @@ async function resolveStreams({ tmdbId, type, season, episode }) {
     console.log(
       `[streamBuilder] tmdbId=${tmdbId} type=${type} S${season ?? '-'}E${episode ?? '-'} -- ` +
         `${raw.length} lien(s) brut(s) (${direct.length} direct, ${embeds.length} embed), ` +
-        `${extracted.filter(Boolean).length}/${embeds.length} embed(s) extrait(s), ${enriched.length} stream(s) final(aux)`,
+        `${extracted.filter(Boolean).length}/${embeds.length} embed(s) extrait(s), ${enriched.length} stream(s) mesure(s)`,
     );
 
     return enriched;
@@ -182,9 +244,20 @@ async function resolveStreams({ tmdbId, type, season, episode }) {
 async function buildStreams({ tmdbId, type, season, episode }) {
   const enriched = await resolveStreams({ tmdbId, type, season, episode });
 
-  return enriched.map((r) => {
+  // Elagage APRES le tri, et seulement ici: /debug/streams doit continuer a montrer TOUT
+  // ce qui a ete resolu et mesure, sans quoi il ne servirait plus a diagnostiquer.
+  const kept = capPerSource(
+    config.PRUNE_DOMINATED ? pruneDominated(enriched) : enriched,
+    config.MAX_STREAMS_PER_SOURCE,
+  );
+
+  if (kept.length < enriched.length) {
+    console.log(`[streamBuilder] ${enriched.length - kept.length} lien(s) redondant(s) masque(s) (${kept.length} affiche(s))`);
+  }
+
+  return kept.map((r) => {
     const quality = formatQuality(r.height);
-    const label = r.sourceName || 'Movix';
+    const label = tidySourceName(r.sourceName);
     // N'ajouter que ce qui n'est pas deja dans le libelle de la source (PurStream renvoie
     // par exemple "pulse | 1080p | MULTI", inutile de repeter la langue et la qualite).
     const details = [r.lang, r.hoster || r.player]
@@ -195,9 +268,14 @@ async function buildStreams({ tmdbId, type, season, episode }) {
     // A defaut de debit (duree inconnue), la taille du fichier reste comparable.
     const bitrate = formatBitrate(r.bitrate);
     const bitrateLabel = bitrate ? `${r.bitrateEstimated ? '~' : ''}${bitrate}` : formatSize(r.bytes);
+
+    // Deux lignes, aucune repetition. Nuvio regroupe DEJA les streams sous le nom de
+    // l'addon: reecrire "Movix" sur chaque ligne et repeter le debit en gras puis en gris
+    // remplissait quatre lignes pour deux informations utiles -- ce qui est exactement ce
+    // qui rend une liste de dix liens penible a parcourir.
     const stream = {
-      name: `Movix${quality ? `\n${quality}` : ''}${bitrateLabel ? `\n${bitrateLabel}` : ''}`,
-      title: [label, [details, bitrateLabel].filter(Boolean).join(' · ')].filter(Boolean).join('\n'),
+      name: [quality, bitrateLabel].filter(Boolean).join('\n') || 'Movix',
+      title: [label, details].filter(Boolean).join(' · '),
       behaviorHints: { bingeGroup: `movix-${r.sourceName || 'source'}-${r.height || 'na'}` },
     };
 
