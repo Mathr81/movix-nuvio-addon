@@ -126,7 +126,9 @@ async function buildStreams({ tmdbId, type, season, episode }) {
 
     const enriched = await mapLimit(deduped, MAX_CONCURRENT_EXTRACTIONS, async (r) => {
       const labelled = parseQuality(r.quality, r.player, r.sourceName, r.lang);
-      const measured = r.externalUrl ? {} : await probe(r.url, { durationSeconds, refererUrl: r.embedUrl });
+      const measured = r.externalUrl
+        ? {}
+        : await probe(r.url, { durationSeconds, refererUrl: r.embedUrl, hoster: r.hoster });
       return {
         ...r,
         // Une RESOLUTION lue dans un master HLS vaut mieux qu'un libelle "HD" approximatif.

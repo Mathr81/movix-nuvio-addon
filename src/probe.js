@@ -76,6 +76,32 @@ function throughProxy(url) {
 }
 
 /**
+ * Routes de proxy dediees, une par hebergeur, exposees par proxiesembed
+ * (server.py:1491-1499). Chacune applique l'Origin/Referer/User-Agent et le Host que
+ * SON CDN attend -- c'est par la que le site lit ces flux, jamais en direct.
+ *
+ * C'est la difference decisive avec un proxy generique: les en-tetes ne sont pas devines
+ * depuis l'URL, ils sont ceux de la page de lecture officielle du service.
+ */
+const HOSTER_PROXY_ROUTE = {
+  voe: 'voe-proxy',
+  fsvid: 'fsvid-proxy',
+  vidzy: 'vidzy-proxy',
+  vidmoly: 'vidmoly-proxy',
+  sibnet: 'sibnet-proxy',
+  uqload: 'uqload-proxy',
+  doodstream: 'doodstream-proxy',
+  seekstreaming: 'seekstreaming-proxy',
+};
+
+function hosterProxyResolver(hoster) {
+  const route = HOSTER_PROXY_ROUTE[String(hoster || '').toLowerCase()];
+  if (!route || !config.PROXIES_EMBED_BASE_URL) return null;
+  const base = config.PROXIES_EMBED_BASE_URL.replace(/\/+$/, '');
+  return (url) => `${base}/${route}?url=${encodeURIComponent(url)}`;
+}
+
+/**
  * Un "acces": comment joindre une URL. En direct on ajoute le referer attendu; via le
  * proxy c'est lui qui s'en charge, et y ajouter les notres n'aurait aucun effet.
  */
@@ -96,6 +122,12 @@ function directAccess(url, refererUrl) {
 function proxyAccess() {
   // Le proxy pose lui-meme les en-tetes: y ajouter les notres n'aurait aucun effet.
   return { http: makeClient({ 'User-Agent': DEFAULT_UA }), resolve: throughProxy, label: 'proxy' };
+}
+
+function hosterProxyAccess(hoster) {
+  const resolve = hosterProxyResolver(hoster);
+  if (!resolve) return null;
+  return { http: makeClient({ 'User-Agent': DEFAULT_UA }), resolve, label: `${hoster}-proxy` };
 }
 
 /** Taille d'une ressource, par HEAD puis, si refuse, par un GET d'un seul octet. */
@@ -188,11 +220,13 @@ async function attempt(access, url, durationSeconds) {
  *        hoster attend en Referer, et l'origine du CDN ne suffit pas.
  * @returns {Promise<{bitrate?, height?, bytes?, estimated?}>}
  */
-async function probe(url, { durationSeconds, refererUrl } = {}) {
+async function probe(url, { durationSeconds, refererUrl, hoster } = {}) {
   if (!config.PROBE_BITRATE || !url) return {};
 
   return cache.wrap(`probe:${url}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
-    const accesses = [directAccess(url, refererUrl)];
+    // Ordre volontaire: la route dediee de l'hebergeur d'abord, puisque c'est la seule
+    // dont on sait qu'elle fonctionne (le site ne lit pas ces flux autrement).
+    const accesses = [hosterProxyAccess(hoster), directAccess(url, refererUrl)].filter(Boolean);
     if (config.PROBE_PROXY_BASE_URL) accesses.push(proxyAccess());
 
     for (const access of accesses) {

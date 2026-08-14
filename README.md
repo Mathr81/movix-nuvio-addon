@@ -334,14 +334,21 @@ Les hosters exigent presque tous un `Referer` de leur propre domaine, sinon `HEA
 passe par son proxy (`buildProxyUrl`, `src/config/runtime.ts:19`), qui pose les
 `Origin`/`Referer` attendus par domaine (`API/miscs/bypass403.py:120`).
 
-**Tu n'as rien à héberger pour autant.** Ce proxy existe pour contourner le **CORS du
-navigateur** ; depuis Node il n'y a pas de CORS. Les seules choses qu'il apporte
-réellement sont sa table d'en-têtes par domaine, son User-Agent et le fait d'ignorer les
-certificats invalides — les trois sont intégrés directement dans la sonde.
+**Le site ne lit jamais ces flux en direct** : `proxiesembed` expose une route de proxy
+**par hébergeur** (`/voe-proxy`, `/uqload-proxy`, `/fsvid-proxy`… — `server.py:1491`), et
+chacune applique l'`Origin`, le `Referer`, l'`User-Agent` et le `Host` que *son* CDN
+attend. Ce ne sont pas des en-têtes devinés depuis l'URL : ce sont ceux de la page de
+lecture officielle du service.
 
-`PROBE_PROXY_BASE_URL` reste un repli facultatif si un hoster résiste encore : n'importe
-quel service exposant `/proxy/<url>` convient (`API/miscs/bypass403.py`, ou la valeur de
-`VITE_PROXY_BASE_URL` du site si tu l'as).
+La sonde emprunte donc le même chemin, dans cet ordre :
+
+1. la route dédiée de l'hébergeur, via `PROXIES_EMBED_BASE_URL` (déjà configuré pour
+   l'extraction) — la seule dont on sait qu'elle fonctionne ;
+2. en direct, avec le referer de la page d'embed ;
+3. `PROBE_PROXY_BASE_URL` s'il est renseigné (facultatif).
+
+Couverts par une route dédiée : voe, fsvid, vidzy, vidmoly, sibnet, uqload, doodstream,
+seekstreaming. Les autres (supervideo, dropload, darkibox, oneupload) passent en direct.
 
 Les streams sont triés : langue préférée d'abord (français par défaut), puis résolution,
 puis **débit** — à résolution égale, c'est lui qui sépare un vrai 1080p d'un upscale
