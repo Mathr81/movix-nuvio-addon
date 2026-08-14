@@ -1,4 +1,5 @@
 const axios = require('axios');
+const https = require('https');
 const config = require('./config');
 const cache = require('./cache');
 
@@ -23,6 +24,22 @@ const cache = require('./cache');
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
+/**
+ * En-tetes attendus par certains CDN, repris tels quels de la table du proxy du site
+ * (API/miscs/bypass403.py:120). Ces domaines n'acceptent pas leur propre origine comme
+ * referer: ils veulent celle du lecteur qui les integre.
+ *
+ * A noter: le proxy du site n'existe que pour contourner le CORS du navigateur. Depuis
+ * Node il n'y a pas de CORS -- seuls comptent ces en-tetes, d'ou leur integration ici
+ * plutot qu'un service a heberger.
+ */
+const HOSTER_HEADERS = [
+  [/coflix/i, { Origin: 'https://movix.embedseek.com', Referer: 'https://movix.embedseek.com/' }],
+  [/cinetacos/i, { Origin: 'https://cinepulse.to', Referer: 'https://cinepulse.to/' }],
+  [/fsvid/i, { Referer: 'https://fs-miroir6.lol/' }],
+  [/top-stream/i, { Origin: 'https://top-stream.plus', Referer: 'https://top-stream.plus/' }],
+];
+
 function originOf(url) {
   try {
     return new URL(url).origin;
@@ -30,6 +47,27 @@ function originOf(url) {
     return null;
   }
 }
+
+/** En-tetes pour joindre `url`, avec `refererUrl` (page d'embed) en valeur par defaut. */
+function headersFor(url, refererUrl) {
+  const host = (() => {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return '';
+    }
+  })();
+
+  const specific = HOSTER_HEADERS.find(([pattern]) => pattern.test(host));
+  if (specific) return { 'User-Agent': DEFAULT_UA, ...specific[1] };
+
+  const origin = originOf(refererUrl || url);
+  return { 'User-Agent': DEFAULT_UA, ...(origin ? { Referer: `${origin}/`, Origin: origin } : {}) };
+}
+
+// Les CDN de hosters ont regulierement des certificats invalides; le proxy du site les
+// ignore lui aussi (verify=False). Sans ca, la mesure echoue avant meme la requete.
+const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 
 /** Meme forme que buildProxyUrl cote site, et que la route /proxy/<path:target> de bypass403. */
 function throughProxy(url) {
@@ -41,25 +79,23 @@ function throughProxy(url) {
  * Un "acces": comment joindre une URL. En direct on ajoute le referer attendu; via le
  * proxy c'est lui qui s'en charge, et y ajouter les notres n'aurait aucun effet.
  */
-function directAccess(refererUrl) {
-  const origin = originOf(refererUrl);
-  const http = axios.create({
+function makeClient(headers) {
+  return axios.create({
     timeout: config.PROBE_TIMEOUT_MS,
-    headers: { 'User-Agent': DEFAULT_UA, ...(origin ? { Referer: `${origin}/`, Origin: origin } : {}) },
+    headers,
+    httpsAgent: insecureAgent,
     validateStatus: () => true,
     maxRedirects: 5,
   });
-  return { http, resolve: (url) => url, label: 'direct' };
+}
+
+function directAccess(url, refererUrl) {
+  return { http: makeClient(headersFor(url, refererUrl)), resolve: (u) => u, label: 'direct' };
 }
 
 function proxyAccess() {
-  const http = axios.create({
-    timeout: config.PROBE_TIMEOUT_MS,
-    headers: { 'User-Agent': DEFAULT_UA },
-    validateStatus: () => true,
-    maxRedirects: 5,
-  });
-  return { http, resolve: throughProxy, label: 'proxy' };
+  // Le proxy pose lui-meme les en-tetes: y ajouter les notres n'aurait aucun effet.
+  return { http: makeClient({ 'User-Agent': DEFAULT_UA }), resolve: throughProxy, label: 'proxy' };
 }
 
 /** Taille d'une ressource, par HEAD puis, si refuse, par un GET d'un seul octet. */
@@ -156,7 +192,7 @@ async function probe(url, { durationSeconds, refererUrl } = {}) {
   if (!config.PROBE_BITRATE || !url) return {};
 
   return cache.wrap(`probe:${url}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
-    const accesses = [directAccess(refererUrl || url)];
+    const accesses = [directAccess(url, refererUrl)];
     if (config.PROBE_PROXY_BASE_URL) accesses.push(proxyAccess());
 
     for (const access of accesses) {
@@ -168,10 +204,7 @@ async function probe(url, { durationSeconds, refererUrl } = {}) {
       }
     }
 
-    console.warn(
-      `[probe] aucune mesure pour ${url.slice(0, 80)}` +
-        (config.PROBE_PROXY_BASE_URL ? '' : ' -- renseigne PROBE_PROXY_BASE_URL pour passer par le proxy du site'),
-    );
+    console.warn(`[probe] aucune mesure pour ${url.slice(0, 80)}`);
     return {};
   });
 }

@@ -80,6 +80,10 @@ const config = {
   // Coupe-circuit: au-dela de ce nombre de disparitions en un cycle, on suppose une
   // lecture incomplete plutot qu'un menage volontaire, et on ne propage rien.
   HUB_MAX_REMOVALS_PER_CYCLE: Number(readEnv('HUB_MAX_REMOVALS_PER_CYCLE', 10)),
+  // Journal JSONL de toutes les ecritures du hub. Les retraits y sont consignes avec
+  // l'element retire, ce qui rend `npm run hub:undo` possible.
+  HUB_JOURNAL: readBool('HUB_JOURNAL', true),
+  HUB_JOURNAL_FILE: readEnv('HUB_JOURNAL_FILE', ''),
 
   // --- Simkl (tracker sans limite d'app connectee, integre nativement par Nuvio) ---
   SIMKL_BASE_URL: readEnv('SIMKL_BASE_URL', 'https://api.simkl.com'),
@@ -90,6 +94,9 @@ const config = {
   // Renvoi des positions de lecture vers Simkl a chaque cycle du hub (il ne les garde
   // qu'une semaine, donc les repousser est ce qui les maintient en vie).
   SIMKL_SCROBBLE: readBool('SIMKL_SCROBBLE', true),
+  // Simkl ne cree une session de reprise que sous ce pourcentage: au-dela il tient le
+  // titre pour termine et n'affiche rien, meme si l'appel est accepte.
+  SIMKL_RESUME_MAX_PERCENT: Number(readEnv('SIMKL_RESUME_MAX_PERCENT', 80)),
 
   // Rangee de recommandations calculees localement depuis l'historique Movix (sans compte tiers).
   LOCAL_RECOMMENDATIONS: readBool('LOCAL_RECOMMENDATIONS', true),

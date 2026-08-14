@@ -171,6 +171,24 @@ C'est le seul chemin destructif du hub, d'où trois garde-fous :
 
 > Côté Nuvio, supprimer ne coûte rien : la bibliothèque s'écrit en remplacement complet,
 > il suffit de ne pas renvoyer la ligne.
+
+#### Journal et retour arrière
+
+Chaque écriture du hub est consignée dans `data/hub-journal.jsonl` (une opération par
+ligne). Les **retraits y sont enregistrés avec l'élément retiré**, donc restaurables.
+
+```bash
+npm run hub:journal          # les 40 dernières opérations
+npm run hub:journal 200      # plus large
+grep '"action":"remove"' data/hub-journal.jsonl
+npm run hub:undo             # rejoue à l'envers les suppressions du dernier cycle
+npm run hub:undo <cycle-id>  # celles d'un cycle précis
+```
+
+Le journal est écrit **avant** l'opération : si une écriture échoue en cours de route, la
+trace de ce qui a été tenté existe quand même. `hub:undo` efface aussi l'instantané —
+il décrit un monde où ces éléments n'existaient plus, le garder les re-supprimerait au
+cycle suivant.
 - Les objets écrits côté Movix reproduisent exactement les formes du site
   (`{id, type, title, poster_path, addedAt}`, `continueWatching`, `watched_episodes_tv_*`),
   pour que l'interface du site les affiche normalement.
@@ -316,16 +334,14 @@ Les hosters exigent presque tous un `Referer` de leur propre domaine, sinon `HEA
 passe par son proxy (`buildProxyUrl`, `src/config/runtime.ts:19`), qui pose les
 `Origin`/`Referer` attendus par domaine (`API/miscs/bypass403.py:120`).
 
-Renseigne donc `PROBE_PROXY_BASE_URL`. Deux façons de l'obtenir :
+**Tu n'as rien à héberger pour autant.** Ce proxy existe pour contourner le **CORS du
+navigateur** ; depuis Node il n'y a pas de CORS. Les seules choses qu'il apporte
+réellement sont sa table d'en-têtes par domaine, son User-Agent et le fait d'ignorer les
+certificats invalides — les trois sont intégrés directement dans la sonde.
 
-```bash
-# le plus simple: lancer le proxy du dépôt, il a déjà les en-têtes par domaine
-python API/miscs/bypass403.py           # écoute sur 25568
-PROBE_PROXY_BASE_URL=http://127.0.0.1:25568
-```
-
-ou reprendre la valeur de `VITE_PROXY_BASE_URL` du site (le worker Cloudflare). Les deux
-exposent la même route `/proxy/<url>`.
+`PROBE_PROXY_BASE_URL` reste un repli facultatif si un hoster résiste encore : n'importe
+quel service exposant `/proxy/<url>` convient (`API/miscs/bypass403.py`, ou la valeur de
+`VITE_PROXY_BASE_URL` du site si tu l'as).
 
 Les streams sont triés : langue préférée d'abord (français par défaut), puis résolution,
 puis **débit** — à résolution égale, c'est lui qui sépare un vrai 1080p d'un upscale

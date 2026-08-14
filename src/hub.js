@@ -6,6 +6,7 @@ const movixSync = require('./movixSync');
 const nuvio = require('./nuvioCloud');
 const simkl = require('./simklCloud');
 const tmdbClient = require('./tmdb');
+const journal = require('./journal');
 
 /**
  * Hub de synchronisation bidirectionnel Movix <-> Nuvio Sync -> Simkl.
@@ -424,6 +425,22 @@ function withoutContested(removals, additions) {
   return { library: keep(removals.library), watched: keep(removals.watched), progress: keep(removals.progress) };
 }
 
+/**
+ * Etat des elements sur le point d'etre supprimes, releve dans la source AVANT l'ecriture.
+ * C'est ce qui rend une restauration possible: sans lui, le journal ne conserverait
+ * qu'une cle, et remettre le titre exigerait de retrouver ses metadonnees et sa position.
+ */
+function valuesFor(model, removals) {
+  const before = {};
+  for (const kind of ['library', 'watched', 'progress']) {
+    for (const key of removals[kind] || []) {
+      const item = model[kind].get(key);
+      if (item) before[key] = item;
+    }
+  }
+  return before;
+}
+
 function mergeRemovals(a, b) {
   return {
     library: [...new Set([...a.library, ...b.library])],
@@ -783,7 +800,10 @@ async function scrobbleToSimkl(progressEntries) {
   let failed = 0;
   for (const item of progressEntries) {
     const percent = (item.position / item.duration) * 100;
-    if (!Number.isFinite(percent) || percent <= 0 || percent >= 95) continue;
+    // Simkl ne cree une session de reprise que SOUS 80 %: au-dela il considere le titre
+    // termine et le scrobble est accepte sans rien afficher. Envoyer 80-95 % donnait donc
+    // des "echecs: 0" pour des entrees invisibles cote Simkl.
+    if (!Number.isFinite(percent) || percent <= 0 || percent >= config.SIMKL_RESUME_MAX_PERCENT) continue;
 
     const payload =
       item.type === 'series'
@@ -856,6 +876,7 @@ let lastRun = null;
 async function runCycle({ dryRun = false } = {}) {
   if (running) return { ok: false, skipped: 'un cycle est deja en cours' };
   running = true;
+  const cycleId = journal.begin();
 
   try {
     // Le hub veut l'etat courant, pas la version en cache du catalogue.
@@ -934,14 +955,30 @@ async function runCycle({ dryRun = false } = {}) {
       }
     };
 
+    // Le journal est ecrit AVANT l'operation: si l'ecriture echoue a mi-parcours, on
+    // veut la trace de ce qui a ete tente, pas seulement de ce qui a reussi.
     if (deltaSize(toNuvio) > 0 || removeInNuvio.library.length > 0) {
+      journal.logAdditions('nuvio', toNuvio);
+      journal.logRemovals('nuvio', removeInNuvio, valuesFor(nuvioModel, removeInNuvio));
       await step('pousseVersNuvio', () => applyToNuvio(profileId, toNuvio, removeInNuvio));
     }
-    if (deltaSize(toMovix) > 0) await step('pousseVersMovix', () => applyToMovix(toMovix));
-    if (deltaSize(toSimkl) > 0) await step('pousseVersSimkl', () => applyToSimkl(toSimkl));
+    if (deltaSize(toMovix) > 0) {
+      journal.logAdditions('movix', toMovix);
+      await step('pousseVersMovix', () => applyToMovix(toMovix));
+    }
+    if (deltaSize(toSimkl) > 0) {
+      journal.logAdditions('simkl', toSimkl);
+      await step('pousseVersSimkl', () => applyToSimkl(toSimkl));
+    }
 
-    if (deltaSize(removeInMovix) > 0) await step('retireDeMovix', () => applyRemovalsToMovix(removeInMovix));
-    if (deltaSize(removeInSimkl) > 0) await step('retireDeSimkl', () => applyRemovalsToSimkl(removeInSimkl));
+    if (deltaSize(removeInMovix) > 0) {
+      journal.logRemovals('movix', removeInMovix, valuesFor(movix, removeInMovix));
+      await step('retireDeMovix', () => applyRemovalsToMovix(removeInMovix));
+    }
+    if (deltaSize(removeInSimkl) > 0) {
+      journal.logRemovals('simkl', removeInSimkl, valuesFor(simklModel, removeInSimkl));
+      await step('retireDeSimkl', () => applyRemovalsToSimkl(removeInSimkl));
+    }
 
     // Les positions partent vers Simkl a chaque cycle, sans filtrage par delta: il ne les
     // conserve qu'une semaine, donc les repousser est justement ce qui les maintient.
@@ -960,6 +997,8 @@ async function runCycle({ dryRun = false } = {}) {
       });
     }
 
+    summary.cycle = cycleId;
+    journal.logCycle(summary);
     lastRun = { at: new Date().toISOString(), summary };
     if (deltaSize(toNuvio) + deltaSize(toMovix) + deltaSize(toSimkl) > 0 || !summary.ok) {
       console.log('[hub] cycle:', JSON.stringify(summary));
@@ -988,4 +1027,50 @@ function status() {
   return { enabled: config.HUB_ENABLED, intervalMs: config.HUB_INTERVAL_MS, running, lastRun };
 }
 
-module.exports = { runCycle, start, status, STATE_FILE };
+/**
+ * Restauration: rejoue a l'envers les suppressions d'un cycle. Les elements sont remis
+ * la ou ils ont ete retires, avec les valeurs relevees avant l'operation.
+ *
+ * L'instantane est efface au passage: il decrit un monde ou ces elements n'existaient
+ * plus, et le laisser en place ferait re-supprimer au cycle suivant.
+ */
+async function undoRemovals(cycle = null) {
+  const { cycle: target, entries } = journal.removalsOf(cycle);
+  if (entries.length === 0) return { ok: true, restaures: 0, message: 'aucune suppression a annuler' };
+
+  const byTarget = new Map();
+  for (const entry of entries) {
+    if (!entry.before) continue; // rien a remettre sans l'etat d'origine
+    if (!byTarget.has(entry.target)) byTarget.set(entry.target, { library: [], watched: [], progress: [] });
+    byTarget.get(entry.target)[entry.kind].push(entry.before);
+  }
+
+  const result = { ok: true, cycle: target, restaures: {} };
+  for (const [name, delta] of byTarget) {
+    try {
+      if (name === 'movix') await applyToMovix(delta);
+      else if (name === 'simkl') await applyToSimkl(delta);
+      else if (name === 'nuvio') {
+        const profiles = await nuvio.pullProfiles();
+        const profileId = config.NUVIO_PROFILE_INDEX || Number(profiles[0]?.profile_index) || 1;
+        await applyToNuvio(profileId, delta);
+      }
+      result.restaures[name] = deltaSize(delta);
+    } catch (err) {
+      result.ok = false;
+      result.restaures[name] = `echec: ${err.message}`;
+    }
+  }
+
+  try {
+    fs.unlinkSync(STATE_FILE);
+    result.instantaneEfface = true;
+  } catch {
+    // Absent: rien a faire, le prochain cycle repartira d'une union complete.
+  }
+
+  console.log('[hub] restauration:', JSON.stringify(result));
+  return result;
+}
+
+module.exports = { runCycle, start, status, undoRemovals, STATE_FILE };
