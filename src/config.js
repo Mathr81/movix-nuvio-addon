@@ -112,6 +112,11 @@ const config = {
   // Ajoute un aller-retour par lien: desactivable si l'ouverture des fiches devient lente.
   PROBE_BITRATE: readBool('PROBE_BITRATE', true),
   PROBE_TIMEOUT_MS: Number(readEnv('PROBE_TIMEOUT_MS', 3500)),
+  // Nombre de segments peses pour estimer le debit d'une playlist, repartis sur toute sa
+  // duree. Un encodage a debit variable rend un prelevement unique tres peu fiable (sur un
+  // profil VBR simule: 26% d'erreur moyenne et 93% au 90e centile a 1 prelevement, contre
+  // 13% et 21% a 5). Au-dela de 5-6 le gain devient marginal.
+  PROBE_SEGMENT_SAMPLES: Number(readEnv('PROBE_SEGMENT_SAMPLES', 5)),
   // Proxy utilise en repli quand un CDN de hoster refuse l'acces direct. Meme valeur que
   // VITE_PROXY_BASE_URL cote site (ou l'URL du service bypass403): tous deux exposent
   // /proxy/<url> et posent les Origin/Referer attendus par domaine.

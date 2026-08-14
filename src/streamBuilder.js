@@ -83,8 +83,13 @@ async function collectRawLinks({ tmdbId, type, season, episode }) {
   return settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
 }
 
-async function buildStreams({ tmdbId, type, season, episode }) {
-  const cacheKey = `streams:${type}:${tmdbId}:${season ?? '-'}:${episode ?? '-'}`;
+/**
+ * Liens resolus et mesures, avant mise en forme Stremio. Expose pour /debug/streams:
+ * c'est a ce niveau qu'on voit la difference entre "aucun debit mesure" et "debit mesure
+ * mais aberrant", ce que le libelle final ne dit plus.
+ */
+async function resolveStreams({ tmdbId, type, season, episode }) {
+  const cacheKey = `resolved:${type}:${tmdbId}:${season ?? '-'}:${episode ?? '-'}`;
 
   return cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
     const raw = await collectRawLinks({ tmdbId, type, season, episode });
@@ -141,6 +146,9 @@ async function buildStreams({ tmdbId, type, season, episode }) {
         bitrate: measured.bitrate,
         bytes: measured.bytes,
         bitrateEstimated: measured.estimated,
+        // Nombre de segments effectivement peses: c'est lui qui dit si un debit affiche
+        // est solide ou tire d'un seul prelevement (cf. /debug/streams).
+        bitrateSamples: measured.samples,
         langRank: langScore(r.lang, r.sourceName, r.quality, r.player),
       };
     });
@@ -167,35 +175,41 @@ async function buildStreams({ tmdbId, type, season, episode }) {
         `${extracted.filter(Boolean).length}/${embeds.length} embed(s) extrait(s), ${enriched.length} stream(s) final(aux)`,
     );
 
-    return enriched.map((r) => {
-      const quality = formatQuality(r.height);
-      const label = r.sourceName || 'Movix';
-      // N'ajouter que ce qui n'est pas deja dans le libelle de la source (PurStream renvoie
-      // par exemple "pulse | 1080p | MULTI", inutile de repeter la langue et la qualite).
-      const details = [r.lang, r.hoster || r.player]
-        .filter((part) => part && !label.toLowerCase().includes(String(part).toLowerCase()))
-        .join(' · ');
-      // Le debit mesure sur un fichier est une estimation (taille/duree): le "~" evite
-      // de le faire passer pour une valeur annoncee par la source.
-      // A defaut de debit (duree inconnue), la taille du fichier reste comparable.
-      const bitrate = formatBitrate(r.bitrate);
-      const bitrateLabel = bitrate ? `${r.bitrateEstimated ? '~' : ''}${bitrate}` : formatSize(r.bytes);
-      const stream = {
-        name: `Movix${quality ? `\n${quality}` : ''}${bitrateLabel ? `\n${bitrateLabel}` : ''}`,
-        title: [label, [details, bitrateLabel].filter(Boolean).join(' · ')].filter(Boolean).join('\n'),
-        behaviorHints: { bingeGroup: `movix-${r.sourceName || 'source'}-${r.height || 'na'}` },
-      };
-
-      if (r.externalUrl) {
-        stream.externalUrl = r.externalUrl;
-        stream.title = `${stream.title}\n(ouvrir dans le navigateur)`;
-      } else {
-        stream.url = r.url;
-        stream.behaviorHints.notWebReady = true;
-      }
-      return stream;
-    });
+    return enriched;
   });
 }
 
-module.exports = { buildStreams, collectRawLinks };
+async function buildStreams({ tmdbId, type, season, episode }) {
+  const enriched = await resolveStreams({ tmdbId, type, season, episode });
+
+  return enriched.map((r) => {
+    const quality = formatQuality(r.height);
+    const label = r.sourceName || 'Movix';
+    // N'ajouter que ce qui n'est pas deja dans le libelle de la source (PurStream renvoie
+    // par exemple "pulse | 1080p | MULTI", inutile de repeter la langue et la qualite).
+    const details = [r.lang, r.hoster || r.player]
+      .filter((part) => part && !label.toLowerCase().includes(String(part).toLowerCase()))
+      .join(' · ');
+    // Le debit mesure sur un fichier est une estimation (taille/duree): le "~" evite
+    // de le faire passer pour une valeur annoncee par la source.
+    // A defaut de debit (duree inconnue), la taille du fichier reste comparable.
+    const bitrate = formatBitrate(r.bitrate);
+    const bitrateLabel = bitrate ? `${r.bitrateEstimated ? '~' : ''}${bitrate}` : formatSize(r.bytes);
+    const stream = {
+      name: `Movix${quality ? `\n${quality}` : ''}${bitrateLabel ? `\n${bitrateLabel}` : ''}`,
+      title: [label, [details, bitrateLabel].filter(Boolean).join(' · ')].filter(Boolean).join('\n'),
+      behaviorHints: { bingeGroup: `movix-${r.sourceName || 'source'}-${r.height || 'na'}` },
+    };
+
+    if (r.externalUrl) {
+      stream.externalUrl = r.externalUrl;
+      stream.title = `${stream.title}\n(ouvrir dans le navigateur)`;
+    } else {
+      stream.url = r.url;
+      stream.behaviorHints.notWebReady = true;
+    }
+    return stream;
+  });
+}
+
+module.exports = { buildStreams, resolveStreams, collectRawLinks };

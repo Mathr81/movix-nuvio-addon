@@ -147,13 +147,18 @@ function localize(url) {
   return url.startsWith(base) ? `http://127.0.0.1:${config.PORT}${url.slice(base.length)}` : url;
 }
 
-/** Resout une URI relative de playlist, en heritant des query params du parent. */
+/** Resout une URI de playlist, en heritant au besoin des query params du parent. */
 function resolveChild(parentUrl, childUri) {
   const resolved = new URL(childUri, parentUrl);
   // Les CDN a jeton signent la playlist ET ses segments avec la meme query. Quand le
   // segment est reference sans query (cas frequent), la reprendre du parent est la seule
   // facon de ne pas se faire refuser.
-  if (!resolved.search) resolved.search = new URL(parentUrl).search;
+  //
+  // Uniquement pour les URI RELATIVES: une URL absolue vise un autre service (souvent un
+  // autre domaine), et lui recopier la query du parent n'a aucun sens -- c'est ainsi qu'un
+  // segment se retrouverait affuble du "?url=...&headers=..." d'un proxy HLS parent.
+  const isAbsolute = /^[a-z][a-z0-9+.-]*:/i.test(childUri.trim());
+  if (!isAbsolute && !resolved.search) resolved.search = new URL(parentUrl).search;
   return resolved.toString();
 }
 
@@ -172,6 +177,65 @@ function looksLikePlaylist(targetUrl, spec) {
   if (/\.m3u8(\?|$)/i.test(targetUrl)) return true;
   return (spec.p || []).some((hint) => targetUrl.toLowerCase().includes(String(hint).toLowerCase()));
 }
+
+/**
+ * Lit les premiers octets d'un flux puis les remet en tete, pour pouvoir decider de sa
+ * nature sans rien consommer.
+ *
+ * L'URL ne suffit pas a distinguer une playlist d'un segment: un proxy HLS sert les DEUX
+ * sur le meme chemin (jbam.aether.bar/m3u8-proxy?url=...). Trancher sur l'URL seule
+ * revenait a decoder des segments video en texte UTF-8, donc a les corrompre.
+ */
+function peek(stream, size) {
+  return new Promise((resolve, reject) => {
+    const finish = (value) => {
+      stream.removeListener('readable', onReadable);
+      stream.removeListener('end', onEnd);
+      stream.removeListener('error', onError);
+      resolve(value);
+    };
+    const onReadable = () => {
+      const chunk = stream.read(size) || stream.read();
+      if (chunk === null) return; // pas encore assez d'octets: on attend le prochain evenement
+      stream.unshift(chunk);
+      finish(chunk);
+    };
+    const onEnd = () => finish(Buffer.alloc(0));
+    const onError = (err) => {
+      stream.removeListener('readable', onReadable);
+      stream.removeListener('end', onEnd);
+      reject(err);
+    };
+    stream.on('readable', onReadable);
+    stream.once('end', onEnd);
+    stream.once('error', onError);
+  });
+}
+
+/** Une playlist commence par #EXTM3U -- eventuellement precede d'un BOM ou d'un saut de ligne. */
+function startsPlaylist(head) {
+  return head.toString('utf8').replace(/^﻿/, '').trimStart().startsWith('#EXTM3U');
+}
+
+/** Lit un flux en entier, plafonne: une playlist pese quelques kilo-octets, jamais plus. */
+function collect(stream, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    stream.on('data', (chunk) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        stream.destroy();
+        return reject(new Error(`playlist anormalement volumineuse (> ${maxBytes} octets)`));
+      }
+      chunks.push(chunk);
+    });
+    stream.once('end', () => resolve(Buffer.concat(chunks)));
+    stream.once('error', reject);
+  });
+}
+
+const MAX_PLAYLIST_BYTES = 8 * 1024 * 1024;
 
 /** Reecrit une playlist pour que tout ce qu'elle reference repasse par le proxy. */
 function rewritePlaylist(text, baseUrl, spec) {
@@ -293,16 +357,21 @@ async function handle(req, res) {
   const shifted = skip && clientRange ? shiftRange(clientRange, skip) : null;
   if (clientRange) headers.Range = shifted ? shifted.header : clientRange;
   if (req.headers['if-range']) headers['If-Range'] = req.headers['if-range'];
+  // Sur un candidat playlist on refuse la compression: le contenu est minuscule, et le
+  // recevoir tel quel permet d'en lire l'entete sans avoir a le decompresser d'abord.
+  if (playlistCandidate) headers['Accept-Encoding'] = 'identity';
 
   try {
     const upstream = await axios({
       method: isHead ? 'head' : 'get',
       url: target,
       headers,
-      // En mode passe-plat on ne touche a rien, compression comprise: le lecteur sait la
-      // gerer, et decompresser fausserait le Content-Length qu'on relaie.
-      responseType: playlistCandidate ? 'text' : 'stream',
-      decompress: playlistCandidate,
+      // Toujours en flux, jamais en texte: un segment video decode en UTF-8 est un
+      // segment video corrompu. La nature du contenu se decide plus bas, sur ses octets.
+      responseType: 'stream',
+      // En passe-plat on ne touche a rien, compression comprise: le lecteur sait la gerer,
+      // et decompresser fausserait le Content-Length qu'on relaie.
+      decompress: false,
       timeout: config.STREAM_PROXY_TIMEOUT_MS,
       maxRedirects: 5,
       httpsAgent: insecureAgent,
@@ -316,19 +385,19 @@ async function handle(req, res) {
     }
 
     // --- Playlist: on la reecrit pour capturer tout ce qu'elle reference ---------------
+    // L'URL n'a fait que designer un CANDIDAT; ce sont ses premiers octets qui tranchent.
+    // Un segment qui passe par le meme chemin qu'une playlist repart donc en passe-plat,
+    // intact, au lieu d'etre relu comme du texte.
     if (playlistCandidate && upstream.status < 400) {
-      const body = typeof upstream.data === 'string' ? upstream.data : String(upstream.data ?? '');
-      // Le pari sur l'URL peut se tromper (un /content qui sert de la video): la seule
-      // preuve d'une playlist, c'est son entete.
-      if (body.startsWith('#EXTM3U') || contentType.includes('mpegurl')) {
-        const rewritten = rewritePlaylist(body, target, spec);
+      const head = await peek(upstream.data, 64);
+      if (startsPlaylist(head) || contentType.includes('mpegurl')) {
+        const body = (await collect(upstream.data, MAX_PLAYLIST_BYTES)).toString('utf8');
         return res
           .status(upstream.status)
           .set('Content-Type', 'application/vnd.apple.mpegurl')
           .set('Cache-Control', 'no-store')
-          .send(rewritten);
+          .send(rewritePlaylist(body, target, spec));
       }
-      return res.status(upstream.status).set('Content-Type', upstream.headers['content-type'] || 'application/octet-stream').send(body);
     }
 
     // --- Passe-plat ------------------------------------------------------------------

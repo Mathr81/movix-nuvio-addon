@@ -351,14 +351,22 @@ un flux HLS — ils demandent une URL, point. L'addon leur donne donc **une URL 
 2. **rejoue les en-têtes** de l'addon, en relayant le `Range` du lecteur ;
 3. **réécrit les playlists m3u8** — chaque URI (segment, sous-playlist, clé AES-128,
    `EXT-X-MAP`) repasse par le proxy, sinon le lecteur irait chercher les segments en
-   direct et se ferait refuser. Les URI relatives héritent des query params du parent :
-   les CDN à jeton signent la playlist *et* ses segments avec la même query ;
+   direct et se ferait refuser. Les URI **relatives** héritent des query params du parent
+   (les CDN à jeton signent la playlist *et* ses segments avec la même query) ; une URL
+   absolue vise un autre service et n'hérite de rien ;
 4. **applique les règles par URL** de l'addon. Aurora sert par exemple ses segments
    déguisés en images TikTok, précédées de 8 octets d'amorce qu'aucun démuxeur ne lit :
    ils sont retirés et le vrai type MIME rétabli. Sur une requête `Range`, l'intervalle
    est décalé vers l'amont puis ramené au référentiel du lecteur.
 
 Aucun octet de vidéo n'est bufferisé : tout le reste est un passe-plat en streaming.
+
+**La nature d'une réponse se décide sur ses octets, jamais sur son URL.** Un proxy HLS sert
+les playlists *et* les segments sur le même chemin (`jbam.aether.bar/m3u8-proxy?url=…`) :
+trancher sur l'URL revenait à relire des segments vidéo comme du texte UTF-8, donc à les
+corrompre (65 540 octets ressortaient à 118 764, chaque octet invalide remplacé par
+`U+FFFD`). Le proxy lit maintenant les premiers octets, les remet en tête du flux, et ne
+traite comme playlist que ce qui commence par `#EXTM3U`.
 
 > ⚠️ **`PUBLIC_URL` est obligatoire** pour les addons : les liens proxifiés sont bâtis
 > dessus. Vide, ils pointent sur `127.0.0.1` et l'iPad ou la TV qui les reçoit ne les
@@ -434,15 +442,42 @@ soit, c'est en général lui qui a tourné, et il se corrige dans `.env` sans to
 
 ### Débit affiché
 
-Chaque stream annonce son **débit** à côté de la résolution :
+Chaque stream annonce son **débit** à côté de la résolution. L'objectif est que deux liens
+soient *comparables* : toutes les valeurs représentent le débit **moyen**.
 
-- **Master HLS** — il déclare lui-même `BANDWIDTH` et `RESOLUTION` par variante. Valeur
-  exacte, et la résolution lue là est plus fiable qu'un libellé « HD » de la source.
-- **Playlist de segments** (ce que renvoie la plupart des hosters une fois extraits) —
-  pas de `BANDWIDTH`, mais on pèse un segment et on le divise par sa durée `EXTINF`.
-- **Fichier direct** — taille (`HEAD`, ou `GET Range` si le hoster refuse `HEAD`) divisée
-  par la durée TMDB. Estimation, préfixée `~`. Si la durée est inconnue (épisode dont
-  TMDB ignore le runtime), la **taille** est affichée à la place.
+- **Master HLS avec `AVERAGE-BANDWIDTH`** — valeur déclarée et exacte, prise telle quelle.
+  La résolution lue là est plus fiable qu'un libellé « HD » de la source.
+- **Master HLS sans `AVERAGE-BANDWIDTH`** — `BANDWIDTH` est le débit de **pointe** que le
+  lecteur doit pouvoir soutenir, pas la moyenne du fichier : il la dépasse de 10 à 50 %.
+  On descend donc mesurer la variante retenue, et le pic ne sert que de dernier recours
+  (signalé `~`).
+- **Playlist de segments** — on pèse `PROBE_SEGMENT_SAMPLES` segments (5 par défaut)
+  **répartis sur toute la durée**, début écarté, et on divise la somme des tailles par la
+  somme des durées `EXTINF`. Une playlist en `EXT-X-BYTERANGE` annonce ses tailles :
+  aucune requête n'est alors nécessaire.
+- **Fichier direct** — taille divisée par la durée TMDB. Estimation, préfixée `~`. Si la
+  durée est inconnue (épisode dont TMDB ignore le runtime), la **taille** est affichée.
+
+La taille d'un segment est obtenue par `HEAD`, sinon par un `GET Range` **coupé dès les
+en-têtes lus** — un serveur qui ignore `Range` commence à renvoyer le segment entier, et
+rien n'oblige à le télécharger pour apprendre sa taille. Quand aucune de ces voies
+n'aboutit (ni `HEAD`, ni `Content-Length`, ni `Content-Range`), un seul segment est pesé
+en le téléchargeant : la précision d'un échantillonnage large ne vaut pas plusieurs
+dizaines de Mo à chaque ouverture de fiche.
+
+> **Pourquoi un seul prélèvement ne suffisait pas.** Sur un profil VBR simulé (fond à
+> 6 Mb/s, amorce légère, quelques scènes d'action à 15 Mb/s), un prélèvement unique donne
+> **26 % d'erreur moyenne et 93 % au 90ᵉ centile** — d'où des valeurs qui paraissent
+> tirées au sort. À 5 prélèvements : 13 % et 21 %. Au-delà de 5-6, le gain devient
+> marginal. `PROBE_SEGMENT_SAMPLES` règle ce curseur.
+
+```bash
+curl http://localhost:8787/debug/streams/movie/tmdb:157336
+```
+
+donne, par lien, la valeur obtenue et **d'où elle vient** — `declare` (lue dans le
+master), `mesure` (calculée sur N segments pesés) ou `aucun` — ce que le libellé affiché
+dans Nuvio ne permet plus de distinguer.
 
 Les hosters exigent presque tous un `Referer` de leur propre domaine, sinon `HEAD` et
 `GET` répondent 403 — c'est pourquoi seul PurStream (master HLS servi sans contrôle)
@@ -479,6 +514,7 @@ Quand Nuvio affiche « aucun stream », deux endpoints donnent l'état réel :
 curl http://localhost:8787/health                      # config chargée, clé VIP présente ?
 curl http://localhost:8787/debug/movie/tmdb:157336     # ce que chaque source a renvoyé
 curl http://localhost:8787/debug/addons                # addons chargés / écartés, état du proxy
+curl http://localhost:8787/debug/streams/movie/tmdb:157336   # débit mesuré par lien, et son origine
 ```
 
 `/debug` liste chaque lien brut avec sa source et l'extracteur détecté — un lien marqué

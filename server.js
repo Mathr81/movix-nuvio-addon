@@ -4,7 +4,7 @@ const addonInterface = require('./src/addon');
 const config = require('./src/config');
 const { fetchAsVtt } = require('./src/subtitles');
 const { resolveId } = require('./src/idResolver');
-const { collectRawLinks } = require('./src/streamBuilder');
+const { collectRawLinks, resolveStreams } = require('./src/streamBuilder');
 const { detectHoster } = require('./src/hosterExtract');
 const { mainApi } = require('./src/movixClient');
 const streamProxy = require('./src/streamProxy');
@@ -83,6 +83,38 @@ app.get('/debug/:type/:id', async (req, res) => {
         quality: r.quality,
         direct: !!r.direct,
         hoster: r.direct ? 'n/a (lien direct)' : detectHoster(r.url, r.player) || 'AUCUN EXTRACTEUR',
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Diagnostic de la mesure de debit: ce que la sonde a REELLEMENT obtenu par lien, avant
+// mise en forme. C'est la difference entre "aucune mesure" et "mesure aberrante", que le
+// libelle affiche dans Nuvio ne permet plus de distinguer.
+app.get('/debug/streams/:type/:id', async (req, res) => {
+  try {
+    const { type, id } = req.params;
+    const { tmdbId, season, episode } = await resolveId(type, id);
+    const resolved = await resolveStreams({ tmdbId, type, season, episode });
+
+    res.json({
+      tmdbId,
+      type,
+      total: resolved.length,
+      streams: resolved.map((r) => ({
+        source: r.sourceName,
+        proxifie: streamProxy.isProxied(r.url),
+        cible: streamProxy.targetOf(r.url) || r.url,
+        qualiteAnnoncee: r.quality || null,
+        hauteurRetenue: r.height || null,
+        debitBps: r.bitrate || null,
+        // "declare" = lu dans le master HLS (AVERAGE-BANDWIDTH), "mesure" = calcule sur des
+        // segments peses, "aucun" = la sonde n'a rien pu obtenir.
+        origineDebit: r.bitrate ? (r.bitrateEstimated ? 'mesure' : 'declare') : 'aucun',
+        segmentsPeses: r.bitrateSamples || null,
+        tailleOctets: r.bytes || null,
       })),
     });
   } catch (err) {
