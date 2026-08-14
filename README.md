@@ -423,8 +423,16 @@ finale, la mesure de débit et l'affichage sont communs à toutes les sources.
 **Aether** interroge ses trois serveurs en parallèle, chacun rendant le flux à sa façon :
 `aurora` renvoie l'URL m3u8 dans son JSON, `lul` une URL intermédiaire qui répond `302`
 vers le master (la redirection ne survivrait pas au passage dans un proxy HLS, elle est
-donc résolue en amont), `link` une URL brute à encapsuler dans le `m3u8-proxy` officiel du
-site — son CDN n'accepte que l'`Origin` d'un tiers.
+donc résolue en amont), `link` une URL brute dont le CDN n'accepte que l'`Origin` d'un
+tiers (`nextgencloudfabric.com`).
+
+Le site encapsule ce dernier dans son propre proxy HLS (`jbam.aether.bar`) parce qu'un
+**navigateur** ne peut ni forger un `Origin` ni échapper au CORS. Un serveur, si : on pose
+directement les en-têtes attendus et on économise un rebond entier. Ce rebond n'était pas
+gratuit — jbam relaie lui-même vers le CDN, et cette double indirection faisait expirer les
+segments (timeouts à 20 s, pesées de débit en échec). C'est le même raisonnement que pour
+la sonde : le proxy du site n'existe que pour le navigateur. `AETHER_LINK_VIA_JBAM=true`
+rétablit le chemin du site si son CDN venait à refuser l'accès direct.
 
 **Obrigoz** ne connaît ni TMDB ni IMDb, seulement des titres : TMDB donne le titre français
 et l'année, une recherche sur le site rend une grille de fiches (l'**année** départage les

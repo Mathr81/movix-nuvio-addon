@@ -143,8 +143,13 @@ const config = {
   AETHER_SITE_ORIGIN: readEnv('AETHER_SITE_ORIGIN', 'https://aether.bar'),
   AETHER_API_DOMAIN: readEnv('AETHER_API_DOMAIN', 'aether.cx'),
   AETHER_SERVERS: readList('AETHER_SERVERS', ['aurora', 'lul', 'link']),
-  // Proxy HLS officiel du site, par lequel passe le serveur "link" (son CDN n'accepte que
-  // l'Origin d'un tiers). Change de nom d'hote de temps en temps.
+  // Origin/Referer exiges par le CDN du serveur "link".
+  AETHER_LINK_ORIGIN: readEnv('AETHER_LINK_ORIGIN', 'https://nextgencloudfabric.com'),
+  // Repasser par le proxy HLS du site (jbam) pour le serveur "link", comme le fait le
+  // navigateur. Inutile depuis un serveur -- notre propre proxy pose deja ces en-tetes --
+  // et ce rebond supplementaire fait expirer les segments. A n'activer que si le CDN
+  // refusait un jour l'acces direct.
+  AETHER_LINK_VIA_JBAM: readBool('AETHER_LINK_VIA_JBAM', false),
   AETHER_M3U8_PROXY: readEnv('AETHER_M3U8_PROXY', 'https://jbam.aether.bar/m3u8-proxy'),
   // Aucune des trois API n'annonce la langue de la piste: on l'etiquette a la main pour
   // que le tri par PREFERRED_LANGS reste coherent.

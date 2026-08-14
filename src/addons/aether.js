@@ -60,9 +60,9 @@ const PROXY_SPEC_RULES = [
   },
 ];
 
-// jbam sert ses playlists sur des chemins sans extension: sans ces indices, le proxy les
-// prendrait pour de la video et laisserait passer des URIs de segments non reecrites.
-const PLAYLIST_HINTS = ['/m3u8-proxy', '/content'];
+// Indices par defaut: aurora et lul servent des .m3u8 reconnaissables a leur extension,
+// rien a signaler. Le serveur "link" ajoute les siens quand il passe par jbam.
+const PLAYLIST_HINTS = [];
 
 /** Premiere URL .m3u8 trouvee dans un JSON, quelle que soit la cle utilisee. */
 function findM3u8(data, rawBody) {
@@ -126,16 +126,40 @@ const SERVERS = {
       });
       if (status !== 200 || !data?.stream) return null;
 
-      // Le CDN d'origine n'accepte que l'Origin/Referer de nextgencloudfabric.com. Le site
-      // ne le joint jamais autrement que par ce proxy: on emprunte le meme chemin.
-      const headers = JSON.stringify({
-        Origin: 'https://nextgencloudfabric.com',
-        Referer: 'https://nextgencloudfabric.com/',
-      });
-      return (
-        `${config.AETHER_M3U8_PROXY}?url=${encodeURIComponent(data.stream)}` +
-        `&headers=${encodeURIComponent(headers)}`
-      );
+      const cdnOrigin = config.AETHER_LINK_ORIGIN.replace(/\/+$/, '');
+
+      // Le site encapsule ce flux dans son propre proxy HLS (jbam), parce qu'un NAVIGATEUR
+      // ne peut ni forger un Origin ni echapper au CORS. Nous, si: on pose directement
+      // l'Origin/Referer que le CDN attend, et on economise un rebond entier.
+      //
+      // Ce rebond n'etait pas gratuit: jbam relaie lui-meme vers le CDN, et cette double
+      // indirection est ce qui faisait expirer les segments (timeouts a 20 s, pesees de
+      // debit en echec). C'est le meme raisonnement que pour la sonde (cf. probe.js): le
+      // proxy du site n'existe que pour le navigateur, pas pour un serveur.
+      if (!config.AETHER_LINK_VIA_JBAM) {
+        return {
+          url: data.stream,
+          headers: {
+            accept: '*/*',
+            'accept-language': kit.ACCEPT_LANGUAGE,
+            origin: cdnOrigin,
+            referer: `${cdnOrigin}/`,
+            'user-agent': kit.BROWSER_UA,
+            ...kit.chromeHints(),
+          },
+        };
+      }
+
+      // Repli sur le chemin du site, a l'identique, si le CDN venait a refuser l'acces direct.
+      const headers = JSON.stringify({ Origin: cdnOrigin, Referer: `${cdnOrigin}/` });
+      return {
+        url:
+          `${config.AETHER_M3U8_PROXY}?url=${encodeURIComponent(data.stream)}` +
+          `&headers=${encodeURIComponent(headers)}`,
+        // jbam sert playlists et segments sur des chemins sans extension: sans ces indices,
+        // ses sous-playlists repartiraient sans etre reecrites.
+        playlistHints: ['/m3u8-proxy', '/content'],
+      };
     },
   },
 };
@@ -161,12 +185,6 @@ async function getStreams({ tmdbId, type }) {
     servers.map(([, server]) => server.resolve({ http, tmdbId, refererUrl })),
   );
 
-  const spec = {
-    headers: playbackHeaders(refererUrl),
-    rules: PROXY_SPEC_RULES,
-    playlistHints: PLAYLIST_HINTS,
-  };
-
   const results = [];
   settled.forEach((outcome, index) => {
     const [, server] = servers[index];
@@ -178,8 +196,18 @@ async function getStreams({ tmdbId, type }) {
       log.ok('Aether', tmdbId, `${server.label}: aucun flux`);
       return;
     }
+
+    // Un resolveur rend soit une URL seule (recette commune), soit {url, headers,
+    // playlistHints} quand SON CDN attend autre chose -- c'est le cas de "link", dont le
+    // flux vient d'un tiers et n'a rien a faire des en-tetes d'aether.bar.
+    const resolved = typeof outcome.value === 'string' ? { url: outcome.value } : outcome.value;
+
     results.push({
-      url: kit.proxied(outcome.value, spec),
+      url: kit.proxied(resolved.url, {
+        headers: resolved.headers || playbackHeaders(refererUrl),
+        rules: PROXY_SPEC_RULES,
+        playlistHints: resolved.playlistHints || PLAYLIST_HINTS,
+      }),
       direct: true,
       sourceName: `Aether · ${server.label}`,
       lang: config.AETHER_LANG || undefined,

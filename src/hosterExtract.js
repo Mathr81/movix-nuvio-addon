@@ -55,6 +55,22 @@ function detectHoster(url, playerNameHint) {
   return null;
 }
 
+/**
+ * URL de flux dans une reponse d'extracteur.
+ *
+ * On retient le premier champ qui contient une VRAIE URL, et non le premier champ present:
+ * plusieurs services repondent {"source":"fsvid","url":"https://..."}, ou "source" nomme
+ * l'hebergeur. Prendre ce champ par priorite produisait des streams dont l'URL etait
+ * litteralement "fsvid" -- injouables, et remis tels quels a Nuvio.
+ */
+function pickStreamUrl(data) {
+  return [data.source, data.url, data.sourceUrl, data.m3u8Url, data.hlsUrl, data.ip_url, data.data?.url, data.link, data.file]
+    .filter((value) => typeof value === 'string')
+    // Une URL sans schema (//host/path) est valide: il lui manque juste le protocole.
+    .map((value) => (value.startsWith('//') ? `https:${value}` : value))
+    .find((value) => /^https?:\/\//i.test(value));
+}
+
 // Chaque extracteur reproduit exactement l'appel + le champ de reponse utilise par
 // src/utils/extractM3u8.ts cote frontend (verifie ligne par ligne).
 async function extractDirectUrl(embedUrl, playerNameHint) {
@@ -147,15 +163,14 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
     return { ok: false, reason: 'http-error', hoster, status };
   }
 
-  const url =
-    data.source || data.url || data.sourceUrl || data.m3u8Url || data.hlsUrl || data.ip_url || data.data?.url || data.link || data.file;
+  const url = pickStreamUrl(data);
 
   if (!url) {
-    console.warn(`[extract:${hoster}] reponse OK mais aucun champ URL reconnu pour ${embedUrl} -- reponse: ${JSON.stringify(data).slice(0, 300)}`);
+    console.warn(`[extract:${hoster}] reponse OK mais aucune URL exploitable pour ${embedUrl} -- reponse: ${JSON.stringify(data).slice(0, 300)}`);
     return { ok: false, reason: 'no-url-field', hoster };
   }
 
   return { ok: true, url, hoster };
 }
 
-module.exports = { detectHoster, extractDirectUrl };
+module.exports = { detectHoster, extractDirectUrl, pickStreamUrl };
