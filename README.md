@@ -150,7 +150,27 @@ cycle, sans instantané, traite tout comme nouveau et produit l'union des deux c
 - **Simkl ne reçoit pas les positions** : son API n'a pas d'endpoint de progression, et
   sa progression n'est de toute façon conservée qu'une semaine.
 - L'instantané n'est enregistré qu'en cas de succès complet — un échec partiel est
-  rejoué au cycle suivant plutôt qu'oublié.
+  rejoué au cycle suivant plutôt qu'oublié. Il intègre aussi ce que le cycle vient
+  d'**écrire** : sans ça, nos propres écritures reviendraient au tour suivant comme des
+  nouveautés venues de la source.
+
+#### Suppressions (`HUB_PROPAGATE_DELETIONS=true`)
+
+Retirer un titre quelque part le retire partout. Sans ça, une suppression est annulée au
+cycle suivant par les deux autres systèmes, qui le réajoutent.
+
+C'est le seul chemin destructif du hub, d'où trois garde-fous :
+
+1. **Un ajout concurrent l'emporte** — si l'élément a été (ré)ajouté ailleurs pendant le
+   même cycle, la suppression est ignorée. Effacer un ajout frais est irrattrapable ;
+   une suppression ignorée revient au tour suivant.
+2. **Une source qui paraît vide est tenue pour muette** — une lecture ratée ne se
+   distingue pas d'un compte vidé, alors on refuse de conclure.
+3. **Plafond par cycle** (`HUB_MAX_REMOVALS_PER_CYCLE`, 10 par défaut) — au-delà, on
+   suppose une lecture incomplète et on ne propage rien.
+
+> Côté Nuvio, supprimer ne coûte rien : la bibliothèque s'écrit en remplacement complet,
+> il suffit de ne pas renvoyer la ligne.
 - Les objets écrits côté Movix reproduisent exactement les formes du site
   (`{id, type, title, poster_path, addedAt}`, `continueWatching`, `watched_episodes_tv_*`),
   pour que l'interface du site les affiche normalement.
@@ -290,9 +310,22 @@ Chaque stream annonce son **débit** à côté de la résolution :
   par la durée TMDB. Estimation, préfixée `~`. Si la durée est inconnue (épisode dont
   TMDB ignore le runtime), la **taille** est affichée à la place.
 
-> Les hosters exigent presque tous un `Referer` de leur propre domaine, sinon `HEAD` et
-> `GET` répondent 403 — c'est pourquoi seul PurStream (master HLS servi sans contrôle)
-> était mesuré au départ. La sonde envoie désormais `Referer`/`Origin` déduits de l'URL.
+Les hosters exigent presque tous un `Referer` de leur propre domaine, sinon `HEAD` et
+`GET` répondent 403 — c'est pourquoi seul PurStream (master HLS servi sans contrôle)
+était mesuré au départ. **Le site ne les joint pas davantage depuis le navigateur** : il
+passe par son proxy (`buildProxyUrl`, `src/config/runtime.ts:19`), qui pose les
+`Origin`/`Referer` attendus par domaine (`API/miscs/bypass403.py:120`).
+
+Renseigne donc `PROBE_PROXY_BASE_URL`. Deux façons de l'obtenir :
+
+```bash
+# le plus simple: lancer le proxy du dépôt, il a déjà les en-têtes par domaine
+python API/miscs/bypass403.py           # écoute sur 25568
+PROBE_PROXY_BASE_URL=http://127.0.0.1:25568
+```
+
+ou reprendre la valeur de `VITE_PROXY_BASE_URL` du site (le worker Cloudflare). Les deux
+exposent la même route `/proxy/<url>`.
 
 Les streams sont triés : langue préférée d'abord (français par défaut), puis résolution,
 puis **débit** — à résolution égale, c'est lui qui sépare un vrai 1080p d'un upscale

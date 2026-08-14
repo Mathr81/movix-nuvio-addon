@@ -107,6 +107,9 @@ async function buildStreams({ tmdbId, type, season, episode }) {
       }
     }
 
+    // Deduplication sur l'URL FINALE: plusieurs pages d'embed differentes (parfois de
+    // sources differentes) pointent souvent vers le meme fichier chez le meme hebergeur.
+    // Ce ne sont pas des liens fusionnes, ce sont les memes.
     const seen = new Set();
     const deduped = resolved.filter((r) => {
       const key = r.externalUrl || r.url;
@@ -114,6 +117,9 @@ async function buildStreams({ tmdbId, type, season, episode }) {
       seen.add(key);
       return true;
     });
+    if (deduped.length < resolved.length) {
+      console.log(`[streamBuilder] ${resolved.length - deduped.length} doublon(s) exact(s) ecarte(s) (meme URL finale)`);
+    }
 
     // La duree sert a estimer le debit d'un fichier direct (taille / duree).
     const durationSeconds = await runtimeSeconds(type, tmdbId).catch(() => null);

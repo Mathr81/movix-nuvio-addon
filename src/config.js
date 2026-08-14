@@ -74,6 +74,12 @@ const config = {
   // et Nuvio a chaque fois. Plancher a 15 s.
   HUB_INTERVAL_MS: Math.max(Number(readEnv('HUB_INTERVAL_MS', 45000)), 15000),
   HUB_STATE_FILE: readEnv('HUB_STATE_FILE', ''),
+  // Propager les SUPPRESSIONS (retirer un titre quelque part le retire partout).
+  // Destructif par nature: opt-in, et a n'activer qu'une fois un cycle normal verifie.
+  HUB_PROPAGATE_DELETIONS: readBool('HUB_PROPAGATE_DELETIONS', false),
+  // Coupe-circuit: au-dela de ce nombre de disparitions en un cycle, on suppose une
+  // lecture incomplete plutot qu'un menage volontaire, et on ne propage rien.
+  HUB_MAX_REMOVALS_PER_CYCLE: Number(readEnv('HUB_MAX_REMOVALS_PER_CYCLE', 10)),
 
   // --- Simkl (tracker sans limite d'app connectee, integre nativement par Nuvio) ---
   SIMKL_BASE_URL: readEnv('SIMKL_BASE_URL', 'https://api.simkl.com'),

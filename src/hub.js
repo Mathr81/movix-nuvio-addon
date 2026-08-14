@@ -281,15 +281,34 @@ async function readSimkl() {
 
 // --- Diff ------------------------------------------------------------------
 
-/** Empreinte comparable d'un modele: c'est elle qui est persistee entre deux tours. */
-function snapshot(model) {
-  return {
-    library: [...model.library.keys()],
-    watched: [...model.watched.keys()],
-    // La position arrondie a la seconde suffit a detecter une lecture; la garder brute
-    // ferait diverger l'empreinte a chaque tour pour cause d'arrondi flottant.
-    progress: Object.fromEntries([...model.progress].map(([k, v]) => [k, Math.round(v.position)])),
-  };
+/**
+ * Empreinte comparable d'un modele: c'est elle qui est persistee entre deux tours.
+ *
+ * `additions` / `removals` projettent ce que le cycle vient d'ECRIRE dans la source.
+ * Sans cette projection, l'instantane refleterait l'etat d'AVANT nos propres ecritures,
+ * et le tour suivant les relirait comme des nouveautes venues de la source -- ce qui
+ * relance une propagation inutile et, pire, annule une vraie suppression faite entre
+ * temps (notre echo compterait comme un ajout concurrent).
+ */
+function snapshot(model, additions, removals) {
+  const library = new Set(model.library.keys());
+  const watched = new Set(model.watched.keys());
+  // La position arrondie a la seconde suffit a detecter une lecture; la garder brute
+  // ferait diverger l'empreinte a chaque tour pour cause d'arrondi flottant.
+  const progress = Object.fromEntries([...model.progress].map(([k, v]) => [k, Math.round(v.position)]));
+
+  if (additions) {
+    for (const e of additions.library) library.add(libKey(e.type, e.id));
+    for (const e of additions.watched) watched.add(watchedKey(e.type, e.id, e.season, e.episode));
+    for (const e of additions.progress) progress[progressKey(e.type, e.id, e.season, e.episode)] = Math.round(e.position);
+  }
+  if (removals) {
+    for (const key of removals.library) library.delete(key);
+    for (const key of removals.watched) watched.delete(key);
+    for (const key of removals.progress) delete progress[key];
+  }
+
+  return { library: [...library], watched: [...watched], progress };
 }
 
 /** Ce qui est apparu (ou a bouge) dans `model` depuis l'instantane `previous`. */
@@ -322,6 +341,96 @@ function notYetIn(delta, target) {
 }
 
 const deltaSize = (d) => d.library.length + d.watched.length + d.progress.length;
+
+/**
+ * Ce qui a DISPARU d'une source depuis l'instantane precedent.
+ *
+ * Sans cette detection, retirer un titre de sa watchlist ne sert a rien: le tour suivant
+ * le voit encore chez les deux autres et le reajoute. Une suppression doit donc voyager
+ * comme un ajout.
+ *
+ * Les cles suffisent (le contenu supprime n'existe plus nulle part), d'ou la relecture
+ * depuis l'instantane plutot que depuis un modele.
+ */
+function removalsSince(model, previous) {
+  if (!previous) return { library: [], watched: [], progress: [] }; // premier tour: rien n'a disparu
+
+  const gone = (keys, present) => (keys || []).filter((k) => !present.has(k));
+  return {
+    library: gone(previous.library, model.library),
+    watched: gone(previous.watched, model.watched),
+    progress: gone(Object.keys(previous.progress || {}), model.progress),
+  };
+}
+
+/**
+ * Coupe-circuit sur les suppressions.
+ *
+ * Une suppression detectee n'est qu'une absence: elle ne distingue pas "l'utilisateur a
+ * retire ce titre" de "la lecture de cette source a echoue ou repondu partiellement".
+ * Confondre les deux propagerait un effacement massif chez les deux autres systemes --
+ * la seule faute vraiment irrattrapable de tout le hub.
+ *
+ * Deux garde-fous: une source qui parait entierement vide alors qu'elle ne l'etait pas
+ * est tenue pour muette, et un volume anormal de disparitions en un seul cycle est
+ * refuse. Dans les deux cas on ne perd rien: un vrai retrait se represente au tour
+ * suivant, ou dans un cycle ou il sera minoritaire.
+ */
+function guardRemovals(source, removals, model, previous) {
+  const count = removals.library.length + removals.watched.length + removals.progress.length;
+  if (count === 0) return removals;
+
+  const previousSize = (previous?.library?.length || 0) + (previous?.watched?.length || 0);
+  const currentSize = model.library.size + model.watched.size;
+  if (previousSize > 0 && currentSize === 0) {
+    console.warn(`[hub] ${source} parait vide alors qu'il contenait ${previousSize} entree(s): suppressions ignorees`);
+    return { library: [], watched: [], progress: [] };
+  }
+
+  if (count > config.HUB_MAX_REMOVALS_PER_CYCLE) {
+    console.warn(
+      `[hub] ${count} disparitions detectees dans ${source} en un cycle (plafond ${config.HUB_MAX_REMOVALS_PER_CYCLE}): ` +
+        'suppressions ignorees. Releve HUB_MAX_REMOVALS_PER_CYCLE si le menage est volontaire.',
+    );
+    return { library: [], watched: [], progress: [] };
+  }
+
+  return removals;
+}
+
+/** `movie:157336` / `series:1399:2:5` -> objet exploitable. */
+function parseKey(key) {
+  const [type, id, season, episode] = key.split(':');
+  return {
+    type: type === 'series' ? 'series' : 'movie',
+    id: Number(id),
+    season: season ? Number(season) : null,
+    episode: episode ? Number(episode) : null,
+  };
+}
+
+/**
+ * Une suppression ne l'emporte que si personne n'a (re)ajoute l'element ailleurs pendant
+ * le meme cycle. Sinon on effacerait un ajout tout frais, ce qui est la faute la plus
+ * couteuse a rattraper -- alors qu'une suppression ignoree revient au tour suivant.
+ */
+function withoutContested(removals, additions) {
+  const added = new Set([
+    ...additions.library.map((e) => libKey(e.type, e.id)),
+    ...additions.watched.map((e) => watchedKey(e.type, e.id, e.season, e.episode)),
+    ...additions.progress.map((e) => progressKey(e.type, e.id, e.season, e.episode)),
+  ]);
+  const keep = (keys) => keys.filter((k) => !added.has(k));
+  return { library: keep(removals.library), watched: keep(removals.watched), progress: keep(removals.progress) };
+}
+
+function mergeRemovals(a, b) {
+  return {
+    library: [...new Set([...a.library, ...b.library])],
+    watched: [...new Set([...a.watched, ...b.watched])],
+    progress: [...new Set([...a.progress, ...b.progress])],
+  };
+}
 
 /** Fusion de deux deltas, dedupliquee par cle canonique. */
 function union(a, b) {
@@ -443,6 +552,129 @@ async function applyToMovix(delta) {
   return movixSync.writeSync([...entries].map(([key, value]) => ({ key, value })));
 }
 
+/**
+ * Suppressions cote Movix. On reecrit chaque liste amputee de l'element (les cles du
+ * localStorage sont des tableaux entiers, il n'y a pas de suppression unitaire), et on
+ * utilise l'operation `remove` pour les cles de progression, qui existent une par titre.
+ */
+async function applyRemovalsToMovix(removals) {
+  const raw = await movixSync.fetchSyncData();
+  if (!raw) throw new Error('sync Movix indisponible');
+
+  const entries = new Map();
+  const removeKeys = [];
+  const readKey = (key, fallback) => (entries.has(key) ? entries.get(key) : parseJson(raw[key], fallback));
+
+  const dropFromList = (key, id) => {
+    const list = readKey(key, []);
+    if (!Array.isArray(list)) return;
+    const next = list.filter((e) => Number(typeof e === 'number' ? e : e?.id) !== id);
+    if (next.length !== list.length) entries.set(key, next);
+  };
+
+  for (const key of removals.library) {
+    const { type, id } = parseKey(key);
+    // Un titre retire "de la bibliotheque" peut venir de l'une ou l'autre des listes du
+    // site: on le retire des deux, sans quoi il reviendrait par celle qu'on aurait omise.
+    for (const listKey of type === 'series'
+      ? ['watchlist_tv', 'favorites_tv', 'favorite_tv']
+      : ['watchlist_movie', 'favorite_movie', 'favorite_movies']) {
+      dropFromList(listKey, id);
+    }
+  }
+
+  for (const key of removals.watched) {
+    const { type, id, season, episode } = parseKey(key);
+    if (type === 'series' && season) {
+      const mapKey = `watched_episodes_tv_${id}`;
+      const map = readKey(mapKey, {});
+      if (map && typeof map === 'object' && map[`S${season}E${episode}`]) {
+        delete map[`S${season}E${episode}`];
+        entries.set(mapKey, map);
+      }
+    } else {
+      dropFromList(type === 'series' ? 'watched_tv' : 'watched_movie', id);
+    }
+  }
+
+  if (removals.progress.length > 0) {
+    const continueWatching = readKey('continueWatching', { movies: [], tv: [] });
+    let touched = false;
+
+    for (const key of removals.progress) {
+      const { type, id, season, episode } = parseKey(key);
+      removeKeys.push(type === 'series' ? `progress_tv_${id}_s${season}_e${episode}` : `progress_${id}`);
+
+      const bucket = type === 'series' ? continueWatching.tv : continueWatching.movies;
+      if (!Array.isArray(bucket)) continue;
+      const next = bucket.filter((e) => Number(typeof e === 'number' ? e : e?.id) !== id);
+      if (next.length !== bucket.length) {
+        if (type === 'series') continueWatching.tv = next;
+        else continueWatching.movies = next;
+        touched = true;
+      }
+    }
+    if (touched) entries.set('continueWatching', continueWatching);
+  }
+
+  const ops = [
+    ...[...entries].map(([key, value]) => ({ key, value })),
+    ...removeKeys.map((key) => ({ key, op: 'remove' })),
+  ];
+  if (ops.length === 0) return { retirees: 0 };
+  await movixSync.writeSync(ops);
+  return { retirees: ops.length };
+}
+
+/** Suppressions cote Simkl: listes et historique ont chacun leur endpoint. */
+async function applyRemovalsToSimkl(removals) {
+  if (!simkl.isAuthenticated()) return null;
+  const result = {};
+
+  const byType = (keys) => {
+    const movies = [];
+    const shows = [];
+    for (const key of keys) {
+      const { type, id } = parseKey(key);
+      (type === 'series' ? shows : movies).push({ ids: { tmdb: String(id) } });
+    }
+    return { movies, shows };
+  };
+
+  if (removals.library.length > 0) {
+    const payload = byType(removals.library);
+    await simkl.post('/sync/remove-from-list', payload);
+    result.liste = removals.library.length;
+  }
+
+  if (removals.watched.length > 0) {
+    // Les episodes se retirent par serie + saison + numero, comme a l'ajout.
+    const movies = [];
+    const shows = new Map();
+    for (const key of removals.watched) {
+      const { type, id, season, episode } = parseKey(key);
+      if (type === 'series' && season) {
+        if (!shows.has(id)) shows.set(id, new Map());
+        const seasons = shows.get(id);
+        if (!seasons.has(season)) seasons.set(season, []);
+        seasons.get(season).push({ number: episode });
+      } else {
+        movies.push({ ids: { tmdb: String(id) } });
+      }
+    }
+    await simkl.post('/sync/history/remove', {
+      movies,
+      shows: [...shows].map(([id, seasons]) => ({
+        ids: { tmdb: String(id) },
+        seasons: [...seasons].map(([number, episodes]) => ({ number, episodes })),
+      })),
+    });
+    result.historique = removals.watched.length;
+  }
+
+  return Object.keys(result).length > 0 ? result : null;
+}
+
 // --- Ecriture vers Nuvio ---------------------------------------------------
 
 function contentIdFor(item) {
@@ -467,10 +699,10 @@ async function libraryRow(item) {
   };
 }
 
-async function applyToNuvio(profileId, delta, nuvioModel) {
+async function applyToNuvio(profileId, delta, removals = { library: [] }) {
   const result = {};
 
-  if (delta.library.length > 0) {
+  if (delta.library.length > 0 || removals.library.length > 0) {
     // sync_push_library REMPLACE toute la bibliotheque: il faut renvoyer l'union,
     // pas seulement les nouveautes, sous peine d'effacer le reste.
     const existing = await nuvio.pullLibrary(profileId);
@@ -486,8 +718,15 @@ async function applyToNuvio(profileId, delta, nuvioModel) {
       const row = await libraryRow(item);
       if (!merged.has(row.content_id)) merged.set(row.content_id, row);
     }
+    // La bibliotheque Nuvio s'ecrit en remplacement complet: supprimer, c'est simplement
+    // ne pas renvoyer la ligne. Aucun endpoint de suppression n'est necessaire.
+    for (const key of removals.library) {
+      const { type, id } = parseKey(key);
+      merged.delete(contentIdFor({ type, id }));
+    }
     await nuvio.pushLibrary(profileId, [...merged.values()]);
     result.library = delta.library.length;
+    if (removals.library.length > 0) result.libraryRetirees = removals.library.length;
   }
 
   if (delta.watched.length > 0) {
@@ -527,7 +766,6 @@ async function applyToNuvio(profileId, delta, nuvioModel) {
     result.progress = entries.length;
   }
 
-  void nuvioModel;
   return result;
 }
 
@@ -640,6 +878,27 @@ async function runCycle({ dryRun = false } = {}) {
     const toMovix = notYetIn(union(changes.nuvio, changes.simkl), movix);
     const toSimkl = notYetIn(union(changes.movix, changes.nuvio), simklModel);
 
+    // Suppressions: memes chemins que les ajouts, mais on ecarte tout element (re)ajoute
+    // ailleurs pendant le meme cycle -- effacer un ajout frais est irrattrapable, alors
+    // qu'une suppression ignoree se represente au tour suivant.
+    const allAdditions = union(union(changes.movix, changes.nuvio), changes.simkl);
+    const gone = config.HUB_PROPAGATE_DELETIONS
+      ? {
+          movix: guardRemovals('Movix', removalsSince(movix, previous?.movix), movix, previous?.movix),
+          nuvio: guardRemovals('Nuvio', removalsSince(nuvioModel, previous?.nuvio), nuvioModel, previous?.nuvio),
+          simkl: guardRemovals('Simkl', removalsSince(simklModel, previous?.simkl), simklModel, previous?.simkl),
+        }
+      : { movix: null, nuvio: null, simkl: null };
+
+    const removeFrom = (a, b) =>
+      config.HUB_PROPAGATE_DELETIONS
+        ? withoutContested(mergeRemovals(a, b), allAdditions)
+        : { library: [], watched: [], progress: [] };
+
+    const removeInNuvio = removeFrom(gone.movix, gone.simkl);
+    const removeInMovix = removeFrom(gone.nuvio, gone.simkl);
+    const removeInSimkl = removeFrom(gone.movix, gone.nuvio);
+
     const count = (d) => ({ library: d.library.length, watched: d.watched.length, progress: d.progress.length });
     const summary = {
       ok: true,
@@ -652,6 +911,9 @@ async function runCycle({ dryRun = false } = {}) {
       versNuvio: count(toNuvio),
       versMovix: count(toMovix),
       versSimkl: count(toSimkl),
+      retraits: config.HUB_PROPAGATE_DELETIONS
+        ? { nuvio: count(removeInNuvio), movix: count(removeInMovix), simkl: count(removeInSimkl) }
+        : 'desactive (HUB_PROPAGATE_DELETIONS)',
     };
 
     if (dryRun) {
@@ -672,9 +934,14 @@ async function runCycle({ dryRun = false } = {}) {
       }
     };
 
-    if (deltaSize(toNuvio) > 0) await step('pousseVersNuvio', () => applyToNuvio(profileId, toNuvio, nuvioModel));
+    if (deltaSize(toNuvio) > 0 || removeInNuvio.library.length > 0) {
+      await step('pousseVersNuvio', () => applyToNuvio(profileId, toNuvio, removeInNuvio));
+    }
     if (deltaSize(toMovix) > 0) await step('pousseVersMovix', () => applyToMovix(toMovix));
     if (deltaSize(toSimkl) > 0) await step('pousseVersSimkl', () => applyToSimkl(toSimkl));
+
+    if (deltaSize(removeInMovix) > 0) await step('retireDeMovix', () => applyRemovalsToMovix(removeInMovix));
+    if (deltaSize(removeInSimkl) > 0) await step('retireDeSimkl', () => applyRemovalsToSimkl(removeInSimkl));
 
     // Les positions partent vers Simkl a chaque cycle, sans filtrage par delta: il ne les
     // conserve qu'une semaine, donc les repousser est justement ce qui les maintient.
@@ -686,7 +953,11 @@ async function runCycle({ dryRun = false } = {}) {
     // L'instantane n'est enregistre qu'en cas de succes complet: un echec partiel doit
     // etre rejoue au tour suivant, pas oublie.
     if (summary.ok) {
-      saveState({ movix: snapshot(movix), nuvio: snapshot(nuvioModel), simkl: snapshot(simklModel) });
+      saveState({
+        movix: snapshot(movix, toMovix, removeInMovix),
+        nuvio: snapshot(nuvioModel, toNuvio, removeInNuvio),
+        simkl: snapshot(simklModel, toSimkl, removeInSimkl),
+      });
     }
 
     lastRun = { at: new Date().toISOString(), summary };
