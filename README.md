@@ -753,6 +753,41 @@ resterait sans débit pendant des minutes alors qu'il était mesurable.
 les mesures attendent surtout le réseau, les extractions tapent un service unique qu'il
 est inutile de bousculer.
 
+#### Répondre avant d'avoir tout mesuré
+
+La liste part au bout de `STREAM_FIRST_ANSWER_MS` (2,5 s) avec les débits **déjà** obtenus.
+Les sondes restantes ne sont pas abandonnées : elles continuent, et **remplacent l'entrée de
+cache** quand elles ont fini. Comme Nuvio redemande `/stream` à chaque ouverture de fiche,
+ce qui manquait au premier affichage est là au second — sans avoir fait attendre personne.
+
+Le compromis est explicite : au tout premier affichage d'un titre, quelques liens peuvent
+apparaître sans débit. `STREAM_FIRST_ANSWER_MS=0` rétablit l'ancien comportement (tout
+attendre). `/debug/streams` passe `wait: true` et voit toujours l'état **final**, sinon il
+décrirait un état transitoire et on diagnostiquerait un débit manquant qui n'en est pas un.
+
+#### Préparer l'épisode suivant
+
+Quand une fiche d'épisode s'ouvre, la suite est prévisible : c'est l'épisode d'après. Il est
+résolu en tâche de fond, `PREFETCH_DELAY_MS` après la réponse (le temps que la fiche en
+cours finisse ses propres mesures), et son ouverture est alors immédiate.
+
+Le coût est d'**une** résolution — là où précharger un catalogue entier en coûterait des
+dizaines pour rien. L'existence de l'épisode est vérifiée auprès de TMDB avant de lancer
+quoi que ce soit : une fin de saison ne déclenche pas un tour complet de scraping pour un
+épisode qui n'existe pas. `PREFETCH_NEXT_EPISODE=false` le désactive.
+
+#### Un cache qui survit au redémarrage
+
+Tout était en mémoire : un `npm start` repartait de zéro et la première ouverture de chaque
+fiche repayait le scraping, l'extraction **et** la mesure de débit. Le cache est maintenant
+écrit dans `data/cache.json` (toutes les `CACHE_SAVE_INTERVAL_MS`, et à l'arrêt).
+
+L'écriture est **atomique** — fichier temporaire puis `rename` : une coupure en plein write
+laisserait sinon un JSON tronqué, et le cache serait perdu au démarrage suivant, ce qu'on
+cherche précisément à éviter. Les entrées portent leur date d'expiration : celles qui l'ont
+dépassée ne sont ni écrites ni relues. Un fichier illisible est ignoré et le serveur démarre
+sur un cache vide.
+
 ## Diagnostic
 
 Quand Nuvio affiche « aucun stream », deux endpoints donnent l'état réel :

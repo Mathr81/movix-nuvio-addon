@@ -27,7 +27,7 @@ async function mapLimit(items, limit, fn) {
   async function worker() {
     while (cursor < items.length) {
       const index = cursor++;
-      results[index] = await fn(items[index]);
+      results[index] = await fn(items[index], index);
     }
   }
 
@@ -181,15 +181,58 @@ async function collectRawLinks({ tmdbId, type, season, episode }) {
   return settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
 }
 
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms).unref?.());
+
+/** Mesures encore en cours, par cle de cache (cf. l'option `wait`). */
+const completing = new Map();
+
+/** Un lien, decrit avec ce que la sonde en sait -- rien au depart, tout a la fin. */
+function describe(link, measured) {
+  const labelled = parseQuality(link.quality, link.player, link.sourceName, link.lang);
+  const height = measured.height || labelled;
+  return {
+    ...link,
+    // Une RESOLUTION lue dans un master HLS vaut mieux qu'un libelle "HD" approximatif.
+    height,
+    width: measured.width,
+    // Palier retenu: une seule notion pour l'affichage, le tri ET l'elagage, sans quoi deux
+    // liens seraient compares sur une echelle et affiches sur une autre.
+    tier: resolutionTier(measured.width, height),
+    bitrate: measured.bitrate,
+    bytes: measured.bytes,
+    bitrateEstimated: measured.estimated,
+    // Nombre de segments effectivement peses: c'est lui qui dit si un debit affiche est
+    // solide ou tire d'un seul prelevement (cf. /debug/streams).
+    bitrateSamples: measured.samples,
+    langRank: langScore(link.lang, link.sourceName, link.quality, link.player),
+  };
+}
+
+/**
+ * Tri: langue preferee, resolution, puis debit -- a resolution egale, c'est le debit qui
+ * separe un vrai 1080p d'un upscale compresse. Les liens externes en dernier.
+ */
+function sortStreams(streams) {
+  return streams.sort((a, b) => {
+    if (a.langRank !== b.langRank) return a.langRank - b.langRank;
+    if (tierOf(b) !== tierOf(a)) return tierOf(b) - tierOf(a);
+    if ((b.bitrate || 0) !== (a.bitrate || 0)) return (b.bitrate || 0) - (a.bitrate || 0);
+    return (a.externalUrl ? 1 : 0) - (b.externalUrl ? 1 : 0);
+  });
+}
+
 /**
  * Liens resolus et mesures, avant mise en forme Stremio. Expose pour /debug/streams:
  * c'est a ce niveau qu'on voit la difference entre "aucun debit mesure" et "debit mesure
  * mais aberrant", ce que le libelle final ne dit plus.
+ *
+ * `wait` attend que TOUTES les mesures soient finies (diagnostic); par defaut on rend la
+ * main au bout de STREAM_FIRST_ANSWER_MS et les sondes restantes continuent seules.
  */
-async function resolveStreams({ tmdbId, type, season, episode }) {
+async function resolveStreams({ tmdbId, type, season, episode, wait = false }) {
   const cacheKey = `resolved:${type}:${tmdbId}:${season ?? '-'}:${episode ?? '-'}`;
 
-  return cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
+  const first = await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
     const raw = await collectRawLinks({ tmdbId, type, season, episode });
 
     const direct = raw.filter((r) => r.direct && r.url);
@@ -238,8 +281,10 @@ async function resolveStreams({ tmdbId, type, season, episode }) {
     // -- et rien n'est mis en cache, la mesure sera retentee au prochain passage.
     const probeDeadline = config.PROBE_PHASE_BUDGET_MS > 0 ? Date.now() + config.PROBE_PHASE_BUDGET_MS : 0;
 
-    const enriched = await mapLimit(deduped, config.PROBE_CONCURRENCY, async (r) => {
-      const labelled = parseQuality(r.quality, r.player, r.sourceName, r.lang);
+    // Chaque lien est d'abord decrit SANS mesure, puis sa case est remplacee des que sa
+    // sonde repond. La liste est donc lisible a tout instant, complete ou non.
+    const slots = deduped.map((r) => describe(r, {}));
+    const measuring = mapLimit(deduped, config.PROBE_CONCURRENCY, async (r, index) => {
       const measured = r.externalUrl
         ? {}
         : await probe(r.url, {
@@ -247,33 +292,8 @@ async function resolveStreams({ tmdbId, type, season, episode }) {
             refererUrl: r.embedUrl,
             hoster: r.hoster,
             deadline: probeDeadline,
-          });
-      const height = measured.height || labelled;
-      return {
-        ...r,
-        // Une RESOLUTION lue dans un master HLS vaut mieux qu'un libelle "HD" approximatif.
-        height,
-        width: measured.width,
-        // Palier retenu: une seule notion pour l'affichage, le tri ET l'elagage, sans quoi
-        // deux liens seraient compares sur une echelle et affiches sur une autre.
-        tier: resolutionTier(measured.width, height),
-        bitrate: measured.bitrate,
-        bytes: measured.bytes,
-        bitrateEstimated: measured.estimated,
-        // Nombre de segments effectivement peses: c'est lui qui dit si un debit affiche
-        // est solide ou tire d'un seul prelevement (cf. /debug/streams).
-        bitrateSamples: measured.samples,
-        langRank: langScore(r.lang, r.sourceName, r.quality, r.player),
-      };
-    });
-
-    // Tri: langue preferee, resolution, puis debit -- a resolution egale, c'est le debit
-    // qui separe un vrai 1080p d'un upscale compresse. Les liens externes en dernier.
-    enriched.sort((a, b) => {
-      if (a.langRank !== b.langRank) return a.langRank - b.langRank;
-      if (tierOf(b) !== tierOf(a)) return tierOf(b) - tierOf(a);
-      if ((b.bitrate || 0) !== (a.bitrate || 0)) return (b.bitrate || 0) - (a.bitrate || 0);
-      return (a.externalUrl ? 1 : 0) - (b.externalUrl ? 1 : 0);
+          }).catch(() => ({}));
+      slots[index] = describe(r, measured);
     });
 
     if (unplayable.length > 0) {
@@ -283,14 +303,46 @@ async function resolveStreams({ tmdbId, type, season, episode }) {
       console.warn(`[streamBuilder] ${unplayable.length} embed(s) sans extracteur: ${hosts.join(', ')}`);
     }
 
+    // Reponse en deux temps: on n'attend les mesures que le temps qu'on s'est donne, puis
+    // on rend ce qu'on a. Les sondes restantes CONTINUENT, et remplacent l'entree de cache
+    // quand elles ont fini -- l'ouverture suivante de la fiche aura tout.
+    //
+    // Nuvio redemande /stream a chaque ouverture: le debit manquant au premier affichage
+    // est la au second, sans qu'on ait fait attendre qui que ce soit.
+    const waited = config.STREAM_FIRST_ANSWER_MS > 0 && !wait;
+    if (waited) await Promise.race([measuring, delay(config.STREAM_FIRST_ANSWER_MS)]);
+    else await measuring;
+
+    const complete = measuring.then(() => {
+      const finished = sortStreams([...slots]);
+      cache.set(cacheKey, finished, config.CACHE_TTL_MS);
+      completing.delete(cacheKey);
+      return finished;
+    });
+    completing.set(cacheKey, complete);
+    complete.catch(() => completing.delete(cacheKey));
+
+    const enriched = sortStreams([...slots]);
+    const mesures = enriched.filter((r) => r.bitrate).length;
+
     console.log(
       `[streamBuilder] tmdbId=${tmdbId} type=${type} S${season ?? '-'}E${episode ?? '-'} -- ` +
         `${raw.length} lien(s) brut(s) (${direct.length} direct, ${embeds.length} embed), ` +
-        `${extracted.filter(Boolean).length}/${embeds.length} embed(s) extrait(s), ${enriched.length} stream(s) mesure(s)`,
+        `${extracted.filter(Boolean).length}/${embeds.length} embed(s) extrait(s), ` +
+        `${mesures}/${enriched.length} debit(s) mesure(s)` +
+        `${mesures < enriched.length && waited ? ' -- le reste continue en arriere-plan' : ''}`,
     );
 
     return enriched;
   });
+
+  // `wait`: /debug/streams doit voir la mesure ACHEVEE, sinon il decrirait un etat
+  // transitoire et on diagnostiquerait un debit manquant qui n'en est pas un.
+  if (wait && completing.has(cacheKey)) {
+    await completing.get(cacheKey);
+    return cache.get(cacheKey) || first;
+  }
+  return first;
 }
 
 async function buildStreams({ tmdbId, type, season, episode }) {
@@ -341,4 +393,45 @@ async function buildStreams({ tmdbId, type, season, episode }) {
   });
 }
 
-module.exports = { buildStreams, resolveStreams, collectRawLinks };
+/**
+ * Prepare l'episode suivant, en arriere-plan.
+ *
+ * Quand une fiche d'episode s'ouvre, la suite du visionnage est previsible: c'est l'episode
+ * d'apres. Le resoudre pendant qu'on regarde celui-ci rend son ouverture immediate, pour
+ * une seule resolution de plus -- la ou precharger tout un catalogue en couterait des
+ * dizaines pour rien.
+ *
+ * Silencieux et sans await: un echec de prechauffage ne doit jamais peser sur la reponse
+ * qui vient d'etre rendue.
+ */
+function prefetchNextEpisode({ tmdbId, type, season, episode }) {
+  if (!config.PREFETCH_NEXT_EPISODE || type !== 'series') return;
+  if (season == null || episode == null) return;
+
+  const next = Number(episode) + 1;
+  const cacheKey = `resolved:${type}:${tmdbId}:${season}:${next}`;
+  // Deja en cache ou deja en cours: rien a faire.
+  if (cache.get(cacheKey) !== undefined || completing.has(cacheKey)) return;
+
+  setTimeout(async () => {
+    try {
+      // L'episode existe-t-il seulement? Sans cette verification, une fin de saison
+      // declencherait un tour complet de scraping pour un episode qui n'existe pas.
+      const details = await cache.wrap(
+        `season:${tmdbId}:${season}`,
+        config.CACHE_TTL_MS,
+        config.CACHE_EMPTY_TTL_MS,
+        () => tmdbClient.season(tmdbId, season),
+      );
+      const exists = (details?.episodes || []).some((ep) => ep.episode_number === next);
+      if (!exists) return;
+
+      await resolveStreams({ tmdbId, type, season, episode: next, wait: true });
+      console.log(`[streamBuilder] S${season}E${next} prepare a l'avance`);
+    } catch (err) {
+      console.warn(`[streamBuilder] prechauffage S${season}E${next} abandonne: ${err.message}`);
+    }
+  }, config.PREFETCH_DELAY_MS).unref();
+}
+
+module.exports = { buildStreams, resolveStreams, collectRawLinks, prefetchNextEpisode };

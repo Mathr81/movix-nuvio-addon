@@ -4,7 +4,7 @@ const tmdbClient = require('./tmdb');
 const config = require('./config');
 const cache = require('./cache');
 const { resolveId } = require('./idResolver');
-const { buildStreams } = require('./streamBuilder');
+const { buildStreams, prefetchNextEpisode } = require('./streamBuilder');
 const { buildSubtitles } = require('./subtitles');
 const { genreId } = require('./genres');
 const movixSync = require('./movixSync');
@@ -178,6 +178,8 @@ builder.defineStreamHandler(async ({ type, id }) => {
   try {
     const { tmdbId, season, episode } = await resolveId(type, id);
     const streams = await buildStreams({ tmdbId, type, season, episode });
+    // Apres avoir repondu, pas avant: c'est du confort pour la suite, jamais un delai ici.
+    prefetchNextEpisode({ tmdbId, type, season, episode });
     return { streams };
   } catch (err) {
     console.error('[stream] erreur:', err.message);

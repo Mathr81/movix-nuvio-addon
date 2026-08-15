@@ -129,6 +129,15 @@ const config = {
   // Mesures menees de front. Elles attendent surtout le reseau: plus large que l'extraction,
   // qui tape un service unique et n'a rien a gagner a etre bousculee.
   PROBE_CONCURRENCY: Number(readEnv('PROBE_CONCURRENCY', 10)),
+  // Reponse en deux temps: delai au-dela duquel la liste part avec les debits deja mesures,
+  // les sondes restantes continuant seules pour l'ouverture suivante. C'est ce qui separe
+  // "la fiche s'ouvre" de "la fiche s'ouvre completement renseignee". 0 = tout attendre.
+  STREAM_FIRST_ANSWER_MS: Number(readEnv('STREAM_FIRST_ANSWER_MS', 2500)),
+  // Prepare l'episode SUIVANT pendant qu'on regarde celui-ci: c'est la seule suite
+  // previsible d'une ouverture de fiche, et elle ne coute qu'une resolution de plus.
+  // Le delai laisse d'abord la fiche en cours finir ses propres mesures.
+  PREFETCH_NEXT_EPISODE: readBool('PREFETCH_NEXT_EPISODE', true),
+  PREFETCH_DELAY_MS: Number(readEnv('PREFETCH_DELAY_MS', 15000)),
   EXTRACT_CONCURRENCY: Number(readEnv('EXTRACT_CONCURRENCY', 6)),
   // Disjoncteur: apres N PANNES d'affilee (5xx, timeout), un hebergeur est mis de cote
   // pendant ce delai. Les refus portant sur une video precise (4xx) ne comptent pas.
@@ -210,6 +219,11 @@ const config = {
   SHOW_UNPLAYABLE_EMBEDS: readBool('SHOW_UNPLAYABLE_EMBEDS', false),
 
   CACHE_TTL_MS: Number(readEnv('CACHE_TTL_MS', 30 * 60 * 1000)),
+  // Le cache survit au redemarrage: sans ca, un `npm start` fait repayer a la premiere
+  // ouverture de chaque fiche le scraping, l'extraction et la mesure de debit.
+  CACHE_PERSIST: readBool('CACHE_PERSIST', true),
+  CACHE_FILE: readEnv('CACHE_FILE', ''),
+  CACHE_SAVE_INTERVAL_MS: Number(readEnv('CACHE_SAVE_INTERVAL_MS', 60000)),
   CACHE_EMPTY_TTL_MS: Number(readEnv('CACHE_EMPTY_TTL_MS', 2 * 60 * 1000)),
 
   // Langues privilegiees dans le tri des streams (prefixes matches sur le libelle).

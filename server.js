@@ -169,7 +169,8 @@ app.get('/debug/streams/:type/:id', async (req, res) => {
   try {
     const { type, id } = req.params;
     const { tmdbId, season, episode } = await resolveId(type, id);
-    const resolved = await resolveStreams({ tmdbId, type, season, episode });
+    // `wait`: on veut l'etat FINAL des mesures, pas celui de la premiere reponse.
+    const resolved = await resolveStreams({ tmdbId, type, season, episode, wait: true });
 
     res.json({
       tmdbId,
