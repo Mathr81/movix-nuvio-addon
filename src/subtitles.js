@@ -13,7 +13,25 @@ const OS_BASE = 'https://rest.opensubtitles.org';
 const OS_HEADERS = { 'User-Agent': 'Movix/1.0' };
 
 /**
- * Cherche les sous-titres disponibles pour un titre.
+ * Cherche les sous-titres d'un titre pour UNE langue.
+ *
+ * Une seule langue par requete, comme le fait le lecteur du site
+ * (HLSPlayer.tsx:4537-4547): l'API ne documente pas de liste separee par virgules, et
+ * `sublanguageid-fre,eng` se solde par un 400 -- donc par une absence totale de
+ * sous-titres, sans que rien n'indique pourquoi.
+ */
+async function searchLang({ bareImdb, lang, type, season, episode }) {
+  const path =
+    type === 'series' && season !== undefined && episode !== undefined
+      ? `/search/episode-${episode}/imdbid-${bareImdb}/season-${season}/sublanguageid-${lang}`
+      : `/search/imdbid-${bareImdb}/sublanguageid-${lang}`;
+
+  const { data } = await axios.get(`${OS_BASE}${path}`, { headers: OS_HEADERS, timeout: 12000 });
+  return Array.isArray(data) ? data : [];
+}
+
+/**
+ * Cherche les sous-titres disponibles pour un titre, langue par langue.
  * Retourne les entrees brutes OpenSubtitles (SubDownloadLink, SubLanguageID, ...).
  */
 async function search({ type, tmdbId, season, episode }) {
@@ -22,20 +40,32 @@ async function search({ type, tmdbId, season, episode }) {
 
   // OpenSubtitles attend l'id IMDB sans le prefixe "tt".
   const bareImdb = imdbId.replace(/^tt/, '');
-  const langs = config.SUBTITLE_LANGS.join(',');
 
-  const path =
-    type === 'series' && season !== undefined && episode !== undefined
-      ? `/search/episode-${episode}/imdbid-${bareImdb}/season-${season}/sublanguageid-${langs}`
-      : `/search/imdbid-${bareImdb}/sublanguageid-${langs}`;
+  // Une langue en echec ne doit pas emporter les autres.
+  const settled = await Promise.allSettled(
+    config.SUBTITLE_LANGS.map((lang) => searchLang({ bareImdb, lang, type, season, episode })),
+  );
 
-  const { data } = await axios.get(`${OS_BASE}${path}`, { headers: OS_HEADERS, timeout: 12000 });
-  return Array.isArray(data) ? data : [];
+  settled.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      const status = result.reason?.response?.status;
+      console.warn(
+        `[subtitles] "${config.SUBTITLE_LANGS[index]}" a echoue (imdb=${bareImdb}): ` +
+          `status=${status ?? 'n/a'} ${result.reason?.message || ''}`,
+      );
+    }
+  });
+
+  return settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
 }
 
+// Conversion alignee sur celle du lecteur du site (HLSPlayer.tsx:4610-4614).
 function srtToVtt(srt) {
   const body = srt
     .replace(/\r\n/g, '\n')
+    // Numeros de replique: WebVTT les tolere comme identifiants, mais certains lecteurs
+    // les affichent a l'ecran. Le site les retire, on fait pareil.
+    .replace(/^\s*\d+\s*$/gm, '')
     // Timestamps SRT (virgule) -> WebVTT (point).
     .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
   return `WEBVTT\n\n${body}`;
@@ -110,7 +140,9 @@ async function buildSubtitles({ type, tmdbId, season, episode, publicBaseUrl }) 
   const byLang = new Map();
   for (const sub of found) {
     const lang = sub.SubLanguageID;
-    const link = sub.SubDownloadLink;
+    // Memes champs de repli que le lecteur du site (HLSPlayer.tsx:4592): tous les miroirs
+    // ne renseignent pas SubDownloadLink.
+    const link = sub.SubDownloadLink || sub.SubDownloadLinkForBrowser || sub.DownloadLink || sub.Link;
     if (!lang || !link) continue;
 
     const score = Number(sub.SubDownloadsCnt || 0);

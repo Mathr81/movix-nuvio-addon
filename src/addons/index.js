@@ -85,6 +85,7 @@ function describe() {
     name: addon.name,
     supports: addon.supports,
     enabled: active.includes(addon),
+    settings: typeof addon.settings === 'function' ? addon.settings() : undefined,
     reason: active.includes(addon)
       ? undefined
       : !isEnabled(addon)

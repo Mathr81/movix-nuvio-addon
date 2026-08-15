@@ -244,4 +244,12 @@ module.exports = {
   supports: { movie: true, series: false },
   available: () => selectedServers().length > 0,
   getStreams,
+  // Reglages effectifs, exposes par /debug/addons: un .env qui traine peut contredire un
+  // defaut change depuis, et rien ne le montrait.
+  settings: () => ({
+    serveurs: config.AETHER_SERVERS,
+    linkParJbam: config.AETHER_LINK_VIA_JBAM,
+    linkSonde: config.AETHER_PROBE_LINK,
+    langue: config.AETHER_LANG,
+  }),
 };

@@ -100,19 +100,24 @@ function proxyUrl(targetUrl, spec) {
 }
 
 /**
- * URL "a ticket": la recette reste en memoire, seule sa reference circule. Utilisee pour
- * les milliers d'URIs d'une playlist reecrite -- y recopier la recette complete ferait
- * grossir chaque ligne de plus d'un kilo-octet.
+ * URL "a reference": la cible ET sa recette restent en memoire, seul un identifiant court
+ * circule.
+ *
+ * Une playlist compte des centaines d'URI. Y recopier la recette complete, puis l'URL
+ * cible encodee, donnait des lignes de 800 caracteres et des playlists de plusieurs
+ * centaines de kilo-octets -- pour un flux dont les URL sont deja longues (jbam encapsule
+ * une URL dans une URL), c'est le genre de taille qui met les lecteurs en difficulte.
+ * Une reference les ramene a une quarantaine de caracteres.
+ *
+ * L'identifiant est derive par HMAC: il n'est pas devinable, et il est deterministe, donc
+ * reecrire deux fois la meme playlist reutilise les memes references.
  */
-function ticketUrl(targetUrl, spec, isPlaylist = false) {
+function childUrl(targetUrl, spec, isPlaylist = false) {
   // `f` marque une URI dont la playlist parente GARANTIT qu'elle en designe une autre.
-  const normalized = isPlaylist ? { ...spec, f: 1 } : spec;
-  const serialized = JSON.stringify(normalized);
-  const id = sign(serialized).slice(0, 24);
-  tickets.set(id, { spec: normalized, expiresAt: Date.now() + TICKET_TTL_MS });
-
-  const u = b64urlEncode(targetUrl);
-  return `${publicBase()}${ROUTE}?t=${id}&u=${u}&s=${sign(`${id}.${u}`)}`;
+  const entry = { url: targetUrl, spec: isPlaylist ? { ...spec, f: 1 } : spec };
+  const id = sign(JSON.stringify(entry)).slice(0, 22);
+  tickets.set(id, { ...entry, expiresAt: Date.now() + TICKET_TTL_MS });
+  return `${publicBase()}${ROUTE}?c=${id}`;
 }
 
 function isProxied(url) {
@@ -128,6 +133,8 @@ function targetOf(url) {
   if (!isProxied(url)) return null;
   try {
     const { searchParams } = new URL(url);
+    const ref = searchParams.get('c');
+    if (ref) return tickets.get(ref)?.url || null;
     const ticket = searchParams.get('u');
     if (ticket) return b64urlDecode(ticket);
     const payload = searchParams.get('p');
@@ -283,11 +290,11 @@ function rewritePlaylist(text, baseUrl, spec) {
         const isPlaylistUri = PLAYLIST_URI_TAGS.test(trimmed);
         return line.replace(
           /URI="([^"]+)"/g,
-          (_match, uri) => `URI="${ticketUrl(resolveChild(baseUrl, uri), childSpec, isPlaylistUri)}"`,
+          (_match, uri) => `URI="${childUrl(resolveChild(baseUrl, uri), childSpec, isPlaylistUri)}"`,
         );
       }
 
-      const url = ticketUrl(resolveChild(baseUrl, trimmed), childSpec, nextIsVariant);
+      const url = childUrl(resolveChild(baseUrl, trimmed), childSpec, nextIsVariant);
       nextIsVariant = false;
       return url;
     })
@@ -400,15 +407,28 @@ const PASSTHROUGH_HEADERS = [
 ];
 
 function readRequest(req) {
-  const { p, s, t, u } = req.query;
+  const { p, s, t, u, c } = req.query;
 
+  // Forme compacte: une reference opaque, ni URL ni recette a transporter. L'identifiant
+  // etant derive par HMAC, il n'est pas forgeable -- il ne peut designer qu'une cible que
+  // NOUS avons enregistree, ce qui suffit a fermer la porte au relais ouvert.
+  if (c) {
+    const entry = tickets.get(String(c));
+    if (!entry || Date.now() > entry.expiresAt) {
+      return { error: 410, message: 'lien expire -- rouvre la fiche pour en obtenir un nouveau' };
+    }
+    // Glissant: tant qu'une lecture est en cours, ses references restent vivantes.
+    entry.expiresAt = Date.now() + TICKET_TTL_MS;
+    return { target: entry.url, spec: entry.spec };
+  }
+
+  // Ancienne forme a ticket, pour les liens deja distribues a un lecteur.
   if (t) {
     if (!signatureMatches(sign(`${t}.${u}`), s)) return { error: 403, message: 'signature invalide' };
     const entry = tickets.get(String(t));
     if (!entry || Date.now() > entry.expiresAt) {
       return { error: 410, message: 'lien expire -- rouvre la fiche pour en obtenir un nouveau' };
     }
-    // Glissant: tant qu'une lecture est en cours, ses tickets restent vivants.
     entry.expiresAt = Date.now() + TICKET_TTL_MS;
     return { target: b64urlDecode(u), spec: entry.spec };
   }
