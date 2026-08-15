@@ -765,6 +765,37 @@ apparaître sans débit. `STREAM_FIRST_ANSWER_MS=0` rétablit l'ancien comportem
 attendre). `/debug/streams` passe `wait: true` et voit toujours l'état **final**, sinon il
 décrirait un état transitoire et on diagnostiquerait un débit manquant qui n'en est pas un.
 
+**Une liste ne rétrécit pas.** Ce point a demandé un choix. L'élagage a besoin des débits :
+tant qu'ils manquent, il ne peut rien conclure. Garder ces liens « au bénéfice du doute »
+les faisait apparaître au premier affichage puis **disparaître** au second, une fois mesurés
+et jugés redondants — une liste qui se vide sous les yeux inquiète, à raison. L'élagage est
+donc **pessimiste** sur les liens non mesurés : un lien sans débit est écarté dès qu'un
+autre de la même source **et du même fournisseur** le vaut en résolution. Même source, même
+fournisseur, résolution supérieure ou égale : c'est le même film dans une autre définition,
+pas un repli. Le premier affichage est alors un sous-ensemble du second, et la liste ne peut
+que s'étoffer.
+
+#### Forcer un nouveau scan
+
+Un cache de 30 minutes veut dire qu'un lien mis en ligne entre-temps ne se verra pas. Le
+protocole Stremio n'a pas de bouton « recharger » : une demande de streams ressemble à
+toutes les autres. Mais **rouvrir la même fiche trois fois en 25 secondes n'est pas un
+hasard** — c'est qu'on cherche autre chose que ce qui s'affiche. Ce geste est le seul signal
+disponible, et il déclenche un scan complet, cache ignoré.
+
+Le seuil est à 3 (`STREAM_REFRESH_HITS`) parce que l'ouverture compte pour un et que
+certains lecteurs demandent les streams deux fois pour une seule ouverture : à 2, le cache
+ne servirait jamais. Le compteur repart à zéro après un scan.
+
+Un rescan **ne perd jamais un lien**. Les liens du scan précédent qui ne ressortent pas sont
+conservés, avec leurs mesures : une source peut être muette un tour (502, timeout, changement
+de domaine) sans que ses liens soient morts pour autant, et rafraîchir pour obtenir *moins*
+de choix serait l'inverse du but recherché. Ils disparaîtront d'eux-mêmes à l'expiration.
+
+Les mesures qui avaient **échoué** sont retentées ; celles qui avaient abouti sont gardées —
+elles ne changent pas d'un scan à l'autre et coûtent cher à refaire. `STREAM_TTL_MS` règle
+au bout de combien de temps un nouveau lien apparaît **tout seul**, sans rien demander.
+
 #### Préparer l'épisode suivant
 
 Quand une fiche d'épisode s'ouvre, la suite est prévisible : c'est l'épisode d'après. Il est

@@ -121,8 +121,21 @@ function pruneDominated(streams) {
       // ce sont deux replis.
       if (other.sourceName !== candidate.sourceName || other.variant !== candidate.variant) return false;
       if (other.langRank !== candidate.langRank) return false;
-      // Sans debit mesure des deux cotes, la comparaison n'a pas de sens: on garde.
-      if (!other.bitrate || !candidate.bitrate) return false;
+
+      // Rien de mesure en face: aucune raison d'ecarter quoi que ce soit.
+      if (!other.bitrate) return false;
+
+      // Le candidat n'est pas (encore) mesure, l'autre si. On l'ecarte des que l'autre le
+      // vaut en resolution -- meme source, meme fournisseur: c'est le meme film dans une
+      // autre definition, pas un repli.
+      //
+      // Ce choix est deliberement PESSIMISTE, et c'est tout l'interet: la reponse en deux
+      // temps affiche d'abord une liste ou beaucoup de debits manquent. Garder ces liens
+      // "au benefice du doute" les faisait apparaitre au premier affichage puis
+      // DISPARAITRE au second, une fois mesures et juges redondants. Une liste qui
+      // retrecit sous les yeux inquiete; une liste qui s'etoffe, non.
+      if (!candidate.bitrate) return tierOf(other) >= tierOf(candidate);
+
       const betterOrEqual = tierOf(other) >= tierOf(candidate) && other.bitrate >= candidate.bitrate;
       const strictlyBetter = tierOf(other) > tierOf(candidate) || other.bitrate > candidate.bitrate;
       // A egalite parfaite, seul le premier survit (sinon les deux s'eliminent).
@@ -228,11 +241,21 @@ function sortStreams(streams) {
  *
  * `wait` attend que TOUTES les mesures soient finies (diagnostic); par defaut on rend la
  * main au bout de STREAM_FIRST_ANSWER_MS et les sondes restantes continuent seules.
+ *
+ * `refresh` ignore le cache et refait tout: c'est la seule facon de voir des liens apparus
+ * depuis. Les liens du scan precedent qui ne ressortent pas sont CONSERVES -- une source
+ * muette pendant un tour ne doit pas faire disparaitre ce qu'elle avait donne.
  */
-async function resolveStreams({ tmdbId, type, season, episode, wait = false }) {
+async function resolveStreams({ tmdbId, type, season, episode, wait = false, refresh = false }) {
   const cacheKey = `resolved:${type}:${tmdbId}:${season ?? '-'}:${episode ?? '-'}`;
 
-  const first = await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
+  const previous = refresh ? cache.get(cacheKey) || null : null;
+  if (refresh) {
+    cache.del(cacheKey);
+    completing.delete(cacheKey);
+  }
+
+  const first = await cache.wrap(cacheKey, config.STREAM_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
     const raw = await collectRawLinks({ tmdbId, type, season, episode });
 
     const direct = raw.filter((r) => r.direct && r.url);
@@ -281,6 +304,17 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false }) {
     // -- et rien n'est mis en cache, la mesure sera retentee au prochain passage.
     const probeDeadline = config.PROBE_PHASE_BUDGET_MS > 0 ? Date.now() + config.PROBE_PHASE_BUDGET_MS : 0;
 
+    // Ce qu'un scan precedent avait trouve et qui ne ressort pas cette fois. Une source
+    // peut etre muette un tour (502, timeout, changement de domaine) sans que ses liens
+    // soient morts pour autant: les perdre donnerait une liste qui RETRECIT quand on
+    // demande a la rafraichir, exactement l'inverse de ce qu'on cherchait.
+    // Ils gardent leurs mesures, et disparaitront d'eux-memes a l'expiration du cache.
+    const found = new Set(deduped.map((r) => r.externalUrl || r.url));
+    const carried = (previous || []).filter((p) => !found.has(p.externalUrl || p.url));
+    if (carried.length > 0) {
+      console.log(`[streamBuilder] ${carried.length} lien(s) conserve(s) du scan precedent`);
+    }
+
     // Chaque lien est d'abord decrit SANS mesure, puis sa case est remplacee des que sa
     // sonde repond. La liste est donc lisible a tout instant, complete ou non.
     const slots = deduped.map((r) => describe(r, {}));
@@ -292,6 +326,7 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false }) {
             refererUrl: r.embedUrl,
             hoster: r.hoster,
             deadline: probeDeadline,
+            refresh,
           }).catch(() => ({}));
       slots[index] = describe(r, measured);
     });
@@ -314,15 +349,15 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false }) {
     else await measuring;
 
     const complete = measuring.then(() => {
-      const finished = sortStreams([...slots]);
-      cache.set(cacheKey, finished, config.CACHE_TTL_MS);
+      const finished = sortStreams([...slots, ...carried]);
+      cache.set(cacheKey, finished, config.STREAM_TTL_MS);
       completing.delete(cacheKey);
       return finished;
     });
     completing.set(cacheKey, complete);
     complete.catch(() => completing.delete(cacheKey));
 
-    const enriched = sortStreams([...slots]);
+    const enriched = sortStreams([...slots, ...carried]);
     const mesures = enriched.filter((r) => r.bitrate).length;
 
     console.log(
@@ -345,8 +380,8 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false }) {
   return first;
 }
 
-async function buildStreams({ tmdbId, type, season, episode }) {
-  const enriched = await resolveStreams({ tmdbId, type, season, episode });
+async function buildStreams({ tmdbId, type, season, episode, refresh = false }) {
+  const enriched = await resolveStreams({ tmdbId, type, season, episode, refresh });
 
   // Elagage APRES le tri, et seulement ici: /debug/streams doit continuer a montrer TOUT
   // ce qui a ete resolu et mesure, sans quoi il ne servirait plus a diagnostiquer.

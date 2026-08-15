@@ -133,6 +133,15 @@ const config = {
   // les sondes restantes continuant seules pour l'ouverture suivante. C'est ce qui separe
   // "la fiche s'ouvre" de "la fiche s'ouvre completement renseignee". 0 = tout attendre.
   STREAM_FIRST_ANSWER_MS: Number(readEnv('STREAM_FIRST_ANSWER_MS', 2500)),
+  // Duree de vie d'une liste de streams. C'est elle qui decide au bout de combien de temps
+  // un lien apparu depuis sera vu tout seul; la baisser rafraichit plus souvent, au prix
+  // d'un scan complet a chaque fois.
+  STREAM_TTL_MS: Number(readEnv('STREAM_TTL_MS', 30 * 60 * 1000)),
+  // Rouvrir la meme fiche N fois en peu de temps vaut demande de nouveau scan: le
+  // protocole Stremio n'a pas de bouton "recharger", ce geste est le seul signal
+  // disponible. 0 desactive la detection.
+  STREAM_REFRESH_HITS: Number(readEnv('STREAM_REFRESH_HITS', 3)),
+  STREAM_REFRESH_WINDOW_MS: Number(readEnv('STREAM_REFRESH_WINDOW_MS', 25000)),
   // Prepare l'episode SUIVANT pendant qu'on regarde celui-ci: c'est la seule suite
   // previsible d'une ouverture de fiche, et elle ne coute qu'une resolution de plus.
   // Le delai laisse d'abord la fiche en cours finir ses propres mesures.

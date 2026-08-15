@@ -412,13 +412,20 @@ async function attempt(access, url, durationSeconds) {
  *        hoster attend en Referer, et l'origine du CDN ne suffit pas.
  * @returns {Promise<{bitrate?, height?, bytes?, estimated?}>}
  */
-async function probe(url, { durationSeconds, refererUrl, hoster, deadline } = {}) {
+async function probe(url, { durationSeconds, refererUrl, hoster, deadline, refresh } = {}) {
   if (!config.PROBE_BITRATE || !url) return {};
 
   // Hors budget: on rend la main SANS passer par le cache. Mettre en cache un "aucune
   // mesure" du a un manque de temps le figerait pour CACHE_EMPTY_TTL_MS, et le lien
   // resterait sans debit pendant des minutes alors qu'il etait parfaitement mesurable.
   if (deadline && Date.now() > deadline) return {};
+
+  // Rafraichissement demande: on retente ce qui avait ECHOUE, mais on garde les mesures
+  // reussies -- elles ne changent pas d'un scan a l'autre et coutent cher a refaire.
+  if (refresh) {
+    const previous = cache.get(`probe:${url}`);
+    if (previous && !previous.bitrate && !previous.bytes) cache.del(`probe:${url}`);
+  }
 
   return cache.wrap(`probe:${url}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
     // Ordre volontaire: l'amont d'abord quand on le connait (aucun detour reseau), puis la

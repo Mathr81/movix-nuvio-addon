@@ -174,10 +174,51 @@ builder.defineMetaHandler(async ({ type, id }) => {
   return { meta };
 });
 
+/**
+ * Detection du rafraichissement insistant.
+ *
+ * Le protocole Stremio n'a pas de "recharge": une demande de streams ressemble a toutes les
+ * autres, et le cache repond la meme liste. Or quand on rouvre la meme fiche trois fois en
+ * quelques secondes, ce n'est pas par hasard -- c'est qu'on cherche autre chose que ce qui
+ * s'affiche. Ce geste EST le signal, et c'est le seul dont on dispose.
+ *
+ * Le premier affichage compte pour un, d'ou un seuil a 3: ouvrir puis rafraichir deux fois.
+ * Deux aurait suffi en theorie, mais certains lecteurs demandent les streams deux fois pour
+ * une seule ouverture -- le cache ne servirait alors plus jamais a rien.
+ * Le compteur repart a zero apres un scan, pour ne pas en relancer un a chaque demande.
+ */
+const recentRequests = new Map();
+
+function wantsRescan(key) {
+  if (config.STREAM_REFRESH_HITS <= 0) return false;
+
+  const now = Date.now();
+  const times = (recentRequests.get(key) || []).filter((t) => now - t < config.STREAM_REFRESH_WINDOW_MS);
+  times.push(now);
+
+  if (times.length >= config.STREAM_REFRESH_HITS) {
+    recentRequests.delete(key);
+    console.log(
+      `[stream] ${times.length} demandes en ${Math.round((now - times[0]) / 1000)}s sur ${key} -- nouveau scan, sans le cache`,
+    );
+    return true;
+  }
+
+  recentRequests.set(key, times);
+  // Menage: sans ca, la table grossit d'une entree par fiche ouverte, indefiniment.
+  if (recentRequests.size > 200) {
+    for (const [otherKey, stamps] of recentRequests) {
+      if (now - stamps[stamps.length - 1] > config.STREAM_REFRESH_WINDOW_MS) recentRequests.delete(otherKey);
+    }
+  }
+  return false;
+}
+
 builder.defineStreamHandler(async ({ type, id }) => {
   try {
     const { tmdbId, season, episode } = await resolveId(type, id);
-    const streams = await buildStreams({ tmdbId, type, season, episode });
+    const refresh = wantsRescan(`${type}:${id}`);
+    const streams = await buildStreams({ tmdbId, type, season, episode, refresh });
     // Apres avoir repondu, pas avant: c'est du confort pour la suite, jamais un delai ici.
     prefetchNextEpisode({ tmdbId, type, season, episode });
     return { streams };
@@ -202,3 +243,6 @@ builder.defineSubtitlesHandler(async ({ type, id }) => {
 });
 
 module.exports = builder.getInterface();
+// Expose pour les bancs d'essai: la regle de declenchement d'un rescan se verifie sans
+// avoir a simuler tout le protocole Stremio.
+module.exports.wantsRescan = wantsRescan;
