@@ -146,6 +146,10 @@ const config = {
   // cessent alors de fonctionner a chaque redemarrage.
   STREAM_PROXY_SECRET: readEnv('STREAM_PROXY_SECRET', ''),
   STREAM_PROXY_TIMEOUT_MS: Number(readEnv('STREAM_PROXY_TIMEOUT_MS', 20000)),
+  // Journal de ce que le lecteur demande reellement (methode, Range, issue). Indispensable
+  // quand un flux marche sur un appareil et pas sur un autre: les lecteurs ne sondent pas
+  // de la meme facon. Verbeux -- a n'activer que le temps d'un diagnostic.
+  STREAM_PROXY_LOG: readBool('STREAM_PROXY_LOG', false),
 
   // --- Aether (aether.bar -- serveurs aurora/lul/link) ---------------------
   AETHER_SITE_ORIGIN: readEnv('AETHER_SITE_ORIGIN', 'https://aether.bar'),

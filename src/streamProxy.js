@@ -104,7 +104,9 @@ function proxyUrl(targetUrl, spec) {
  * les milliers d'URIs d'une playlist reecrite -- y recopier la recette complete ferait
  * grossir chaque ligne de plus d'un kilo-octet.
  */
-function ticketUrl(targetUrl, normalized) {
+function ticketUrl(targetUrl, spec, isPlaylist = false) {
+  // `f` marque une URI dont la playlist parente GARANTIT qu'elle en designe une autre.
+  const normalized = isPlaylist ? { ...spec, f: 1 } : spec;
   const serialized = JSON.stringify(normalized);
   const id = sign(serialized).slice(0, 24);
   tickets.set(id, { spec: normalized, expiresAt: Date.now() + TICKET_TTL_MS });
@@ -174,6 +176,9 @@ function ruleFor(targetUrl, spec) {
 }
 
 function looksLikePlaylist(targetUrl, spec) {
+  // Certitude: la playlist parente a designe cette URI par un tag qui ne peut en referencer
+  // qu'une autre. Aucune extension a deviner -- et beaucoup de CDN n'en mettent pas.
+  if (spec.f) return true;
   if (/\.m3u8(\?|$)/i.test(targetUrl)) return true;
   return (spec.p || []).some((hint) => targetUrl.toLowerCase().includes(String(hint).toLowerCase()));
 }
@@ -237,20 +242,39 @@ function collect(stream, maxBytes) {
 
 const MAX_PLAYLIST_BYTES = 8 * 1024 * 1024;
 
+/**
+ * Tags dont l'URI designe une autre PLAYLIST. Les distinguer de EXT-X-KEY (cle AES) et
+ * EXT-X-MAP (segment d'initialisation) evite d'avoir a deviner la nature d'une URI depuis
+ * son extension -- que beaucoup de CDN n'ont pas.
+ */
+const PLAYLIST_URI_TAGS = /^#EXT-X-(MEDIA|I-FRAME-STREAM-INF|RENDITION-REPORT)\b/i;
+
 /** Reecrit une playlist pour que tout ce qu'elle reference repasse par le proxy. */
 function rewritePlaylist(text, baseUrl, spec) {
+  // La certitude du parent ne se transmet pas aux enfants: c'est chaque ligne qui la porte.
+  const childSpec = { h: spec.h, r: spec.r, p: spec.p };
+  let nextIsVariant = false;
+
   return text
     .split('\n')
     .map((line) => {
       const trimmed = line.trim();
       if (!trimmed) return line;
 
-      // Balises: seules les URI explicites nous concernent (cle AES-128, EXT-X-MAP).
       if (trimmed.startsWith('#')) {
-        return line.replace(/URI="([^"]+)"/g, (_match, uri) => `URI="${ticketUrl(resolveChild(baseUrl, uri), spec)}"`);
+        // Une URI de variante suit toujours son EXT-X-STREAM-INF, sur la ligne d'apres.
+        if (/^#EXT-X-STREAM-INF\b/i.test(trimmed)) nextIsVariant = true;
+
+        const isPlaylistUri = PLAYLIST_URI_TAGS.test(trimmed);
+        return line.replace(
+          /URI="([^"]+)"/g,
+          (_match, uri) => `URI="${ticketUrl(resolveChild(baseUrl, uri), childSpec, isPlaylistUri)}"`,
+        );
       }
 
-      return ticketUrl(resolveChild(baseUrl, trimmed), spec);
+      const url = ticketUrl(resolveChild(baseUrl, trimmed), childSpec, nextIsVariant);
+      nextIsVariant = false;
+      return url;
     })
     .join('\n');
 }
@@ -293,6 +317,60 @@ function unshiftContentRange(contentRange, skip) {
   const end = Math.max(Number(match[2]) - skip, 0);
   const total = match[3] === '*' ? '*' : Math.max(Number(match[3]) - skip, 0);
   return `bytes ${start}-${end}/${total}`;
+}
+
+/**
+ * Journal des requetes du lecteur (STREAM_PROXY_LOG=true).
+ *
+ * Les lecteurs ne demandent pas tous la meme chose: AVFoundation sonde en HEAD et en
+ * Range, ExoPlayer fait un GET simple. Quand un flux marche sur un appareil et pas sur un
+ * autre, c'est cette difference qu'il faut pouvoir lire.
+ */
+function trace(req, target, outcome) {
+  if (!config.STREAM_PROXY_LOG) return;
+  const range = req.headers.range ? ` range=${req.headers.range}` : '';
+  console.log(`[streamProxy] ${req.method}${range} -- ${outcome} -- ${String(target).slice(0, 90)}`);
+}
+
+/**
+ * Recupere une playlist et la reecrit, ou rend null si l'URL n'en designait pas une.
+ *
+ * Toujours un GET complet, sans relayer le Range du client: une playlist pese quelques
+ * kilo-octets, et il faut la connaitre ENTIEREMENT pour repondre juste -- sa version
+ * reecrite n'a ni la meme taille ni les memes octets que l'originale.
+ */
+async function fetchPlaylist(target, spec) {
+  const upstream = await axios({
+    method: 'get',
+    url: target,
+    // Pas de compression: le contenu est minuscule, et le recevoir tel quel permet d'en
+    // lire l'entete sans avoir a le decompresser d'abord.
+    headers: { ...spec.h, 'Accept-Encoding': 'identity' },
+    responseType: 'stream',
+    decompress: false,
+    timeout: config.STREAM_PROXY_TIMEOUT_MS,
+    maxRedirects: 5,
+    httpsAgent: insecureAgent,
+    validateStatus: () => true,
+  });
+
+  if (upstream.status >= 400) {
+    console.warn(`[streamProxy] amont ${upstream.status} sur ${target.slice(0, 100)}`);
+    upstream.data?.destroy?.();
+    return null;
+  }
+
+  // L'URL n'a designe qu'un CANDIDAT; ce sont ses premiers octets qui tranchent. Un
+  // segment servi sur le meme chemin qu'une playlist repart ainsi intact, en passe-plat.
+  const head = await peek(upstream.data, 64);
+  const contentType = String(upstream.headers['content-type'] || '').toLowerCase();
+  if (!startsPlaylist(head) && !contentType.includes('mpegurl')) {
+    upstream.data.destroy();
+    return null;
+  }
+
+  const body = (await collect(upstream.data, MAX_PLAYLIST_BYTES)).toString('utf8');
+  return rewritePlaylist(body, target, spec);
 }
 
 const PASSTHROUGH_HEADERS = [
@@ -346,31 +424,50 @@ async function handle(req, res) {
   const rule = ruleFor(target, spec) || {};
   const skip = Number(rule.skipBytes) > 0 ? Number(rule.skipBytes) : 0;
   const isHead = req.method === 'HEAD';
-
-  // La detection de playlist est un pari sur l'URL: on ne peut pas bufferiser un segment
-  // video pour verifier. Une requete Range n'est jamais une playlist -- les lecteurs
-  // telechargent celles-ci d'un bloc.
   const clientRange = req.headers.range;
-  const playlistCandidate = !isHead && !clientRange && looksLikePlaylist(target, spec);
-
-  const headers = { ...spec.h };
-  const shifted = skip && clientRange ? shiftRange(clientRange, skip) : null;
-  if (clientRange) headers.Range = shifted ? shifted.header : clientRange;
-  if (req.headers['if-range']) headers['If-Range'] = req.headers['if-range'];
-  // Sur un candidat playlist on refuse la compression: le contenu est minuscule, et le
-  // recevoir tel quel permet d'en lire l'entete sans avoir a le decompresser d'abord.
-  if (playlistCandidate) headers['Accept-Encoding'] = 'identity';
 
   try {
+    // --- Playlist: on la reecrit pour capturer tout ce qu'elle reference ---------------
+    // Cette voie ne depend NI de la methode NI du Range demande. Une playlist renvoyee
+    // telle quelle est une playlist perdue: le lecteur ira chercher ses segments en
+    // direct, sans nos en-tetes ni nos transformations. Or AVFoundation (iOS) sonde en
+    // HEAD et en Range la ou ExoPlayer (Android) fait un simple GET -- exclure ces deux
+    // cas rendait donc les flux injouables sur iPad alors qu'ils marchaient sur Android.
+    if (looksLikePlaylist(target, spec)) {
+      const rewritten = await fetchPlaylist(target, spec);
+      if (rewritten) {
+        const body = Buffer.from(rewritten, 'utf8');
+        trace(req, target, `playlist reecrite (${body.length} o)`);
+        res
+          .status(200)
+          .set('Content-Type', 'application/vnd.apple.mpegurl')
+          // La taille de NOTRE playlist n'a rien a voir avec celle de l'originale (chaque
+          // URI y est reecrite). Relayer le Content-Length de l'amont la ferait tronquer.
+          .set('Content-Length', String(body.length))
+          // On sert la playlist d'un bloc: un Range n'a pas de sens dessus, et repondre 200
+          // a un client qui en demandait un est licite.
+          .set('Accept-Ranges', 'none')
+          .set('Cache-Control', 'no-store');
+        return isHead ? res.end() : res.end(body);
+      }
+      // Ce n'etait pas une playlist malgre son URL: on repart en passe-plat ci-dessous.
+    }
+
+    // --- Passe-plat ------------------------------------------------------------------
+    const headers = { ...spec.h };
+    const shifted = skip && clientRange ? shiftRange(clientRange, skip) : null;
+    if (clientRange) headers.Range = shifted ? shifted.header : clientRange;
+    if (req.headers['if-range']) headers['If-Range'] = req.headers['if-range'];
+
     const upstream = await axios({
       method: isHead ? 'head' : 'get',
       url: target,
       headers,
       // Toujours en flux, jamais en texte: un segment video decode en UTF-8 est un
-      // segment video corrompu. La nature du contenu se decide plus bas, sur ses octets.
+      // segment video corrompu.
       responseType: 'stream',
-      // En passe-plat on ne touche a rien, compression comprise: le lecteur sait la gerer,
-      // et decompresser fausserait le Content-Length qu'on relaie.
+      // On ne touche a rien, compression comprise: le lecteur sait la gerer, et
+      // decompresser fausserait le Content-Length qu'on relaie.
       decompress: false,
       timeout: config.STREAM_PROXY_TIMEOUT_MS,
       maxRedirects: 5,
@@ -378,29 +475,11 @@ async function handle(req, res) {
       validateStatus: () => true,
     });
 
-    const contentType = String(upstream.headers['content-type'] || '').toLowerCase();
-
     if (upstream.status >= 400) {
       console.warn(`[streamProxy] amont ${upstream.status} sur ${target.slice(0, 100)}`);
     }
+    trace(req, target, `passe-plat ${upstream.status}${skip ? ` (amorce de ${skip} o retiree)` : ''}`);
 
-    // --- Playlist: on la reecrit pour capturer tout ce qu'elle reference ---------------
-    // L'URL n'a fait que designer un CANDIDAT; ce sont ses premiers octets qui tranchent.
-    // Un segment qui passe par le meme chemin qu'une playlist repart donc en passe-plat,
-    // intact, au lieu d'etre relu comme du texte.
-    if (playlistCandidate && upstream.status < 400) {
-      const head = await peek(upstream.data, 64);
-      if (startsPlaylist(head) || contentType.includes('mpegurl')) {
-        const body = (await collect(upstream.data, MAX_PLAYLIST_BYTES)).toString('utf8');
-        return res
-          .status(upstream.status)
-          .set('Content-Type', 'application/vnd.apple.mpegurl')
-          .set('Cache-Control', 'no-store')
-          .send(rewritePlaylist(body, target, spec));
-      }
-    }
-
-    // --- Passe-plat ------------------------------------------------------------------
     res.status(upstream.status);
     for (const name of PASSTHROUGH_HEADERS) {
       const value = upstream.headers[name];

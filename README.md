@@ -368,6 +368,29 @@ corrompre (65 540 octets ressortaient à 118 764, chaque octet invalide remplac�
 `U+FFFD`). Le proxy lit maintenant les premiers octets, les remet en tête du flux, et ne
 traite comme playlist que ce qui commence par `#EXTM3U`.
 
+**Et quand la playlist parente le sait, on ne devine pas du tout.** HLS dit explicitement
+ce que chaque URI référence : la ligne qui suit un `#EXT-X-STREAM-INF` est une variante,
+`#EXT-X-MEDIA` pointe une rendition — tandis que `#EXT-X-KEY` désigne une clé AES et
+`#EXT-X-MAP` un segment d'initialisation. Le proxy s'appuie sur ces tags, ce qui le rend
+insensible aux CDN dont les URL n'ont **aucune extension** (`/pl/H4sIAAAA…`).
+
+#### Sondage des lecteurs (le cas iPad)
+
+Les lecteurs ne demandent pas tous la même chose. AVFoundation (iOS) sonde une ressource
+en `HEAD` puis en `Range` ; ExoPlayer (Android) fait un simple `GET`. Une playlist servie
+en réponse à un `HEAD` ou à un `Range` doit donc **quand même** être réécrite : sinon le
+lecteur reçoit les URL d'origine et va chercher les segments en direct, sans nos en-têtes
+ni nos transformations — ce qui rendait tous les flux d'addons injouables sur iPad alors
+qu'ils fonctionnaient sur Android.
+
+Deux conséquences dans le code : la réécriture ne dépend ni de la méthode ni du `Range`, et
+le `Content-Length` annoncé est celui de **notre** playlist, jamais celui de l'originale
+(chaque URI y étant réécrite, les tailles n'ont aucun rapport — relayer celle de l'amont la
+faisait tronquer). Les segments, eux, restent pleinement « rangeables » : c'est de la vidéo.
+
+`STREAM_PROXY_LOG=true` journalise ce que le lecteur demande réellement (méthode, `Range`,
+issue) — c'est ce qui permet de comparer un appareil qui marche à un autre qui non.
+
 > ⚠️ **`PUBLIC_URL` est obligatoire** pour les addons : les liens proxifiés sont bâtis
 > dessus. Vide, ils pointent sur `127.0.0.1` et l'iPad ou la TV qui les reçoit ne les
 > lira jamais. Renseigne aussi **`STREAM_PROXY_SECRET`** : sans lui un secret aléatoire
