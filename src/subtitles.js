@@ -151,19 +151,25 @@ async function buildSubtitles({ type, tmdbId, season, episode, publicBaseUrl }) 
     byLang.set(lang, existing);
   }
 
-  // UNE piste par langue: la plus telechargee.
+  // Le protocole prevoit plusieurs pistes par langue, differenciees par leur `id`
+  // (docs/api/responses/subtitles.md). Une seule par defaut: elles s'affichent toutes sous
+  // le meme nom de langue, et personne ne choisit entre deux "Français" identiques.
   //
-  // On en proposait trois, en suffixant les suivantes ("fre (2)", "fre (3)") pour les
-  // distinguer. Or ce champ est un CODE de langue: tout ce qui n'en est pas un s'affiche
-  // "inconnu" dans le lecteur. Deux langues donnaient donc deux pistes nommees et quatre
-  // "inconnu" -- une liste illisible pour un choix que personne ne fait a l'aveugle.
+  // Le champ `lang` est un CODE. La specification dit qu'un libelle libre est affiche tel
+  // quel, mais Nuvio, lui, normalise et rend "inconnu" tout ce qu'il ne reconnait pas --
+  // c'est ce qui arrivait quand on suffixait les pistes ("fre (2)"). D'ou le defaut a un
+  // code pur, et le libelle du fournisseur derriere un reglage.
+  const perLang = Math.max(config.SUBTITLES_PER_LANG, 1);
   const subtitles = [];
+
   for (const [lang, entries] of byLang) {
-    const best = entries.reduce((top, entry) => (entry.score > top.score ? entry : top));
-    subtitles.push({
-      id: `movix-os-${lang}`,
-      lang,
-      url: subtitleUrl(publicBaseUrl, best.link),
+    entries.sort((a, b) => b.score - a.score);
+    entries.slice(0, perLang).forEach((entry, index) => {
+      subtitles.push({
+        id: `movix-opensubtitles-${lang}${index > 0 ? `-${index + 1}` : ''}`,
+        lang: config.SUBTITLE_PROVIDER_LABEL ? `${lang} · OpenSubtitles` : lang,
+        url: subtitleUrl(publicBaseUrl, entry.link),
+      });
     });
   }
 

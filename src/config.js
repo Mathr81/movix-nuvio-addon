@@ -155,21 +155,8 @@ const config = {
   AETHER_SITE_ORIGIN: readEnv('AETHER_SITE_ORIGIN', 'https://aether.bar'),
   AETHER_API_DOMAIN: readEnv('AETHER_API_DOMAIN', 'aether.cx'),
   AETHER_SERVERS: readList('AETHER_SERVERS', ['aurora', 'lul', 'link']),
-  // Origin/Referer exiges par le CDN du serveur "link".
+  // Origin/Referer exiges par le CDN tiers du serveur "link".
   AETHER_LINK_ORIGIN: readEnv('AETHER_LINK_ORIGIN', 'https://nextgencloudfabric.com'),
-  // Passer par le proxy HLS du site (jbam) pour le serveur "link".
-  //
-  // En theorie inutile depuis un serveur: notre propre proxy sait poser l'Origin/Referer
-  // que jbam pose, et le CDN accepte n'importe quels en-tetes (verifie par aether:diag).
-  // En pratique c'est le SEUL chemin dont la lecture complete est etablie de bout en bout
-  // -- master, sous-playlists /content, segments /media. L'acces direct, lui, resout bien
-  // la playlist mais ne joue pas. Le chemin prouve l'emporte sur le chemin elegant.
-  AETHER_LINK_VIA_JBAM: readBool('AETHER_LINK_VIA_JBAM', true),
-  AETHER_M3U8_PROXY: readEnv('AETHER_M3U8_PROXY', 'https://jbam.aether.bar/m3u8-proxy'),
-  // Mesurer le debit du serveur "link". Desactive par defaut: son CDN limite le nombre de
-  // requetes par demandeur, et peser 5 segments avant la lecture epuise le quota -- le
-  // lecteur se retrouve alors devant un CDN muet. Le debit ne vaut pas un flux injouable.
-  AETHER_PROBE_LINK: readBool('AETHER_PROBE_LINK', false),
   // Aucune des trois API n'annonce la langue de la piste: on l'etiquette a la main pour
   // que le tri par PREFERRED_LANGS reste coherent.
   AETHER_LANG: readEnv('AETHER_LANG', 'VO'),
@@ -184,6 +171,13 @@ const config = {
   // Langues de sous-titres proposees (codes OpenSubtitles ISO 639-2, ex: fre,eng).
   SUBTITLE_LANGS: readList('SUBTITLE_LANGS', ['fre', 'eng']),
   SUBTITLES_ENABLED: readBool('SUBTITLES_ENABLED', true),
+  // Pistes proposees par langue (les plus telechargees d'abord). Au-dela de 1, elles
+  // portent toutes le meme nom de langue -- le protocole ne les distingue que par leur id.
+  SUBTITLES_PER_LANG: Number(readEnv('SUBTITLES_PER_LANG', 1)),
+  // Afficher "· OpenSubtitles" a cote de la langue. La specification prevoit qu'un libelle
+  // libre soit affiche tel quel, mais Nuvio normalise ce champ et rend "inconnu" tout ce
+  // qui n'est pas un code ISO 639-2. A n'activer que si ton lecteur suit la specification.
+  SUBTITLE_PROVIDER_LABEL: readBool('SUBTITLE_PROVIDER_LABEL', false),
 
   // Quand un embed n'a pas d'extracteur (vidara.to, lecteurvideo.com...), proposer quand meme
   // le lien en "ouvrir dans le navigateur" au lieu de le jeter. Bruyant -> desactive par defaut.

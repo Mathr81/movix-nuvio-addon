@@ -79,8 +79,8 @@ function publicBase() {
  * Une "recette d'acces": ce que l'addon sait de la facon de joindre SES CDN.
  *  - headers: rejoues tels quels sur chaque requete sortante;
  *  - rules: [{match, skipBytes, contentType}] appliquees quand l'URL cible matche;
- *  - playlistHints: fragments d'URL qui trahissent une playlist sans extension .m3u8
- *    (jbam.aether.bar sert ses playlists sur /m3u8-proxy et /content).
+ *  - playlistHints: fragments d'URL qui trahissent une playlist sans extension .m3u8,
+ *    pour les CDN qui servent les leurs sur un chemin opaque.
  */
 function normalizeSpec(spec = {}) {
   return {
@@ -105,8 +105,9 @@ function proxyUrl(targetUrl, spec) {
  *
  * Une playlist compte des centaines d'URI. Y recopier la recette complete, puis l'URL
  * cible encodee, donnait des lignes de 800 caracteres et des playlists de plusieurs
- * centaines de kilo-octets -- pour un flux dont les URL sont deja longues (jbam encapsule
- * une URL dans une URL), c'est le genre de taille qui met les lecteurs en difficulte.
+ * centaines de kilo-octets -- pour un flux dont les URL sont deja longues (un proxy HLS
+ * encapsule une URL dans une URL), c'est le genre de taille qui met les lecteurs en
+ * difficulte.
  * Une reference les ramene a une quarantaine de caracteres.
  *
  * L'identifiant est derive par HMAC: il n'est pas devinable, et il est deterministe, donc
@@ -195,7 +196,7 @@ function looksLikePlaylist(targetUrl, spec) {
  * nature sans rien consommer.
  *
  * L'URL ne suffit pas a distinguer une playlist d'un segment: un proxy HLS sert les DEUX
- * sur le meme chemin (jbam.aether.bar/m3u8-proxy?url=...). Trancher sur l'URL seule
+ * sur le meme chemin (.../m3u8-proxy?url=...). Trancher sur l'URL seule
  * revenait a decoder des segments video en texte UTF-8, donc a les corrompre.
  */
 function peek(stream, size) {
@@ -227,9 +228,9 @@ function peek(stream, size) {
 /**
  * Type MIME deduit des premiers octets d'un flux.
  *
- * Un CDN peut parfaitement servir de la video en l'etiquetant "text/html" -- jbam le fait
- * sur ses segments. Le lecteur refuse alors un segment valide, redemande, et boucle sans
- * jamais demarrer. Ici comme ailleurs, ce sont les octets qui font foi.
+ * Un CDN peut parfaitement servir de la video en l'etiquetant "text/html" -- c'est vu en
+ * pratique sur des proxys HLS. Le lecteur refuse alors un segment valide, redemande, et
+ * boucle sans jamais demarrer. Ici comme ailleurs, ce sont les octets qui font foi.
  */
 function sniffMediaType(head) {
   // MPEG-TS: octet de synchro 0x47 tous les 188 octets.

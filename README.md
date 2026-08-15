@@ -372,7 +372,7 @@ lecteurs vidéo, qui ne déchiffrent pas cet en-tête et n'y voient que du bruit
 est déjà compressée : gzip ne lui gagne rien.
 
 **La nature d'une réponse se décide sur ses octets, jamais sur son URL.** Un proxy HLS sert
-les playlists *et* les segments sur le même chemin (`jbam.aether.bar/m3u8-proxy?url=…`) :
+les playlists *et* les segments sur le même chemin (`…/m3u8-proxy?url=…`) :
 trancher sur l'URL revenait à relire des segments vidéo comme du texte UTF-8, donc à les
 corrompre (65 540 octets ressortaient à 118 764, chaque octet invalide remplacé par
 `U+FFFD`). Le proxy lit maintenant les premiers octets, les remet en tête du flux, et ne
@@ -434,8 +434,6 @@ async function getStreams({ tmdbId, type, season, episode }) {
     sourceName: 'MonSite',
     quality: '1080p',
     lang: 'VF',
-    // facultatif: ce CDN limite le debit de requetes -> pas de mesure de debit
-    // noProbe: true,
   }];
 }
 
@@ -463,45 +461,27 @@ tiers (`nextgencloudfabric.com`).
 
 Le site encapsule ce dernier dans son propre proxy HLS (`jbam.aether.bar`) parce qu'un
 **navigateur** ne peut ni forger un `Origin` ni échapper au CORS. Un serveur, si : on pose
-directement les en-têtes attendus et on économise un rebond entier. Ce rebond n'était pas
-gratuit — jbam relaie lui-même vers le CDN, et cette double indirection faisait expirer les
-C'est le même raisonnement que pour la sonde de débit — et pourtant, **c'est jbam qui est
-gardé par défaut** (`AETHER_LINK_VIA_JBAM=true`). Le diagnostic montre que le CDN accepte
-n'importe quels en-têtes en 69-164 ms là où jbam met 7,5 s, mais seul le chemin par jbam a
-une lecture complète établie de bout en bout : master → sous-playlists `/content` →
-segments `/media`. L'accès direct résout bien la playlist et ne joue pas. Le chemin prouvé
-l'emporte sur le chemin élégant ; `AETHER_LINK_VIA_JBAM=false` bascule sur l'accès direct
-si tu veux réessayer.
+directement les en-têtes attendus (`AETHER_LINK_ORIGIN`) et on économise le rebond.
 
-L'URL passée à jbam est encodée **exactement** comme le fait le site (`urllib.parse.quote`,
-qui laisse les `/` intacts : `url=https%3A//host/chemin`). `encodeURIComponent` produirait
-`https%3A%2F%2Fhost%2Fchemin` — accepté aussi, mais on ne s'écarte pas sans raison d'une
-requête dont on sait qu'elle fonctionne.
-
-Quand `link` ne rend rien, un diagnostic rejoue **la même requête** avec plusieurs jeux
-d'en-têtes et affiche ce que chacun obtient — c'est la réponse du CDN qui tranche, pas une
-supposition :
+Quand un serveur Aether ne joue pas, un diagnostic suit la chaîne **jusqu'à un vrai
+segment** et se prononce sur ses **octets**, pas sur son code de statut :
 
 ```bash
 npm run aether:diag -- 157336
 ```
 
-Il teste l'API, l'accès direct au CDN (sans en-tête, avec ceux du CDN, avec ceux du site),
-le passage par jbam avec son temps de réponse, puis **descend les deux chaînes jusqu'à un
-vrai segment** — master → variante → segment.
-
-Cette dernière étape est la seule qui prouve quoi que ce soit. Un CDN qui refuse un segment
-ne répond pas forcément `403` : il sert volontiers une page d'erreur **en `200`**. Le
-lecteur n'y voit pas de vidéo, redemande, et boucle sans jamais démarrer — exactement le
-symptôme observé sur Link en accès direct, où les playlists se résolvaient parfaitement. Le
-diagnostic lit donc les **octets** du segment (`0x47` toutes les 188 octets pour du
-MPEG-TS, `ftyp`/`moof` pour du MP4 fragmenté, `<` pour une page HTML) et conclut sur le
-réglage à appliquer.
+C'est la seule étape qui prouve quoi que ce soit, et elle a servi deux fois. Un CDN qui
+refuse un segment ne répond pas forcément `403` : il sert volontiers une page d'erreur
+**en `200`**. Un proxy HLS peut étiqueter de la vidéo en `text/html`. Et un segment reçu
+compressé est illisible pour un lecteur. Dans les trois cas le lecteur redemande en boucle
+sans jamais démarrer, et rien dans les statuts ne le laisse voir — le diagnostic, lui,
+reconnaît `0x47` toutes les 188 octets (MPEG-TS), `ftyp`/`moof` (MP4 fragmenté), `<`
+(page HTML) et l'en-tête gzip.
 
 Le proxy applique le même contrôle en fonctionnement, et il en tire une **correction** :
 quand l'amont étiquette `text/html` (ou n'étiquette rien) ce qui est en réalité du MPEG-TS
 ou du MP4 fragmenté, le `Content-Type` est rectifié avant d'être servi. C'était le cas de
-jbam, qui rend ses segments en `text/html; charset=UTF-8` alors que les octets commencent
+proxys HLS qui rendent leurs segments en `text/html; charset=UTF-8` alors que les octets commencent
 bien par `0x47` — le lecteur refusait un segment parfaitement valide, redemandait, et
 bouclait. S'il s'agit d'une vraie page d'erreur, rien n'est modifié et un avertissement est
 écrit dans les logs.
@@ -510,64 +490,6 @@ Le diagnostic espace ses requêtes de 1,5 s et commence par la chaîne complète
 de la politesse : le CDN de `link` **limite le débit de requêtes par demandeur**, et une
 rafale rapide faisait expirer les requêtes suivantes — le diagnostic déclenchait donc
 lui-même la limite qu'il cherchait à mesurer, et concluait à tort que rien ne sortait.
-
-#### Sources qui limitent le débit de requêtes
-
-Un CDN peut cesser de répondre après quelques requêtes rapprochées, sans jamais renvoyer
-`429` : les premières passent, les suivantes expirent. C'est le cas du serveur `link`
-d'Aether, constaté sur deux exécutions du diagnostic.
-
-La conséquence est perverse : la **sonde de débit** pèse 5 segments par lien *avant* que tu
-appuies sur lecture. Sur une source limitée, elle épuise le quota, et le lecteur se
-retrouve ensuite devant un CDN muet — il redemande la playlist, les segments, en boucle,
-sans jamais démarrer. Le débit affiché coûtait le flux lui-même.
-
-Un addon peut donc marquer un lien `noProbe: true` : il est proposé normalement, mais sans
-mesure de débit. C'est le défaut pour `link` (`AETHER_PROBE_LINK=true` rétablit la mesure).
-
-**Obrigoz** ne connaît ni TMDB ni IMDb, seulement des titres : TMDB donne le titre français
-et l'année, une recherche sur le site rend une grille de fiches (l'**année** départage les
-remakes et homonymes ; à défaut, le premier résultat), et la page de la fiche porte un
-iframe dont le HTML contient le bloc `sources:` d'un JWPlayer. Le `Referer` attendu par le
-CDN n'est pas deviné : il est dérivé de l'URL de l'iframe réellement rencontrée.
-
-Ni l'une ni l'autre de ces API n'annonce la **langue** des pistes. `AETHER_LANG` (`VO` par
-défaut) et `OBRIGOZ_LANG` (`VF`) posent l'étiquette utilisée par le tri `PREFERRED_LANGS` —
-à ajuster si l'usage montre le contraire.
-
-`OBRIGOZ_PATH_PREFIX` isole le segment de chemin volatil du site
-(`obrigoz.com/<prefix>/home/obrigoz`) : quand la recherche cesse de renvoyer quoi que ce
-soit, c'est en général lui qui a tourné, et il se corrige dans `.env` sans toucher au code.
-
-### Lisibilité de la liste
-
-Nuvio regroupe déjà les streams sous le nom de l'addon. Chaque ligne se limite donc à ce
-qui distingue *ce* lien des autres :
-
-```
-1080p                          au lieu de     Movix
-~2.3 Mb/s                                     1036p
-FStream · VFQ · uqload                        ~2.3 Mb/s
-                                              FStream
-                                              VFQ · uqload · ~2.3 Mb/s
-```
-
-- le nom de l'addon n'est plus répété sur chaque ligne ;
-- le débit n'apparaît plus deux fois ;
-- les hauteurs exotiques des masters HLS (`1036p`, `468p` — recadrages, encodages
-  anamorphiques) sont ramenées au **palier** correspondant, à 10 % près ;
-- un libellé de source déjà composé (`pulse | 1080p | MULTI`) perd la résolution qui y
-  faisait doublon.
-
-Deux réglages réduisent le **nombre** d'entrées :
-
-| Réglage | Défaut | Effet |
-|---|---|---|
-| `PRUNE_DOMINATED` | `true` | Écarte les liens qu'un autre de la **même source** surclasse à la fois en résolution et en débit. Ce ne sont pas des choix, juste du bruit. |
-| `MAX_STREAMS_PER_SOURCE` | `2` | Au plus N liens par source. En garder plus d'un préserve un repli quand un hébergeur est en panne ; `0` lève la limite. |
-
-L'élagage est **purement un choix d'affichage** : `/debug/streams` continue de montrer tout
-ce qui a été résolu et mesuré.
 
 ### Débit affiché
 
@@ -674,9 +596,18 @@ La console détaille aussi, par source, le nombre de liens et la raison d'un éc
   L'ancienne forme `?src=` reste acceptée pour les liens déjà distribués.
   OpenSubtitles est interrogé **une langue par requête** (`sublanguageid-fre`, puis
   `sublanguageid-eng`) : la forme groupée `fre,eng` répond `400`, donc aucun sous-titre.
-  Une seule piste est proposée par langue — la plus téléchargée. Le champ `lang` est un
-  **code** de langue : y écrire autre chose (`fre (2)` pour distinguer une deuxième piste)
-  fait afficher « inconnu » dans le lecteur.
+
+| Réglage | Défaut | Effet |
+|---|---|---|
+| `SUBTITLES_PER_LANG` | `1` | Pistes proposées par langue, les plus téléchargées d'abord. Au-delà de 1, elles portent **toutes le même nom de langue** : le protocole ne les distingue que par leur `id`, jamais à l'écran. |
+| `SUBTITLE_PROVIDER_LABEL` | `false` | Affiche `· OpenSubtitles` à côté de la langue. |
+
+Le champ `lang` est un **code**. La spécification dit qu'un libellé libre est affiché tel
+quel, mais Nuvio normalise ce champ et rend « inconnu » tout ce qu'il ne reconnaît pas —
+c'est ce qui arrivait quand on suffixait les pistes (`fre (2)`, `fre (3)` : deux langues
+donnaient deux pistes nommées et **quatre « inconnu »**). D'où le défaut à un code pur, et
+le libellé du fournisseur derrière un réglage : à n'activer que si ton lecteur suit la
+spécification.
 - **Addons : films uniquement** pour l'instant. Seule la forme `/movie/<id>` a été
   observée côté Aether, et la grille de recherche d'Obrigoz est une grille de films, sans
   notion de saison ni d'épisode. L'équivalent série s'ajoute en une ligne dans chaque

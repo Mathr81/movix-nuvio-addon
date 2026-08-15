@@ -351,7 +351,7 @@ async function attempt(access, url, durationSeconds) {
   // Un lien d'addon est une URL de proxy: son extension ne dit plus rien du flux, c'est
   // celle de la cible qu'elle transporte qui compte. Le motif n'est pas ancre en fin
   // d'URL, car certaines cibles sont elles-memes des proxys HLS qui portent la vraie
-  // playlist en parametre (jbam.aether.bar/m3u8-proxy?url=...master.m3u8&...).
+  // playlist en parametre (.../m3u8-proxy?url=...master.m3u8&...).
   const isHls = /\.m3u8/i.test(streamProxy.targetOf(url) || url);
   return isHls ? probeHls(access, url) : probeFile(access, url, durationSeconds);
 }

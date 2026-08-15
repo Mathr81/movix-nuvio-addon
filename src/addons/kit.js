@@ -19,22 +19,17 @@ const BROWSER_UA =
 const ACCEPT_LANGUAGE = 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7';
 
 /**
- * En-tetes "Client Hints" d'un Chrome recent. Certains WAF les exigent pour croire au
- * navigateur.
- *
- * `fetchSite` doit decrire la relation reelle entre la page et la cible, comme le ferait
- * le navigateur: "cross-site" vers un autre domaine, "same-site" vers un sous-domaine du
- * meme site (aether.bar -> jbam.aether.bar). Annoncer l'un pour l'autre est precisement le
- * genre d'incoherence sur laquelle un filtre anti-bot se declenche.
+ * En-tetes "Client Hints" d'un Chrome recent, tels qu'un navigateur les envoie vers un
+ * autre domaine. Certains WAF les exigent pour croire au navigateur.
  */
-function chromeHints(fetchSite = 'cross-site') {
+function chromeHints() {
   return {
     'sec-ch-ua': '"Not=A?Brand";v="99", "Google Chrome";v="131", "Chromium";v="131"',
     'sec-ch-ua-mobile': '?0',
     'sec-ch-ua-platform': '"Windows"',
     'sec-fetch-dest': 'empty',
     'sec-fetch-mode': 'cors',
-    'sec-fetch-site': fetchSite,
+    'sec-fetch-site': 'cross-site',
     priority: 'u=1, i',
   };
 }

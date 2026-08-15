@@ -39,14 +39,14 @@ function apiHeaders(refererUrl) {
  * En-tetes de LECTURE, rejoues par le proxy sur la playlist puis sur chaque segment.
  * Plus complets que ceux des appels d'API: les CDN filtrent aussi sur les Client Hints.
  */
-function playbackHeaders(refererUrl, fetchSite = 'cross-site') {
+function playbackHeaders(refererUrl) {
   return {
     accept: '*/*',
     'accept-language': kit.ACCEPT_LANGUAGE,
     origin: siteOrigin(),
     referer: refererUrl,
     'user-agent': kit.BROWSER_UA,
-    ...kit.chromeHints(fetchSite),
+    ...kit.chromeHints(),
   };
 }
 
@@ -59,26 +59,6 @@ const PROXY_SPEC_RULES = [
     contentType: 'video/mp2t',
   },
 ];
-
-// Indices par defaut: aurora et lul servent des .m3u8 reconnaissables a leur extension,
-// rien a signaler. Le serveur "link" ajoute les siens quand il passe par jbam.
-const PLAYLIST_HINTS = [];
-
-/**
- * Encodage d'un parametre d'URL identique a `urllib.parse.quote` de Python, c'est-a-dire
- * en laissant les "/" intacts.
- *
- * Ce detail n'en est pas un pour jbam: c'est sous cette forme exacte que le site l'appelle
- * (`url=https%3A//host/chemin`), et c'est la seule dont la lecture soit etablie de bout en
- * bout. `encodeURIComponent` produirait `https%3A%2F%2Fhost%2Fchemin` -- accepte, mais on
- * ne s'ecarte pas sans raison d'une requete dont on sait qu'elle fonctionne.
- */
-function quoteUrl(value) {
-  return encodeURIComponent(value)
-    .replace(/%2F/g, '/')
-    // encodeURIComponent epargne ces caracteres, quote les encode.
-    .replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
-}
 
 /** Premiere URL .m3u8 trouvee dans un JSON, quelle que soit la cle utilisee. */
 function findM3u8(data, rawBody) {
@@ -135,9 +115,6 @@ const SERVERS = {
 
   link: {
     label: 'Link',
-    // Ce CDN cesse de repondre apres quelques requetes rapprochees (verifie deux fois par
-    // aether:diag: les premieres passent, les suivantes expirent).
-    fragile: true,
     async resolve({ http, tmdbId, refererUrl }) {
       const { data, status } = await http.get(`https://link.${config.AETHER_API_DOMAIN}/movie/${tmdbId}`, {
         headers: apiHeaders(`${refererUrl}?r=%2Fsettings%2Fsource%2Fembeds`),
@@ -145,39 +122,21 @@ const SERVERS = {
       });
       if (status !== 200 || !data?.stream) return null;
 
+      // Ce flux vient d'un CDN tiers, qui attend l'Origin d'un autre site que celui d'ou
+      // on vient. Le site encapsule donc cette URL dans son propre proxy HLS -- parce
+      // qu'un NAVIGATEUR ne peut ni forger un Origin ni echapper au CORS. Nous, si: on
+      // pose ces en-tetes directement et on economise le rebond.
       const cdnOrigin = config.AETHER_LINK_ORIGIN.replace(/\/+$/, '');
-
-      // Le site encapsule ce flux dans son propre proxy HLS (jbam), parce qu'un NAVIGATEUR
-      // ne peut ni forger un Origin ni echapper au CORS. Nous, si: on pose directement
-      // l'Origin/Referer que le CDN attend, et on economise un rebond entier.
-      //
-      // Ce rebond n'etait pas gratuit: jbam relaie lui-meme vers le CDN, et cette double
-      // indirection est ce qui faisait expirer les segments (timeouts a 20 s, pesees de
-      // debit en echec). C'est le meme raisonnement que pour la sonde (cf. probe.js): le
-      // proxy du site n'existe que pour le navigateur, pas pour un serveur.
-      if (!config.AETHER_LINK_VIA_JBAM) {
-        return {
-          url: data.stream,
-          headers: {
-            accept: '*/*',
-            'accept-language': kit.ACCEPT_LANGUAGE,
-            origin: cdnOrigin,
-            referer: `${cdnOrigin}/`,
-            'user-agent': kit.BROWSER_UA,
-            ...kit.chromeHints(),
-          },
-        };
-      }
-
-      const headers = JSON.stringify({ Origin: cdnOrigin, Referer: `${cdnOrigin}/` });
       return {
-        url: `${config.AETHER_M3U8_PROXY}?url=${quoteUrl(data.stream)}&headers=${quoteUrl(headers)}`,
-        // jbam est un sous-domaine du site: le navigateur annonce "same-site", pas
-        // "cross-site". On le reproduit tel quel (cf. requetes de reference du site).
-        headers: playbackHeaders(refererUrl, 'same-site'),
-        // jbam sert playlists et segments sur des chemins sans extension: sans ces indices,
-        // ses sous-playlists repartiraient sans etre reecrites.
-        playlistHints: ['/m3u8-proxy', '/content'],
+        url: data.stream,
+        headers: {
+          accept: '*/*',
+          'accept-language': kit.ACCEPT_LANGUAGE,
+          origin: cdnOrigin,
+          referer: `${cdnOrigin}/`,
+          'user-agent': kit.BROWSER_UA,
+          ...kit.chromeHints(),
+        },
       };
     },
   },
@@ -216,24 +175,19 @@ async function getStreams({ tmdbId, type }) {
       return;
     }
 
-    // Un resolveur rend soit une URL seule (recette commune), soit {url, headers,
-    // playlistHints} quand SON CDN attend autre chose -- c'est le cas de "link", dont le
-    // flux vient d'un tiers et n'a rien a faire des en-tetes d'aether.bar.
+    // Un resolveur rend soit une URL seule (en-tetes communs), soit {url, headers} quand
+    // SON CDN en attend d'autres -- c'est le cas de "link", dont le flux vient d'un tiers
+    // et n'a rien a faire des en-tetes d'aether.bar.
     const resolved = typeof outcome.value === 'string' ? { url: outcome.value } : outcome.value;
 
     results.push({
       url: kit.proxied(resolved.url, {
         headers: resolved.headers || playbackHeaders(refererUrl),
         rules: PROXY_SPEC_RULES,
-        playlistHints: resolved.playlistHints || PLAYLIST_HINTS,
       }),
       direct: true,
       sourceName: `Aether · ${server.label}`,
       lang: config.AETHER_LANG || undefined,
-      // Le CDN de "link" limite le debit de requetes par demandeur: mesurer son debit
-      // (une playlist + 5 segments) epuise le quota avant la lecture. Un chiffre affiche
-      // ne vaut pas un flux injouable.
-      noProbe: server.fragile && !config.AETHER_PROBE_LINK,
     });
   });
 
@@ -251,8 +205,7 @@ module.exports = {
   // defaut change depuis, et rien ne le montrait.
   settings: () => ({
     serveurs: config.AETHER_SERVERS,
-    linkParJbam: config.AETHER_LINK_VIA_JBAM,
-    linkSonde: config.AETHER_PROBE_LINK,
+    origineCdnLink: config.AETHER_LINK_ORIGIN,
     langue: config.AETHER_LANG,
   }),
 };
