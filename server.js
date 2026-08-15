@@ -5,7 +5,7 @@ const config = require('./src/config');
 const { fetchAsVtt } = require('./src/subtitles');
 const { resolveId } = require('./src/idResolver');
 const { collectRawLinks, resolveStreams } = require('./src/streamBuilder');
-const { detectHoster } = require('./src/hosterExtract');
+const { detectHoster, extractDirectUrl, normalizeEmbedUrl } = require('./src/hosterExtract');
 const { mainApi } = require('./src/movixClient');
 const streamProxy = require('./src/streamProxy');
 const addons = require('./src/addons');
@@ -104,6 +104,54 @@ app.get('/debug/:type/:id', async (req, res) => {
         direct: !!r.direct,
         hoster: r.direct ? 'n/a (lien direct)' : detectHoster(r.url, r.player) || 'AUCUN EXTRACTEUR',
       })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Diagnostic de l'extraction: ce que chaque embed est devenu, et pourquoi.
+// Montre l'URL reellement envoyee au service (apres normalisation du domaine) et le
+// message d'erreur qu'il a rendu -- "Invalid URL" designe un domaine refuse, pas un
+// extracteur manquant, et ces deux causes sont indiscernables dans la liste de streams.
+app.get('/debug/extract/:type/:id', async (req, res) => {
+  try {
+    const { type, id } = req.params;
+    const { tmdbId, season, episode } = await resolveId(type, id);
+    const raw = await collectRawLinks({ tmdbId, type, season, episode });
+    const embeds = raw.filter((r) => !r.direct && r.url);
+
+    const results = await Promise.all(
+      embeds.map(async (item) => {
+        const hoster = detectHoster(item.url, item.player);
+        if (!hoster) {
+          return { source: item.sourceName, url: item.url, hoster: null, issue: 'aucun extracteur' };
+        }
+        const outcome = await extractDirectUrl(item.url, item.player);
+        return {
+          source: item.sourceName,
+          hoster,
+          url: item.url,
+          urlEnvoyee: normalizeEmbedUrl(hoster, item.url),
+          ok: outcome.ok,
+          resultat: outcome.ok ? outcome.url : undefined,
+          issue: outcome.ok ? undefined : `${outcome.reason}${outcome.status ? ` (${outcome.status})` : ''}`,
+          erreurService: outcome.error,
+        };
+      }),
+    );
+
+    res.json({
+      tmdbId,
+      total: embeds.length,
+      extraits: results.filter((r) => r.ok).length,
+      parHebergeur: Object.fromEntries(
+        [...new Set(results.map((r) => r.hoster || 'inconnu'))].map((h) => [
+          h,
+          `${results.filter((r) => r.hoster === h && r.ok).length}/${results.filter((r) => r.hoster === h).length}`,
+        ]),
+      ),
+      liens: results,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -306,7 +354,8 @@ app.listen(config.PORT, () => {
   console.log(`Movix addon (perso) demarre sur le port ${config.PORT} (toutes interfaces)`);
   console.log(`Manifest local : http://127.0.0.1:${config.PORT}/manifest.json`);
   if (config.PUBLIC_URL) console.log(`Manifest public : ${config.PUBLIC_URL}/manifest.json`);
-  console.log(`Diagnostic     : /debug/movie/tmdb:157336  |  /debug/sync  |  /debug/addons  |  /health`);
+  console.log(`Diagnostic     : /debug/movie/tmdb:157336  |  /debug/extract/movie/tmdb:157336  |  /debug/streams/...`);
+  console.log(`                 /debug/sync  |  /debug/addons  |  /health`);
 
   if (config.NUVIO_PUSH_INTERVAL_MS > 0 && config.NUVIO_EMAIL) {
     const minutes = Math.round(config.NUVIO_PUSH_INTERVAL_MS / 60000);

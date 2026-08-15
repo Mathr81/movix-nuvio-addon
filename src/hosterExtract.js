@@ -56,6 +56,32 @@ function detectHoster(url, playerNameHint) {
 }
 
 /**
+ * Domaine canonique attendu par proxiesembed pour chaque hebergeur.
+ *
+ * Le service VALIDE le domaine de l'URL d'embed avant d'extraire quoi que ce soit, et
+ * repond "400 Invalid URL" pour tout autre miroir (server.py:3401-3419 pour fsvid/vidzy,
+ * uqload_utils.py:9 pour uqload). Or les sources donnent regulierement un miroir: c'est
+ * pour cela que seul fsvid fonctionnait -- FStream sert justement ses liens fsvid sur le
+ * domaine canonique, et les autres non.
+ *
+ * On ramene donc l'hote sur ce domaine, exactement comme le site le fait pour uqload
+ * (extractM3u8.ts:456). L'identifiant de la video, lui, est le meme d'un miroir a l'autre.
+ */
+const CANONICAL_DOMAIN = {
+  uqload: 'uqload.is',
+  vidzy: 'vidzy.org',
+  fsvid: 'fsvid.lol',
+};
+
+function normalizeEmbedUrl(hoster, embedUrl) {
+  const canonical = CANONICAL_DOMAIN[hoster];
+  if (!canonical) return embedUrl;
+  // `vidzy.to` -> `vidzy.org`, en preservant un eventuel sous-domaine (`v4.vidzy.org`).
+  const [name] = canonical.split('.');
+  return embedUrl.replace(new RegExp(`${name}\\.[a-z0-9.-]+`, 'gi'), canonical);
+}
+
+/**
  * URL de flux dans une reponse d'extracteur.
  *
  * On retient le premier champ qui contient une VRAIE URL, et non le premier champ present:
@@ -114,53 +140,59 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
     }
   }
 
+  // Ramene l'hote sur le domaine que le service exige avant meme d'extraire.
+  const target = normalizeEmbedUrl(hoster, embedUrl);
+
   let data;
   try {
     switch (hoster) {
       case 'voe': {
-        const base64Url = Buffer.from(embedUrl, 'utf8').toString('base64');
+        // Seul extracteur a attendre l'URL encodee en base64 (server.py:2989).
+        const base64Url = Buffer.from(target, 'utf8').toString('base64');
         ({ data } = await proxiesEmbed.get('/api/voe/m3u8', { params: { url: base64Url } }));
         break;
       }
-      case 'uqload': {
-        const normalized = embedUrl.replace(/uqload\.[a-z0-9-]+/gi, 'uqload.is');
-        ({ data } = await proxiesEmbed.get('/api/extract-uqload', { params: { url: normalized } }));
+      case 'uqload':
+        ({ data } = await proxiesEmbed.get('/api/extract-uqload', { params: { url: target } }));
         break;
-      }
       case 'vidzy':
-        ({ data } = await proxiesEmbed.get('/api/extract-vidzy', { params: { url: embedUrl } }));
+        ({ data } = await proxiesEmbed.get('/api/extract-vidzy', { params: { url: target } }));
         break;
       case 'fsvid':
-        ({ data } = await proxiesEmbed.get('/api/extract-fsvid', { params: { url: embedUrl } }));
+        ({ data } = await proxiesEmbed.get('/api/extract-fsvid', { params: { url: target } }));
         break;
       case 'vidmoly':
-        ({ data } = await proxiesEmbed.get('/api/extract-vidmoly', { params: { url: embedUrl } }));
+        ({ data } = await proxiesEmbed.get('/api/extract-vidmoly', { params: { url: target } }));
         break;
       case 'sibnet':
-        ({ data } = await proxiesEmbed.get('/api/extract-sibnet', { params: { url: embedUrl } }));
+        ({ data } = await proxiesEmbed.get('/api/extract-sibnet', { params: { url: target } }));
         break;
       case 'doodstream':
-        ({ data } = await proxiesEmbed.get('/api/extract-doodstream', { params: { url: embedUrl } }));
+        ({ data } = await proxiesEmbed.get('/api/extract-doodstream', { params: { url: target } }));
         break;
       case 'seekstreaming': {
-        const cleaned = embedUrl.replace(/#/g, '%23');
+        const cleaned = target.replace(/#/g, '%23');
         ({ data } = await proxiesEmbed.get('/api/extract-seekstreaming', { params: { url: cleaned } }));
         break;
       }
       // supervideo/dropload passent par Mainapi, pas par proxiesembed (cf. extractM3u8.ts:237-239)
       case 'supervideo':
-        ({ data } = await mainApi.get('/api/extract-supervideo', { params: { url: embedUrl } }));
+        ({ data } = await mainApi.get('/api/extract-supervideo', { params: { url: target } }));
         break;
       case 'dropload':
-        ({ data } = await mainApi.get('/api/extract-dropload', { params: { url: embedUrl } }));
+        ({ data } = await mainApi.get('/api/extract-dropload', { params: { url: target } }));
         break;
       default:
         return { ok: false, reason: 'no-extractor', hoster };
     }
   } catch (err) {
     const status = err.response?.status;
-    console.warn(`[extract:${hoster}] echec HTTP pour ${embedUrl}: status=${status ?? 'n/a'} msg=${err.message}`);
-    return { ok: false, reason: 'http-error', hoster, status };
+    // Le CORPS de l'erreur porte la raison exacte ("Invalid URL" = domaine refuse,
+    // "Fetch failed" = l'hebergeur n'a pas repondu, 403 = cle VIP rejetee). Sans lui, un
+    // 400 ne dit rien de ce qu'il faut corriger.
+    const body = err.response?.data ? ` body=${JSON.stringify(err.response.data).slice(0, 200)}` : '';
+    console.warn(`[extract:${hoster}] echec HTTP pour ${target}: status=${status ?? 'n/a'} msg=${err.message}${body}`);
+    return { ok: false, reason: 'http-error', hoster, status, error: err.response?.data?.error };
   }
 
   const url = pickStreamUrl(data);
@@ -173,4 +205,4 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
   return { ok: true, url, hoster };
 }
 
-module.exports = { detectHoster, extractDirectUrl, pickStreamUrl };
+module.exports = { detectHoster, extractDirectUrl, pickStreamUrl, normalizeEmbedUrl };

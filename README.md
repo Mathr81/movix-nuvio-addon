@@ -322,6 +322,35 @@ darkibox et oneupload (scraping HTML direct).
 extracteur (ni serveur, ni extension) — ce sont uniquement des motifs de détection pour
 l'ordre de priorité. Rien à porter.
 
+#### Domaines canoniques
+
+`proxiesembed` **valide le domaine** de l'URL d'embed avant d'extraire quoi que ce soit, et
+répond `400 Invalid URL` pour tout autre miroir :
+
+| Hébergeur | Domaines acceptés | Champ de réponse |
+|---|---|---|
+| `fsvid` | `fsvid.lol` | `m3u8Url` |
+| `vidzy` | `vidzy.org`, `vidzy.cc` | `m3u8Url` |
+| `uqload` | `uqload.is/.bz/.cx/.com/.net/.org/.to/.io/.co` | `url` |
+| `voe` | *(aucune — URL passée en base64)* | `source` |
+
+Or les sources donnent régulièrement un **miroir**. C'est pourquoi seul `fsvid` sortait :
+FStream sert justement ses liens fsvid sur le domaine canonique, et les autres non. L'hôte
+est donc ramené sur ce domaine avant l'appel — comme le fait le site pour `uqload`
+(`extractM3u8.ts:456`) ; l'identifiant de la vidéo, lui, est le même d'un miroir à l'autre.
+
+Le site masquait le problème en passant **d'abord par son extension navigateur** pour ces
+hébergeurs (`tryExtensionFirst`), `proxiesembed` n'étant que son repli. Un serveur n'a pas
+cette échappatoire.
+
+```bash
+curl http://localhost:8787/debug/extract/movie/tmdb:157336
+```
+
+donne, par embed : l'hébergeur détecté, **l'URL réellement envoyée** après normalisation, et
+le message d'erreur du service. `Invalid URL` désigne un domaine refusé et non un extracteur
+manquant — deux causes indiscernables dans la liste de streams.
+
 ### Addons (sources autonomes)
 
 Un **addon** est une source qui ne passe pas par Movix : ni Mainapi, ni clé VIP, ni
@@ -565,6 +594,7 @@ Quand Nuvio affiche « aucun stream », deux endpoints donnent l'état réel :
 curl http://localhost:8787/health                      # config chargée, clé VIP présente ?
 curl http://localhost:8787/debug/movie/tmdb:157336     # ce que chaque source a renvoyé
 curl http://localhost:8787/debug/addons                # addons chargés / écartés, état du proxy
+curl http://localhost:8787/debug/extract/movie/tmdb:157336   # sort de chaque embed, et pourquoi
 curl http://localhost:8787/debug/streams/movie/tmdb:157336   # débit mesuré par lien, et son origine
 ```
 
