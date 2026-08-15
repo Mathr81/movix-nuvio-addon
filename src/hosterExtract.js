@@ -1,4 +1,5 @@
 const axios = require('axios');
+const config = require('./config');
 const { mainApi, proxiesEmbed } = require('./movixClient');
 
 const BROWSER_UA =
@@ -26,26 +27,88 @@ function firstMatch(html, patterns) {
   return null;
 }
 
-// Miroir de src/utils/hosterRegistry.ts (BUILTIN_HOSTER_PATTERNS) -- garder synchronise si
-// Movix ajoute/renomme des hosters cote frontend.
-const HOSTER_PATTERNS = {
-  voe: [/voe\./i],
-  vidmoly: [/vidmoly/i],
-  uqload: [/uqload/i],
-  sibnet: [/sibnet/i],
-  doodstream: [/doodstream/i, /d0000d/i, /d000d/i, /dood\./i, /doodster/i, /myvidplay/i, /dsvplay/i, /doply/i, /ds2play/i, /ds2video/i, /dood2/i],
-  seekstreaming: [/embedseek/i, /embed4me/i, /seekstreaming/i],
-  vidzy: [/vidzy/i],
-  supervideo: [/supervideo/i],
-  dropload: [/dropload/i],
-  fsvid: [/fsvid/i],
-  darkibox: [/darkibox/i],
-  oneupload: [/oneupload/i],
+/**
+ * Miroir de src/utils/hosterRegistry.ts (BUILTIN_HOSTER_PATTERNS).
+ *
+ * Deux strategies, selon le nom de l'hebergeur:
+ *  - nom distinctif (uqload, vidmoly, fsvid...): un simple mot suffit et couvre tous ses
+ *    TLD presents et futurs;
+ *  - nom trop court ou domaines DELIBEREMENT anonymes: il faut une liste explicite. Voe
+ *    en est le cas d'ecole -- il renouvelle ses domaines de sortie environ tous les mois,
+ *    avec des noms qui ne contiennent pas "voe" (ralphysuccessfull.com, prepareddare...).
+ *
+ * Cette liste vieillit donc par construction: un domaine tout juste mis en service n'y
+ * figure pas encore, et l'embed passe alors pour "sans extracteur" alors qu'il est
+ * parfaitement extractible. HOSTER_PATTERNS_EXTRA permet d'en ajouter sans toucher au
+ * code, comme le site le fait avec ses "hosters custom & regex".
+ */
+const BUILTIN_HOSTER_PATTERNS = {
+  voe: [
+    'voe\\.',
+    // Alias sans "voe" dans le nom, releves dans les redirections 302 de l'hebergeur.
+    'ralphysuccessfull', 'claudiosepulchral', 'anthonysaline', 'auraleanline',
+    'letsupload', 'robertordercharacter', 'prepareddare', 'preferciseaccurate',
+    'conscientiousedu', 'effortlessexperim', 'timmaybealready',
+  ],
+  vidmoly: ['vidmoly'],
+  uqload: ['uqload'],
+  sibnet: ['sibnet'],
+  doodstream: [
+    'doodstream', 'd0000d', 'd000d', 'dood\\.', 'doodster',
+    'myvidplay', 'dsvplay', 'doply', 'ds2play', 'ds2video', 'dood2',
+  ],
+  seekstreaming: [
+    'embedseek', 'embed4me', 'seekstreaming',
+    'servicecatalog', 'technicalcatalog', 'seekplayer', 'seeks\\.cloud', 'seekplays',
+  ],
+  vidzy: ['vidzy'],
+  supervideo: ['supervideo'],
+  dropload: ['dropload'],
+  fsvid: ['fsvid'],
+  darkibox: ['darkibox'],
+  oneupload: ['oneupload'],
 };
 
 // smoothpre et minochinos figurent dans hosterRegistry.ts cote site mais n'ont AUCUN
 // extracteur (ni serveur, ni extension): ce sont uniquement des motifs de detection
 // utilises pour l'ordre de priorite des sources. Rien a porter ici.
+
+/** Motifs compiles, alias supplementaires de la configuration inclus. */
+const HOSTER_PATTERNS = (() => {
+  const merged = Object.fromEntries(
+    Object.entries(BUILTIN_HOSTER_PATTERNS).map(([hoster, patterns]) => [hoster, [...patterns]]),
+  );
+
+  for (const entry of config.HOSTER_PATTERNS_EXTRA) {
+    const separator = entry.indexOf(':');
+    const hoster = entry.slice(0, separator).trim().toLowerCase();
+    const pattern = entry.slice(separator + 1).trim();
+    if (separator < 1 || !pattern) {
+      console.warn(`[extract] HOSTER_PATTERNS_EXTRA: "${entry}" ignore (attendu "hebergeur:motif")`);
+      continue;
+    }
+    if (!merged[hoster]) {
+      console.warn(`[extract] HOSTER_PATTERNS_EXTRA: hebergeur inconnu "${hoster}" (connus: ${Object.keys(merged).join(', ')})`);
+      continue;
+    }
+    merged[hoster].push(pattern);
+    console.log(`[extract] motif supplementaire pour ${hoster}: ${pattern}`);
+  }
+
+  return Object.fromEntries(
+    Object.entries(merged).map(([hoster, patterns]) => [
+      hoster,
+      patterns.map((pattern) => {
+        try {
+          return new RegExp(pattern, 'i');
+        } catch {
+          console.warn(`[extract] motif invalide ignore pour ${hoster}: ${pattern}`);
+          return null;
+        }
+      }).filter(Boolean),
+    ]),
+  );
+})();
 
 function detectHoster(url, playerNameHint) {
   const haystack = `${url} ${playerNameHint || ''}`;

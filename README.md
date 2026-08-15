@@ -322,6 +322,29 @@ darkibox et oneupload (scraping HTML direct).
 extracteur (ni serveur, ni extension) — ce sont uniquement des motifs de détection pour
 l'ordre de priorité. Rien à porter.
 
+#### Domaines tournants (le cas Voe)
+
+Deux stratégies de détection, selon le nom de l'hébergeur :
+
+- **nom distinctif** (`uqload`, `vidmoly`, `fsvid`…) — un simple mot suffit et couvre tous
+  ses TLD, présents et futurs ;
+- **domaines délibérément anonymes** — il faut une liste explicite. **Voe** en est le cas
+  d'école : il renouvelle ses domaines de sortie environ tous les mois, avec des noms qui
+  ne contiennent pas « voe » (`ralphysuccessfull.com`, `prepareddare.com`,
+  `timmaybealready.com`…). Les 11 alias connus du site sont portés.
+
+Cette liste **vieillit par construction** : un domaine mis en service après elle passe pour
+« sans extracteur » alors qu'il est parfaitement extractible. `HOSTER_PATTERNS_EXTRA` en
+ajoute sans toucher au code — le pendant des « hosters custom & regex » du site :
+
+```bash
+HOSTER_PATTERNS_EXTRA=voe:bysebuho,voe:playmogo
+```
+
+`/debug/extract/...` liste les hôtes non reconnus (`"issue":"aucun extracteur"`) : ce sont
+les candidats. Un nom inventé ou un hébergeur inconnu est signalé au démarrage plutôt
+qu'ignoré.
+
 #### Domaines canoniques
 
 `proxiesembed` **valide le domaine** de l'URL d'embed avant d'extraire quoi que ce soit, et

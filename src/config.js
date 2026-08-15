@@ -180,6 +180,14 @@ const config = {
   // qui n'est pas un code ISO 639-2. A n'activer que si ton lecteur suit la specification.
   SUBTITLE_PROVIDER_LABEL: readBool('SUBTITLE_PROVIDER_LABEL', false),
 
+  // Motifs de detection supplementaires, au format "hebergeur:motif" (regex, insensible a
+  // la casse). Voe renouvelle ses domaines de sortie environ tous les mois, avec des noms
+  // qui ne contiennent pas "voe": un domaine plus recent que la liste integree passe pour
+  // "sans extracteur" alors qu'il est parfaitement extractible. C'est le pendant des
+  // "hosters custom & regex" du site.
+  //   HOSTER_PATTERNS_EXTRA=voe:bysebuho,voe:playmogo
+  HOSTER_PATTERNS_EXTRA: readList('HOSTER_PATTERNS_EXTRA', []),
+
   // Quand un embed n'a pas d'extracteur (vidara.to, lecteurvideo.com...), proposer quand meme
   // le lien en "ouvrir dans le navigateur" au lieu de le jeter. Bruyant -> desactive par defaut.
   SHOW_UNPLAYABLE_EMBEDS: readBool('SHOW_UNPLAYABLE_EMBEDS', false),
