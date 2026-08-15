@@ -382,7 +382,7 @@ déclare les en-têtes que ses CDN exigent. C'est la voie d'ajout d'un site reve
 
 | Addon | Contenu | Serveurs | Résolution |
 |---|---|---|---|
-| `aether` | Films **et séries** | `aurora`, `lul`, `link` | par id TMDB |
+| `aether` | Films **et séries** | `aurora`, `lul`, `link` (VO), `gallic` (**VF**) | par id TMDB |
 | `obrigoz` | Films | — | par **titre** TMDB + année |
 
 ```bash
@@ -505,11 +505,25 @@ finale, la mesure de débit et l'affichage sont communs à toutes les sources.
 
 #### Détail des deux addons livrés
 
-**Aether** interroge ses trois serveurs en parallèle, chacun rendant le flux à sa façon :
+**Aether** interroge ses serveurs en parallèle, chacun rendant le flux à sa façon :
 `aurora` renvoie l'URL m3u8 dans son JSON, `lul` une URL intermédiaire qui répond `302`
 vers le master (la redirection ne survivrait pas au passage dans un proxy HLS, elle est
 donc résolue en amont), `link` une URL brute dont le CDN n'accepte que l'`Origin` d'un
 tiers (`nextgencloudfabric.com`).
+
+`gallic` est la **source VF** du site, et la seule à sortir du lot deux fois : elle vit sur
+sa propre base d'API (`AETHER_GALLIC_API`, un Worker Cloudflare) et rend **plusieurs flux
+d'un coup**, un par fournisseur, sous `{success, streams: [{title, provider, url}]}`. Ces
+liens se lisent avec les en-têtes ordinaires du site — c'est l'API qui diffère, pas la
+lecture. Chaque lien porte alors un `variant` (le fournisseur), qui s'affiche dans la ligne
+de détail et **sert de clé à l'élagage** : deux fournisseurs différents ne sont jamais des
+doublons, ce sont deux replis, et seul un lien surclassé *par le même fournisseur* est
+masqué.
+
+> Si ton `.env` fige `AETHER_SERVERS=aurora,lul,link`, `gallic` n'est pas interrogé et tout
+> reste en VO. Le démarrage le dit désormais : `serveur(s) installés mais absents de
+> AETHER_SERVERS`. `/debug/addons` liste côte à côte les serveurs demandés et ceux
+> installés.
 
 Le site encapsule ce dernier dans son propre proxy HLS (`jbam.aether.bar`) parce qu'un
 **navigateur** ne peut ni forger un `Origin` ni échapper au CORS. Un serveur, si : on pose
@@ -578,7 +592,7 @@ FStream · VFQ · uqload                        ~2.3 Mb/s
 
 | Valeur | Effet |
 |---|---|
-| `compact` *(défaut)* | Écarte les liens qu'un autre de la **même source** surclasse à la fois en résolution **et** en débit — personne ne choisit le 480p à 1,1 Mb/s quand le même fournisseur donne 1080p à 2,3 — puis limite à `MAX_STREAMS_PER_SOURCE`. |
+| `compact` *(défaut)* | Écarte les liens qu'un autre de la **même source et du même fournisseur** surclasse à la fois en résolution **et** en débit — personne ne choisit le 480p à 1,1 Mb/s quand le même fournisseur donne 1080p à 2,3 — puis limite à `MAX_STREAMS_PER_SOURCE`. |
 | `complet` | Propose **tout** ce qui a été résolu, sans rien masquer. |
 
 Sur une liste réelle de 8 liens : 6 en `compact`, 8 en `complet`.

@@ -84,7 +84,11 @@ function pruneDominated(streams) {
     if (candidate.externalUrl) return true; // liens "ouvrir dans le navigateur": hors comparaison
     return !streams.some((other, otherIndex) => {
       if (otherIndex === index || other.externalUrl) return false;
-      if (other.sourceName !== candidate.sourceName || other.langRank !== candidate.langRank) return false;
+      // `variant` distingue les fournisseurs qu'une meme source agrege (Aether/Gallic en
+      // rend plusieurs par appel): deux fournisseurs differents ne sont pas des doublons,
+      // ce sont deux replis.
+      if (other.sourceName !== candidate.sourceName || other.variant !== candidate.variant) return false;
+      if (other.langRank !== candidate.langRank) return false;
       // Sans debit mesure des deux cotes, la comparaison n'a pas de sens: on garde.
       if (!other.bitrate || !candidate.bitrate) return false;
       const betterOrEqual = other.height >= candidate.height && other.bitrate >= candidate.bitrate;
@@ -259,7 +263,7 @@ async function buildStreams({ tmdbId, type, season, episode }) {
     const label = tidySourceName(r.sourceName);
     // N'ajouter que ce qui n'est pas deja dans le libelle de la source (PurStream renvoie
     // par exemple "pulse | 1080p | MULTI", inutile de repeter la langue et la qualite).
-    const details = [r.lang, r.hoster || r.player]
+    const details = [r.lang, r.variant, r.hoster || r.player]
       .filter((part) => part && !label.toLowerCase().includes(String(part).toLowerCase()))
       .join(' · ');
     // Le debit mesure sur un fichier est une estimation (taille/duree): le "~" evite

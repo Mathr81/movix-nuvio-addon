@@ -22,6 +22,10 @@ const config = require('../config');
  * ({url, direct, sourceName, quality, lang, player}), a ceci pres que `url` est deja
  * une URL de proxy quand la source en a besoin (voir kit.proxied).
  *
+ * Champ supplementaire `variant`: le fournisseur d'ou vient CE lien, quand une source en
+ * agrege plusieurs sous un meme nom. Il s'affiche dans la ligne de detail et sert de cle
+ * a l'elagage des redondants, qui ne compare alors que des liens comparables.
+ *
  * Ajouter une source = deposer un fichier ici et l'ajouter a MODULES. Rien d'autre.
  */
 const MODULES = [require('./aether'), require('./obrigoz')];

@@ -3,14 +3,17 @@ const log = require('../log');
 const kit = require('./kit');
 
 /**
- * Aether (aether.bar) -- trois serveurs derriere le meme site, chacun avec sa propre
+ * Aether (aether.bar) -- plusieurs serveurs derriere le meme site, chacun avec sa propre
  * facon de rendre le flux:
  *
  *  - aurora (nebula.<domaine>) : renvoie directement l'URL m3u8 dans son JSON;
  *  - lul    (lul.<domaine>)    : renvoie une URL intermediaire qui repond 302 vers le master;
  *  - link   (link.<domaine>)   : renvoie une URL brute qu'il faut encapsuler dans le
  *                                m3u8-proxy officiel du site (le CDN d'origine refuse tout
- *                                ce qui ne vient pas de nextgencloudfabric.com).
+ *                                ce qui ne vient pas de nextgencloudfabric.com);
+ *  - gallic (AETHER_GALLIC_API): la source VF du site. Seul serveur a ne pas etre sur le
+ *                                domaine d'API des autres, et seul a rendre PLUSIEURS flux
+ *                                d'un coup, un par fournisseur.
  *
  * Point commun aux trois: les segments ne sortent que si la requete porte l'Origin du site
  * et le Referer de la page du media. C'est le proxy de flux qui s'en charge.
@@ -83,9 +86,30 @@ function findM3u8(data, rawBody) {
   return match ? match[1] : null;
 }
 
+/** Resolution annoncee dans un libelle libre ("Full HD 1080p", "VF 720p"). */
+function resolutionIn(label) {
+  return /\b(2160p?|1440p?|1080p?|720p?|480p?|360p?|4k)\b/i.exec(String(label || ''))?.[1];
+}
+
+/**
+ * De quel fournisseur vient ce flux. Gallic en agrege plusieurs: sans cette etiquette,
+ * deux liens de qualites voisines sont indiscernables dans la liste, et l'elagage des
+ * redondants supprimerait un repli au lieu d'un doublon.
+ */
+function providerOf(stream) {
+  const named = String(stream.provider || '').trim();
+  if (named) return named.slice(0, 24);
+  try {
+    return new URL(stream.url).hostname.replace(/^www\./, '');
+  } catch {
+    return undefined;
+  }
+}
+
 const SERVERS = {
   aurora: {
     label: 'Aurora',
+    lang: () => config.AETHER_LANG,
     async resolve({ http, path, refererUrl }) {
       const { data, status } = await http.get(`https://nebula.${config.AETHER_API_DOMAIN}${path}`, {
         params: { ser: 'tik' },
@@ -108,6 +132,7 @@ const SERVERS = {
 
   lul: {
     label: 'Lul',
+    lang: () => config.AETHER_LANG,
     async resolve({ http, path, refererUrl }) {
       const { data, status } = await http.get(`https://lul.${config.AETHER_API_DOMAIN}${path}`, {
         headers: apiHeaders(`${refererUrl}?r=%2Fsettings%2Fsource%2Fembeds`),
@@ -128,6 +153,7 @@ const SERVERS = {
 
   link: {
     label: 'Link',
+    lang: () => config.AETHER_LANG,
     async resolve({ http, path, refererUrl }) {
       const { data, status } = await http.get(`https://link.${config.AETHER_API_DOMAIN}${path}`, {
         headers: apiHeaders(`${refererUrl}?r=%2Fsettings%2Fsource%2Fembeds`),
@@ -153,6 +179,35 @@ const SERVERS = {
       };
     },
   },
+
+  gallic: {
+    label: 'Gallic',
+    lang: () => config.AETHER_GALLIC_LANG,
+    async resolve({ http, path, refererUrl }) {
+      const base = config.AETHER_GALLIC_API.replace(/\/+$/, '');
+      const { data, status } = await http.get(`${base}${path}`, {
+        headers: {
+          ...apiHeaders(`${refererUrl}?r=%2Fsettings%2Fsource%2Fembeds`),
+          'accept-language': kit.ACCEPT_LANGUAGE,
+          ...kit.chromeHints(),
+        },
+        validateStatus: () => true,
+      });
+      if (status !== 200 || !data?.success || !Array.isArray(data.streams)) return null;
+
+      // Un seul appel, plusieurs fournisseurs: on les rend tous et on laisse le tri et
+      // l'elagage communs decider lesquels valent la peine d'etre affiches.
+      return data.streams
+        .filter((stream) => typeof stream?.url === 'string' && /^https?:\/\//i.test(stream.url))
+        .map((stream) => ({
+          url: stream.url,
+          variant: providerOf(stream),
+          // Le libelle annonce parfois la resolution: elle sert de repli si la mesure
+          // de debit n'aboutit pas (elle est sinon lue dans le master HLS, plus sure).
+          quality: resolutionIn(stream.title),
+        }));
+    },
+  },
 };
 
 function selectedServers() {
@@ -162,6 +217,16 @@ function selectedServers() {
       return !!server;
     },
   );
+}
+
+// Un .env ecrit avant l'ajout d'un serveur fige AETHER_SERVERS sur une liste plus courte
+// que ce qui est installe. Le serveur manquant disparait alors sans qu'aucune erreur ne le
+// signale -- c'est exactement le cas de la source VF, qui se voit seulement a l'usage.
+const unlisted = Object.keys(SERVERS).filter(
+  (name) => !config.AETHER_SERVERS.some((listed) => listed.toLowerCase() === name),
+);
+if (unlisted.length > 0) {
+  console.warn(`[aether] serveur(s) installes mais absents de AETHER_SERVERS: ${unlisted.join(', ')}`);
 }
 
 async function getStreams({ tmdbId, type, season, episode }) {
@@ -189,34 +254,45 @@ async function getStreams({ tmdbId, type, season, episode }) {
   const settled = await Promise.allSettled(servers.map(([, server]) => server.resolve({ http, path, refererUrl })));
 
   const results = [];
+  let served = 0;
   settled.forEach((outcome, index) => {
     const [, server] = servers[index];
     if (outcome.status === 'rejected') {
       log.ok('Aether', label, `${server.label}: echec (${outcome.reason?.message || outcome.reason})`);
       return;
     }
-    if (!outcome.value) {
+    // Un resolveur rend une URL seule (en-tetes communs), un {url, headers} quand SON CDN
+    // en attend d'autres -- c'est le cas de "link", dont le flux vient d'un tiers et n'a
+    // rien a faire des en-tetes d'aether.bar -- ou une LISTE quand un seul appel rapporte
+    // plusieurs fournisseurs, comme chez gallic.
+    const found = [].concat(outcome.value).filter(Boolean);
+    if (found.length === 0) {
       log.ok('Aether', label, `${server.label}: aucun flux`);
       return;
     }
+    served += 1;
 
-    // Un resolveur rend soit une URL seule (en-tetes communs), soit {url, headers} quand
-    // SON CDN en attend d'autres -- c'est le cas de "link", dont le flux vient d'un tiers
-    // et n'a rien a faire des en-tetes d'aether.bar.
-    const resolved = typeof outcome.value === 'string' ? { url: outcome.value } : outcome.value;
-
-    results.push({
-      url: kit.proxied(resolved.url, {
-        headers: resolved.headers || playbackHeaders(refererUrl),
-        rules: PROXY_SPEC_RULES,
-      }),
-      direct: true,
-      sourceName: `Aether · ${server.label}`,
-      lang: config.AETHER_LANG || undefined,
-    });
+    for (const item of found) {
+      const resolved = typeof item === 'string' ? { url: item } : item;
+      results.push({
+        url: kit.proxied(resolved.url, {
+          headers: resolved.headers || playbackHeaders(refererUrl),
+          rules: PROXY_SPEC_RULES,
+        }),
+        direct: true,
+        sourceName: `Aether · ${server.label}`,
+        variant: resolved.variant,
+        quality: resolved.quality,
+        lang: server.lang() || undefined,
+      });
+    }
   });
 
-  log.ok('Aether', label, `${results.length}/${servers.length} serveur(s) ont rendu un flux`);
+  log.ok(
+    'Aether',
+    label,
+    `${served}/${servers.length} serveur(s) ont rendu un flux (${results.length} lien(s))`,
+  );
   return results;
 }
 
@@ -230,7 +306,10 @@ module.exports = {
   // defaut change depuis, et rien ne le montrait.
   settings: () => ({
     serveurs: config.AETHER_SERVERS,
+    serveursInstalles: Object.keys(SERVERS),
     origineCdnLink: config.AETHER_LINK_ORIGIN,
+    apiGallic: config.AETHER_GALLIC_API,
     langue: config.AETHER_LANG,
+    langueGallic: config.AETHER_GALLIC_LANG,
   }),
 };

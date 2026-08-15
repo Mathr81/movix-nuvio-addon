@@ -152,15 +152,19 @@ const config = {
   // de la meme facon. Verbeux -- a n'activer que le temps d'un diagnostic.
   STREAM_PROXY_LOG: readBool('STREAM_PROXY_LOG', false),
 
-  // --- Aether (aether.bar -- serveurs aurora/lul/link) ---------------------
+  // --- Aether (aether.bar -- serveurs aurora/lul/link/gallic) --------------
   AETHER_SITE_ORIGIN: readEnv('AETHER_SITE_ORIGIN', 'https://aether.bar'),
   AETHER_API_DOMAIN: readEnv('AETHER_API_DOMAIN', 'aether.cx'),
-  AETHER_SERVERS: readList('AETHER_SERVERS', ['aurora', 'lul', 'link']),
+  AETHER_SERVERS: readList('AETHER_SERVERS', ['aurora', 'lul', 'link', 'gallic']),
   // Origin/Referer exiges par le CDN tiers du serveur "link".
   AETHER_LINK_ORIGIN: readEnv('AETHER_LINK_ORIGIN', 'https://nextgencloudfabric.com'),
-  // Aucune des trois API n'annonce la langue de la piste: on l'etiquette a la main pour
-  // que le tri par PREFERRED_LANGS reste coherent.
+  // Gallic n'est pas sur le domaine d'API des autres serveurs: il a sa propre base.
+  AETHER_GALLIC_API: readEnv('AETHER_GALLIC_API', 'https://api.pope-walrus-spiffy.workers.dev'),
+  // Aucune des API n'annonce la langue de la piste: on l'etiquette a la main pour que le
+  // tri par PREFERRED_LANGS reste coherent. Gallic est la source VF du site, les autres
+  // servent la version originale.
   AETHER_LANG: readEnv('AETHER_LANG', 'VO'),
+  AETHER_GALLIC_LANG: readEnv('AETHER_GALLIC_LANG', 'VF'),
 
   // --- Obrigoz (obrigoz.com) ------------------------------------------------
   OBRIGOZ_BASE_URL: readEnv('OBRIGOZ_BASE_URL', 'https://obrigoz.com'),
