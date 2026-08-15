@@ -122,6 +122,32 @@ function directAccess(url, refererUrl) {
   return { http: makeClient(headersFor(url, refererUrl)), resolve: (u) => streamProxy.localize(u), label: 'direct' };
 }
 
+/**
+ * Acces AMONT: on court-circuite notre propre proxy et on joint le CDN directement, avec
+ * les en-tetes que le proxy aurait rejoues.
+ *
+ * Mesurer a travers le proxy revenait a lui faire telecharger la playlist entiere puis a la
+ * REECRIRE ligne par ligne (des centaines d'URI signees) pour n'en lire que les durees --
+ * un travail dont la sonde n'a aucun usage, paye a chaque lien d'addon et a chaque ouverture
+ * de fiche. C'est ce qui saturait le budget de 3,5 s et rendait ces liens systematiquement
+ * "sans debit mesure".
+ *
+ * L'acces par le proxy reste en repli: si un CDN exige une transformation que seul le proxy
+ * applique, la mesure repasse par lui.
+ */
+function upstreamAccess(url) {
+  const target = streamProxy.targetOf(url);
+  if (!target) return null;
+  const headers = streamProxy.headersOf(url) || {};
+  return {
+    http: makeClient({ 'User-Agent': DEFAULT_UA, ...headers }),
+    // On est deja sur l'amont: les URI enfants s'y resolvent telles quelles.
+    resolve: (u) => u,
+    entry: target,
+    label: 'amont',
+  };
+}
+
 function proxyAccess() {
   // Le proxy pose lui-meme les en-tetes: y ajouter les notres n'aurait aucun effet.
   return { http: makeClient({ 'User-Agent': DEFAULT_UA }), resolve: throughProxy, label: 'proxy' };
@@ -363,18 +389,30 @@ async function attempt(access, url, durationSeconds) {
  *        hoster attend en Referer, et l'origine du CDN ne suffit pas.
  * @returns {Promise<{bitrate?, height?, bytes?, estimated?}>}
  */
-async function probe(url, { durationSeconds, refererUrl, hoster } = {}) {
+async function probe(url, { durationSeconds, refererUrl, hoster, deadline } = {}) {
   if (!config.PROBE_BITRATE || !url) return {};
 
+  // Hors budget: on rend la main SANS passer par le cache. Mettre en cache un "aucune
+  // mesure" du a un manque de temps le figerait pour CACHE_EMPTY_TTL_MS, et le lien
+  // resterait sans debit pendant des minutes alors qu'il etait parfaitement mesurable.
+  if (deadline && Date.now() > deadline) return {};
+
   return cache.wrap(`probe:${url}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
-    // Ordre volontaire: la route dediee de l'hebergeur d'abord, puisque c'est la seule
-    // dont on sait qu'elle fonctionne (le site ne lit pas ces flux autrement).
-    const accesses = [hosterProxyAccess(hoster), directAccess(url, refererUrl)].filter(Boolean);
+    // Ordre volontaire: l'amont d'abord quand on le connait (aucun detour reseau), puis la
+    // route dediee de l'hebergeur, puis le proxy -- du moins cher au plus cher.
+    const accesses = [
+      upstreamAccess(url),
+      hosterProxyAccess(hoster),
+      directAccess(url, refererUrl),
+    ].filter(Boolean);
     if (config.PROBE_PROXY_BASE_URL) accesses.push(proxyAccess());
 
     for (const access of accesses) {
+      // Un repli ne demarre plus une fois le budget epuise: c'est du temps ajoute a
+      // l'ouverture de la fiche pour un resultat qui a deja echoue une fois.
+      if (deadline && Date.now() > deadline) break;
       try {
-        const result = await attempt(access, url, durationSeconds);
+        const result = await attempt(access, access.entry || url, durationSeconds);
         if (result && Object.keys(result).length > 0) return result;
       } catch (err) {
         console.warn(`[probe] ${access.label} a echoue sur ${url.slice(0, 80)}: ${err.message}`);

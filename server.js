@@ -5,7 +5,7 @@ const config = require('./src/config');
 const { fetchAsVtt } = require('./src/subtitles');
 const { resolveId } = require('./src/idResolver');
 const { collectRawLinks, resolveStreams, buildStreams } = require('./src/streamBuilder');
-const { detectHoster, extractDirectUrl, normalizeEmbedUrl } = require('./src/hosterExtract');
+const { detectHoster, extractDirectUrl, normalizeEmbedUrl, breakerState } = require('./src/hosterExtract');
 const { mainApi } = require('./src/movixClient');
 const streamProxy = require('./src/streamProxy');
 const addons = require('./src/addons');
@@ -145,6 +145,9 @@ app.get('/debug/extract/:type/:id', async (req, res) => {
       tmdbId,
       total: embeds.length,
       extraits: results.filter((r) => r.ok).length,
+      // Hebergeurs momentanement ecartes: sans ca, un "0/3" ressemble a une extraction
+      // ratee alors qu'aucune requete n'a ete envoyee.
+      ecartes: breakerState(),
       parHebergeur: Object.fromEntries(
         [...new Set(results.map((r) => r.hoster || 'inconnu'))].map((h) => [
           h,

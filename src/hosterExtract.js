@@ -1,5 +1,7 @@
 const axios = require('axios');
 const config = require('./config');
+const voe = require('./hosterVoe');
+const streamProxy = require('./streamProxy');
 const { mainApi, proxiesEmbed } = require('./movixClient');
 
 const BROWSER_UA =
@@ -160,6 +162,86 @@ function pickStreamUrl(data) {
     .find((value) => /^https?:\/\//i.test(value));
 }
 
+/**
+ * Disjoncteur par hebergeur.
+ *
+ * Quand un service tombe, il tombe pour TOUS ses liens: seekstreaming rendait cinq 502
+ * d'affilee par fiche, chacun paye au prix d'un aller-retour et d'un timeout. Les essais
+ * suivants n'apprennent rien -- ils ne font qu'allonger l'ouverture de la fiche.
+ *
+ * Seules les pannes de SERVICE arment le disjoncteur (5xx, timeout, erreur reseau). Un 400
+ * ou un 404 parle d'UNE video ("Uqload media URL not found") et ne dit rien des suivantes:
+ * le compter reviendrait a couper un hebergeur en bon etat parce que trois de ses videos
+ * ont ete supprimees.
+ */
+const breakers = new Map();
+
+function isOpen(hoster) {
+  const state = breakers.get(hoster);
+  if (!state || state.until <= Date.now()) return false;
+  return true;
+}
+
+function noteOutage(hoster) {
+  const state = breakers.get(hoster) || { streak: 0, until: 0 };
+  state.streak += 1;
+  if (state.streak >= config.HOSTER_FAILURE_STREAK) {
+    state.until = Date.now() + config.HOSTER_COOLDOWN_MS;
+    state.streak = 0;
+    console.warn(
+      `[extract:${hoster}] ${config.HOSTER_FAILURE_STREAK} pannes d'affilee -- mis de cote ${Math.round(config.HOSTER_COOLDOWN_MS / 1000)}s`,
+    );
+  }
+  breakers.set(hoster, state);
+}
+
+function noteRecovery(hoster) {
+  breakers.delete(hoster);
+}
+
+/** Etat du disjoncteur, pour /debug/extract. */
+function breakerState() {
+  const now = Date.now();
+  return Object.fromEntries(
+    [...breakers]
+      .filter(([, state]) => state.until > now)
+      .map(([hoster, state]) => [hoster, `ecarte encore ${Math.round((state.until - now) / 1000)}s`]),
+  );
+}
+
+/**
+ * Voe extrait ici, quand le service a renonce.
+ *
+ * Le flux obtenu vient du CDN de Voe, qui n'accepte que le Referer de son propre lecteur:
+ * on le passe par le proxy de flux, exactement comme les addons. Sans ca l'URL serait
+ * exacte et pourtant injouable.
+ */
+async function extractVoeLocally(embedUrl) {
+  try {
+    const result = await voe.extract(embedUrl);
+    if (!result.ok) {
+      console.warn(`[extract:voe] repli local sans resultat pour ${embedUrl}: ${result.reason}`);
+      return null;
+    }
+
+    console.log(`[extract:voe] repli local reussi pour ${embedUrl}`);
+    const url = config.STREAM_PROXY_ENABLED
+      ? streamProxy.proxyUrl(result.url, {
+          headers: {
+            accept: '*/*',
+            origin: 'https://voe.sx',
+            referer: 'https://voe.sx/',
+            'user-agent': voe.BROWSER_UA,
+          },
+        })
+      : result.url;
+    return { ok: true, url, hoster: 'voe' };
+  } catch (err) {
+    console.warn(`[extract:voe] repli local en echec pour ${embedUrl}: ${err.message}`);
+    return null;
+  }
+}
+
 // Chaque extracteur reproduit exactement l'appel + le champ de reponse utilise par
 // src/utils/extractM3u8.ts cote frontend (verifie ligne par ligne).
 async function extractDirectUrl(embedUrl, playerNameHint) {
@@ -167,6 +249,9 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
   // Pas d'extracteur connu: le lien reste un embed HTML, injouable tel quel par
   // Stremio/Nuvio qui attendent une URL video directe.
   if (!hoster) return { ok: false, reason: 'no-extractor' };
+
+  // Service connu pour etre en panne a l'instant: on ne paye pas l'aller-retour.
+  if (isOpen(hoster)) return { ok: false, reason: 'cooldown', hoster };
 
   // --- Extracteurs par scraping HTML direct (pas de service dedie cote Movix) ---
   if (hoster === 'darkibox' || hoster === 'oneupload') {
@@ -255,17 +340,30 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
     // 400 ne dit rien de ce qu'il faut corriger.
     const body = err.response?.data ? ` body=${JSON.stringify(err.response.data).slice(0, 200)}` : '';
     console.warn(`[extract:${hoster}] echec HTTP pour ${target}: status=${status ?? 'n/a'} msg=${err.message}${body}`);
+
+    // Panne de service (5xx, timeout, reseau) vs refus portant sur cette video (4xx).
+    if (!status || status >= 500) noteOutage(hoster);
+
+    if (hoster === 'voe') {
+      const local = await extractVoeLocally(target);
+      if (local) return local;
+    }
     return { ok: false, reason: 'http-error', hoster, status, error: err.response?.data?.error };
   }
 
+  noteRecovery(hoster);
   const url = pickStreamUrl(data);
 
   if (!url) {
     console.warn(`[extract:${hoster}] reponse OK mais aucune URL exploitable pour ${embedUrl} -- reponse: ${JSON.stringify(data).slice(0, 300)}`);
+    if (hoster === 'voe') {
+      const local = await extractVoeLocally(target);
+      if (local) return local;
+    }
     return { ok: false, reason: 'no-url-field', hoster };
   }
 
   return { ok: true, url, hoster };
 }
 
-module.exports = { detectHoster, extractDirectUrl, pickStreamUrl, normalizeEmbedUrl };
+module.exports = { detectHoster, extractDirectUrl, pickStreamUrl, normalizeEmbedUrl, breakerState };

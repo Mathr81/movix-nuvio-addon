@@ -91,19 +91,38 @@ function resolutionIn(label) {
   return /\b(2160p?|1440p?|1080p?|720p?|480p?|360p?|4k)\b/i.exec(String(label || ''))?.[1];
 }
 
+function capitalize(text) {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+// Extensions a deux niveaux: dans "example.co.uk", le nom du service est "example".
+const SECOND_LEVEL = /^(co|com|net|org|ac|gov|edu)$/i;
+
+/** Nom du service derriere une URL: "sfy-01-fr.vidsonic.net" -> "Vidsonic". */
+function hostLabel(url) {
+  try {
+    const parts = new URL(url).hostname.replace(/^www\./, '').split('.');
+    let index = Math.max(parts.length - 2, 0);
+    if (index > 0 && SECOND_LEVEL.test(parts[index])) index -= 1;
+    return capitalize(parts[index]);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * De quel fournisseur vient ce flux. Gallic en agrege plusieurs: sans cette etiquette,
  * deux liens de qualites voisines sont indiscernables dans la liste, et l'elagage des
  * redondants supprimerait un repli au lieu d'un doublon.
+ *
+ * L'API ne nomme pas toujours ses fournisseurs: elle les NUMEROTE ("1", "2", "3"). Un rang
+ * ne distingue rien pour qui lit la liste -- le domaine qui sert le flux, lui, nomme le
+ * service. On ne retient donc le champ `provider` que s'il porte un vrai nom.
  */
 function providerOf(stream) {
-  const named = String(stream.provider || '').trim();
-  if (named) return named.slice(0, 24);
-  try {
-    return new URL(stream.url).hostname.replace(/^www\./, '');
-  } catch {
-    return undefined;
-  }
+  const named = String(stream.provider ?? '').trim();
+  if (/[a-z]{3}/i.test(named)) return capitalize(named.slice(0, 24));
+  return hostLabel(stream.url);
 }
 
 const SERVERS = {

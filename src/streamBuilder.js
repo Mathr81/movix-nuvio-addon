@@ -6,7 +6,7 @@ const cache = require('./cache');
 const tmdbClient = require('./tmdb');
 const { probe, formatBitrate, formatSize } = require('./probe');
 
-const MAX_CONCURRENT_EXTRACTIONS = 6;
+const MAX_CONCURRENT_EXTRACTIONS = config.EXTRACT_CONCURRENCY;
 
 // Deux familles, deux reglages: ENABLED_SOURCES borne les sources qui passent par Movix,
 // ENABLED_ADDONS celles qui sont autonomes (cf. src/addons/index.js).
@@ -200,11 +200,22 @@ async function resolveStreams({ tmdbId, type, season, episode }) {
     // La duree sert a estimer le debit d'un fichier direct (taille / duree).
     const durationSeconds = await runtimeSeconds(type, tmdbId).catch(() => null);
 
-    const enriched = await mapLimit(deduped, MAX_CONCURRENT_EXTRACTIONS, async (r) => {
+    // Budget commun a TOUTE la phase de mesure. Une sonde lente n'est pas grave en soi;
+    // ce qui l'est, c'est qu'elle retarde la liste entiere. Passe ce delai, les liens
+    // restants sont rendus sans debit plutot que de faire attendre l'ouverture de la fiche
+    // -- et rien n'est mis en cache, la mesure sera retentee au prochain passage.
+    const probeDeadline = config.PROBE_PHASE_BUDGET_MS > 0 ? Date.now() + config.PROBE_PHASE_BUDGET_MS : 0;
+
+    const enriched = await mapLimit(deduped, config.PROBE_CONCURRENCY, async (r) => {
       const labelled = parseQuality(r.quality, r.player, r.sourceName, r.lang);
       const measured = r.externalUrl
         ? {}
-        : await probe(r.url, { durationSeconds, refererUrl: r.embedUrl, hoster: r.hoster });
+        : await probe(r.url, {
+            durationSeconds,
+            refererUrl: r.embedUrl,
+            hoster: r.hoster,
+            deadline: probeDeadline,
+          });
       return {
         ...r,
         // Une RESOLUTION lue dans un master HLS vaut mieux qu'un libelle "HD" approximatif.

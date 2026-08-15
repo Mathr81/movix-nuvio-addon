@@ -345,6 +345,23 @@ HOSTER_PATTERNS_EXTRA=voe:bysebuho,voe:playmogo
 les candidats. Un nom inventé ou un hébergeur inconnu est signalé au démarrage plutôt
 qu'ignoré.
 
+**Reconnaître ne suffit pas.** Sur ces mêmes domaines récents, `proxiesembed` répond
+`404 Content not found` : il a bien chargé la page, mais n'y a pas trouvé le bloc JSON
+qu'il attendait. Le lien est alors détecté, envoyé, refusé — et perdu. Un **extracteur Voe
+local** (`src/hosterVoe.js`) prend le relais dans ce cas : il suit les rebonds de la page
+(`window.location`, `meta refresh`, lien `/e/…` — aucun n'est un vrai `3xx`, donc aucun
+client HTTP ne les suit seul), lit le bloc obfusqué et le déchiffre.
+
+Le déchiffrement n'est pas de la cryptographie : c'est un empilement de transformations
+réversibles — `rot13` → retrait de sept symboles de bruit → base64 → décalage de 3 →
+inversion → base64 → JSON (porté de `server.py:3100-3116`). Une seule erreur d'ordre rend
+du binaire plutôt qu'une erreur, d'où le test qui **fabrique** une chaîne par le chemin
+inverse et vérifie que la source est retrouvée à l'identique.
+
+Le flux obtenu vient du CDN de Voe, qui n'accepte que le `Referer` de son lecteur : il
+repart donc **par le proxy de flux**, comme un lien d'addon. Sans cela l'URL serait exacte
+et pourtant injouable.
+
 #### Domaines canoniques
 
 `proxiesembed` **valide le domaine** de l'URL d'embed avant d'extraire quoi que ce soit, et
@@ -520,6 +537,11 @@ de détail et **sert de clé à l'élagage** : deux fournisseurs différents ne 
 doublons, ce sont deux replis, et seul un lien surclassé *par le même fournisseur* est
 masqué.
 
+L'API ne nomme pas toujours ses fournisseurs — elle les **numérote** (`1`, `2`, `3`), et un
+rang ne distingue rien pour qui lit la liste. Le champ `provider` n'est donc retenu que
+s'il porte un vrai nom ; sinon c'est le **domaine qui sert le flux** qui nomme le lien
+(`sfy-01-fr.vidsonic.net` → `Vidsonic`).
+
 > Si ton `.env` fige `AETHER_SERVERS=aurora,lul,link`, `gallic` n'est pas interrogé et tout
 > reste en VO. Le démarrage le dit désormais : `serveur(s) installés mais absents de
 > AETHER_SERVERS`. `/debug/addons` liste côte à côte les serveurs demandés et ceux
@@ -657,10 +679,11 @@ lecture officielle du service.
 
 La sonde emprunte donc le même chemin, dans cet ordre :
 
-1. la route dédiée de l'hébergeur, via `PROXIES_EMBED_BASE_URL` (déjà configuré pour
+1. **l'amont directement**, quand le lien est un lien de proxy (voir ci-dessous) ;
+2. la route dédiée de l'hébergeur, via `PROXIES_EMBED_BASE_URL` (déjà configuré pour
    l'extraction) — la seule dont on sait qu'elle fonctionne ;
-2. en direct, avec le referer de la page d'embed ;
-3. `PROBE_PROXY_BASE_URL` s'il est renseigné (facultatif).
+3. en direct, avec le referer de la page d'embed ;
+4. `PROBE_PROXY_BASE_URL` s'il est renseigné (facultatif).
 
 Couverts par une route dédiée : voe, fsvid, vidzy, vidmoly, sibnet, uqload, doodstream,
 seekstreaming. Les autres (supervideo, dropload, darkibox, oneupload) passent en direct.
@@ -669,6 +692,40 @@ Les streams sont triés : langue préférée d'abord (français par défaut), pu
 puis **débit** — à résolution égale, c'est lui qui sépare un vrai 1080p d'un upscale
 compressé. `PROBE_BITRATE=false` désactive la mesure si l'ouverture des fiches devient
 lente (elle coûte un aller-retour par lien, mis en cache ensuite).
+
+### Ce qui rend l'ouverture d'une fiche lente
+
+Les sources sont interrogées en parallèle depuis le début ; ce qui s'allongeait, c'est ce
+qui vient **après** elles. Trois causes, trois réponses.
+
+**La sonde mesurait à travers notre propre proxy.** Un lien d'addon pointe sur
+`PUBLIC_URL` : mesurer ce lien faisait sortir la requête de la machine, revenir par le
+domaine public, puis faire télécharger au proxy la playlist entière **et la réécrire ligne
+par ligne** — des centaines d'URI signées — pour n'en lire que les durées `EXTINF`. Un
+travail dont la sonde n'a aucun usage, payé à chaque lien et à chaque ouverture de fiche :
+c'est ce qui saturait les 3,5 s de `PROBE_TIMEOUT_MS` et laissait ces liens
+systématiquement « sans débit mesuré ». La sonde relit maintenant la cible **et les
+en-têtes** depuis le lien signé, et joint le CDN directement. Sur le banc : **0 requête au
+proxy, mesure complète en 73 ms**. Le passage par le proxy reste en repli.
+
+**Un service en panne l'est pour tous ses liens.** `seekstreaming` rendait cinq `502`
+d'affilée par fiche, chacun payé au prix d'un aller-retour et d'un délai d'attente. Un
+**disjoncteur** l'écarte après `HOSTER_FAILURE_STREAK` pannes, pour `HOSTER_COOLDOWN_MS`.
+Seules les **pannes de service** comptent (`5xx`, timeout, erreur réseau) : un `400` ou un
+`404` parle d'*une* vidéo (`Uqload media URL not found`) et ne dit rien des suivantes — les
+compter reviendrait à couper un hébergeur en bon état parce que trois de ses vidéos ont été
+supprimées. `/debug/extract` affiche les hébergeurs écartés (`ecartes`), sans quoi un
+`0/3` ressemblerait à une extraction ratée alors qu'aucune requête n'est partie.
+
+**Une sonde lente retardait la liste entière.** `PROBE_PHASE_BUDGET_MS` (9 s) borne la
+phase de mesure pour une ouverture de fiche : au-delà, les liens restants sont rendus
+**sans débit** plutôt que de faire attendre. Rien n'est alors mis en cache — un « aucune
+mesure » dû au manque de temps se figerait sinon pour `CACHE_EMPTY_TTL_MS`, et le lien
+resterait sans débit pendant des minutes alors qu'il était mesurable.
+
+`PROBE_CONCURRENCY` (10) et `EXTRACT_CONCURRENCY` (6) règlent le front de chaque phase :
+les mesures attendent surtout le réseau, les extractions tapent un service unique qu'il
+est inutile de bousculer.
 
 ## Diagnostic
 

@@ -121,6 +121,19 @@ const config = {
   // VITE_PROXY_BASE_URL cote site (ou l'URL du service bypass403): tous deux exposent
   // /proxy/<url> et posent les Origin/Referer attendus par domaine.
   PROBE_PROXY_BASE_URL: readEnv('PROBE_PROXY_BASE_URL', ''),
+  // Budget global de la phase de mesure, pour UNE ouverture de fiche. Une sonde lente n'est
+  // pas genante en soi: ce qui l'est, c'est qu'elle retarde la liste entiere. Passe ce
+  // delai, les liens restants sont rendus sans debit (et remesures au prochain passage).
+  // 0 = aucune limite.
+  PROBE_PHASE_BUDGET_MS: Number(readEnv('PROBE_PHASE_BUDGET_MS', 9000)),
+  // Mesures menees de front. Elles attendent surtout le reseau: plus large que l'extraction,
+  // qui tape un service unique et n'a rien a gagner a etre bousculee.
+  PROBE_CONCURRENCY: Number(readEnv('PROBE_CONCURRENCY', 10)),
+  EXTRACT_CONCURRENCY: Number(readEnv('EXTRACT_CONCURRENCY', 6)),
+  // Disjoncteur: apres N PANNES d'affilee (5xx, timeout), un hebergeur est mis de cote
+  // pendant ce delai. Les refus portant sur une video precise (4xx) ne comptent pas.
+  HOSTER_FAILURE_STREAK: Number(readEnv('HOSTER_FAILURE_STREAK', 3)),
+  HOSTER_COOLDOWN_MS: Number(readEnv('HOSTER_COOLDOWN_MS', 120000)),
 
   // --- Lisibilite de la liste de streams -----------------------------------
   // "compact" (defaut) ecarte les liens redondants: ceux qu'un autre de la MEME source

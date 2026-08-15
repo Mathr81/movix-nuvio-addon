@@ -146,6 +146,27 @@ function targetOf(url) {
 }
 
 /**
+ * En-tetes que le proxy rejouerait pour ce lien.
+ *
+ * Ils permettent de joindre l'amont SANS passer par le proxy: c'est ce que fait la sonde de
+ * debit, qui n'a aucune raison de faire un aller-retour reseau par PUBLIC_URL (et de faire
+ * reecrire une playlist entiere au passage) alors qu'elle tourne dans ce process et peut
+ * poser ces en-tetes elle-meme.
+ */
+function headersOf(url) {
+  if (!isProxied(url)) return null;
+  try {
+    const { searchParams } = new URL(url);
+    const ref = searchParams.get('c');
+    if (ref) return tickets.get(ref)?.spec?.h || null;
+    const payload = searchParams.get('p');
+    return payload ? JSON.parse(b64urlDecode(payload)).h || null : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Ramene une URL proxifiee sur la boucle locale. PUBLIC_URL vise l'appareil de lecture
  * (une IP Tailscale, typiquement); pour la sonde de debit, qui tourne dans ce process,
  * passer par cette adresse serait un detour reseau inutile -- et un echec si l'hote ne
@@ -597,4 +618,4 @@ function mount(app) {
   app.head(ROUTE, handle);
 }
 
-module.exports = { ROUTE, mount, proxyUrl, isProxied, targetOf, localize, publicBase };
+module.exports = { ROUTE, mount, proxyUrl, isProxied, targetOf, headersOf, localize, publicBase };
