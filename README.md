@@ -51,9 +51,9 @@ Trois niveaux, du plus simple au plus libre :
 
 1. **Choisir et ordonner** les rangées intégrées — `CATALOGS` dans `.env` :
    ```bash
-   CATALOGS=continue,watchlist,reco,trending,popular
+   CATALOGS=watchlist,reco,trending,popular
    ```
-   Ids disponibles : `continue`, `watchlist`, `favorites`, `reco`, `trakt-reco`,
+   Ids disponibles : `watchlist`, `favorites`, `reco`, `trakt-reco`,
    `trending`, `popular`, `toprated`, `new`. L'ordre de la liste est l'ordre d'affichage.
 
 2. **Renommer / créer des rangées** — copie `catalogs.example.json` en `catalogs.json`
@@ -77,13 +77,17 @@ Trois niveaux, du plus simple au plus libre :
 
 ### Catalogues personnels (sync compte Movix)
 
-Si `MOVIX_JWT` + `MOVIX_USER_ID` sont renseignés, trois rangées supplémentaires
+Si `MOVIX_JWT` + `MOVIX_USER_ID` sont renseignés, deux rangées supplémentaires
 apparaissent, alimentées par les mêmes données que le site (`/api/sync`) :
-**Reprendre** (avec `S2E5 · 80 %` dans le libellé), **Ma liste**, **Favoris**.
+**Ma liste** et **Favoris**.
 
-> Le protocole Stremio ne permet pas à un addon de positionner la reprise de lecture :
-> la progression est affichée, mais la lecture redémarre au début. Pour une vraie
-> reprise, utilise le push vers Nuvio Sync ci-dessous.
+> **Il n'y a plus de rangée « Reprendre ».** Le protocole Stremio ne permet pas à un addon
+> de positionner la reprise de lecture : cette rangée ne pouvait qu'*afficher* la
+> progression (`S2E5 · 80 %` dans le libellé) avant de relancer au début. Depuis que le
+> hub pousse les positions vers **Nuvio Sync** et **Simkl**, qui gèrent la reprise
+> nativement et savent replacer le curseur, la doubler ici revenait à proposer une rangée
+> moins capable que celle d'à côté — et à surcharger les libellés. Les titres sont donc
+> rendus tels quels.
 
 ### Push vers Nuvio Sync (bibliothèque, vus, reprise de lecture)
 
@@ -453,9 +457,18 @@ Le site encapsule ce dernier dans son propre proxy HLS (`jbam.aether.bar`) parce
 **navigateur** ne peut ni forger un `Origin` ni échapper au CORS. Un serveur, si : on pose
 directement les en-têtes attendus et on économise un rebond entier. Ce rebond n'était pas
 gratuit — jbam relaie lui-même vers le CDN, et cette double indirection faisait expirer les
-segments (timeouts à 20 s, pesées de débit en échec). C'est le même raisonnement que pour
-la sonde : le proxy du site n'existe que pour le navigateur. `AETHER_LINK_VIA_JBAM=true`
-rétablit le chemin du site si son CDN venait à refuser l'accès direct.
+C'est le même raisonnement que pour la sonde de débit — et pourtant, **c'est jbam qui est
+gardé par défaut** (`AETHER_LINK_VIA_JBAM=true`). Le diagnostic montre que le CDN accepte
+n'importe quels en-têtes en 69-164 ms là où jbam met 7,5 s, mais seul le chemin par jbam a
+une lecture complète établie de bout en bout : master → sous-playlists `/content` →
+segments `/media`. L'accès direct résout bien la playlist et ne joue pas. Le chemin prouvé
+l'emporte sur le chemin élégant ; `AETHER_LINK_VIA_JBAM=false` bascule sur l'accès direct
+si tu veux réessayer.
+
+L'URL passée à jbam est encodée **exactement** comme le fait le site (`urllib.parse.quote`,
+qui laisse les `/` intacts : `url=https%3A//host/chemin`). `encodeURIComponent` produirait
+`https%3A%2F%2Fhost%2Fchemin` — accepté aussi, mais on ne s'écarte pas sans raison d'une
+requête dont on sait qu'elle fonctionne.
 
 Quand `link` ne rend rien, un diagnostic rejoue **la même requête** avec plusieurs jeux
 d'en-têtes et affiche ce que chacun obtient — c'est la réponse du CDN qui tranche, pas une

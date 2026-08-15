@@ -157,11 +157,14 @@ const config = {
   AETHER_SERVERS: readList('AETHER_SERVERS', ['aurora', 'lul', 'link']),
   // Origin/Referer exiges par le CDN du serveur "link".
   AETHER_LINK_ORIGIN: readEnv('AETHER_LINK_ORIGIN', 'https://nextgencloudfabric.com'),
-  // Repasser par le proxy HLS du site (jbam) pour le serveur "link", comme le fait le
-  // navigateur. Inutile depuis un serveur -- notre propre proxy pose deja ces en-tetes --
-  // et ce rebond supplementaire fait expirer les segments. A n'activer que si le CDN
-  // refusait un jour l'acces direct.
-  AETHER_LINK_VIA_JBAM: readBool('AETHER_LINK_VIA_JBAM', false),
+  // Passer par le proxy HLS du site (jbam) pour le serveur "link".
+  //
+  // En theorie inutile depuis un serveur: notre propre proxy sait poser l'Origin/Referer
+  // que jbam pose, et le CDN accepte n'importe quels en-tetes (verifie par aether:diag).
+  // En pratique c'est le SEUL chemin dont la lecture complete est etablie de bout en bout
+  // -- master, sous-playlists /content, segments /media. L'acces direct, lui, resout bien
+  // la playlist mais ne joue pas. Le chemin prouve l'emporte sur le chemin elegant.
+  AETHER_LINK_VIA_JBAM: readBool('AETHER_LINK_VIA_JBAM', true),
   AETHER_M3U8_PROXY: readEnv('AETHER_M3U8_PROXY', 'https://jbam.aether.bar/m3u8-proxy'),
   // Aucune des trois API n'annonce la langue de la piste: on l'etiquette a la main pour
   // que le tri par PREFERRED_LANGS reste coherent.

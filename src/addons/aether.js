@@ -64,6 +64,22 @@ const PROXY_SPEC_RULES = [
 // rien a signaler. Le serveur "link" ajoute les siens quand il passe par jbam.
 const PLAYLIST_HINTS = [];
 
+/**
+ * Encodage d'un parametre d'URL identique a `urllib.parse.quote` de Python, c'est-a-dire
+ * en laissant les "/" intacts.
+ *
+ * Ce detail n'en est pas un pour jbam: c'est sous cette forme exacte que le site l'appelle
+ * (`url=https%3A//host/chemin`), et c'est la seule dont la lecture soit etablie de bout en
+ * bout. `encodeURIComponent` produirait `https%3A%2F%2Fhost%2Fchemin` -- accepte, mais on
+ * ne s'ecarte pas sans raison d'une requete dont on sait qu'elle fonctionne.
+ */
+function quoteUrl(value) {
+  return encodeURIComponent(value)
+    .replace(/%2F/g, '/')
+    // encodeURIComponent epargne ces caracteres, quote les encode.
+    .replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
 /** Premiere URL .m3u8 trouvee dans un JSON, quelle que soit la cle utilisee. */
 function findM3u8(data, rawBody) {
   for (const key of ['url', 'file', 'src', 'stream', 'link']) {
@@ -150,12 +166,9 @@ const SERVERS = {
         };
       }
 
-      // Repli sur le chemin du site, a l'identique, si le CDN venait a refuser l'acces direct.
       const headers = JSON.stringify({ Origin: cdnOrigin, Referer: `${cdnOrigin}/` });
       return {
-        url:
-          `${config.AETHER_M3U8_PROXY}?url=${encodeURIComponent(data.stream)}` +
-          `&headers=${encodeURIComponent(headers)}`,
+        url: `${config.AETHER_M3U8_PROXY}?url=${quoteUrl(data.stream)}&headers=${quoteUrl(headers)}`,
         // jbam sert playlists et segments sur des chemins sans extension: sans ces indices,
         // ses sous-playlists repartiraient sans etre reecrites.
         playlistHints: ['/m3u8-proxy', '/content'],

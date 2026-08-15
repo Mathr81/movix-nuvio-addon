@@ -18,8 +18,11 @@ const CONFIG_FILE = config.CATALOGS_FILE || path.join(__dirname, '..', 'catalogs
 
 // Rangees integrees. `personal` = necessite le sync compte Movix, `trakt` = necessite
 // une connexion Trakt active.
+// La rangee "Reprendre" a ete retiree: le hub synchronise desormais les positions de
+// lecture vers Nuvio Sync et Simkl, qui affichent la reprise nativement -- et eux savent
+// replacer le curseur, ce que le protocole d'addon ne permet pas. La doubler ici revenait
+// a proposer une rangee moins capable que celle d'a cote.
 const BUILTIN = {
-  continue: { name: 'Movix · Reprendre', requires: 'personal' },
   watchlist: { name: 'Movix · Ma liste', requires: 'personal' },
   favorites: { name: 'Movix · Favoris', requires: 'personal' },
   reco: { name: 'Movix · Parce que tu as regardé', requires: 'personal' },
@@ -30,7 +33,7 @@ const BUILTIN = {
   new: { name: { movie: 'Movix · Au cinéma', series: 'Movix · En cours de diffusion' } },
 };
 
-const DEFAULT_ORDER = ['continue', 'watchlist', 'favorites', 'reco', 'trakt-reco', 'trending', 'popular', 'toprated', 'new'];
+const DEFAULT_ORDER = ['watchlist', 'favorites', 'reco', 'trakt-reco', 'trending', 'popular', 'toprated', 'new'];
 
 function loadFile() {
   try {

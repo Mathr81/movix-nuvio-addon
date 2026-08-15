@@ -34,31 +34,17 @@ function toCatalogMeta(item, type) {
  */
 async function personalCatalog(kind, type, page) {
   const perPage = 20;
-  const entries =
-    kind === 'continue'
-      ? await movixSync.getContinueWatching(type)
-      : await movixSync.getCollection(kind === 'watchlist' ? 'watchlist' : 'favorites', type);
+  const entries = await movixSync.getCollection(kind === 'watchlist' ? 'watchlist' : 'favorites', type);
 
   const slice = entries.slice((page - 1) * perPage, page * perPage);
   if (slice.length === 0) return [];
 
-  // detailsMany ne renvoie que la fiche TMDB: on re-associe par id pour retrouver la
-  // progression et l'episode en cours portes par l'entree de sync d'origine.
-  const bySyncId = new Map(slice.map((e) => [Number(e.id), e]));
+  // Les titres sont rendus tels quels. La progression y figurait autrefois ("S1E4 · 45%")
+  // faute de mieux -- un addon ne peut pas positionner la reprise de lecture. Maintenant
+  // que le hub pousse les positions vers Nuvio Sync et Simkl, qui la gerent nativement,
+  // cette annotation ne faisait plus que surcharger les libelles.
   const detailed = await tmdbClient.detailsMany(slice.map((e) => ({ id: e.id, type })));
-
-  return detailed.map((d) => {
-    const meta = toCatalogMeta(d, type);
-    const source = bySyncId.get(Number(d.id)) || {};
-    // La progression est affichee dans le libelle: le protocole Stremio ne permet pas a
-    // un addon de positionner la reprise de lecture, on peut seulement l'indiquer.
-    const progress = Number(source.progress);
-    const parts = [];
-    if (source.currentEpisode) parts.push(`S${source.currentEpisode.season}E${source.currentEpisode.episode}`);
-    if (Number.isFinite(progress) && progress > 0 && progress < 100) parts.push(`${Math.round(progress)}%`);
-    if (parts.length > 0) meta.name = `${meta.name} · ${parts.join(' · ')}`;
-    return meta;
-  });
+  return detailed.map((d) => toCatalogMeta(d, type));
 }
 
 /**
@@ -89,7 +75,7 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
   try {
     // Les catalogues personnels ont leur propre cache (TTL sync) et ne sont pas memoises ici,
     // sinon ajouter un film a sa liste sur le site mettrait 30 min a apparaitre.
-    if (kind === 'continue' || kind === 'watchlist' || kind === 'favorites') {
+    if (kind === 'watchlist' || kind === 'favorites') {
       return { metas: await personalCatalog(kind, type, page) };
     }
 

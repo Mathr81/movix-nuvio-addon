@@ -1,5 +1,4 @@
 [
-  { "id": "continue" },
   { "id": "watchlist" },
   { "id": "reco", "name": "À voir ensuite" },
   { "id": "trending" },
