@@ -479,9 +479,19 @@ npm run aether:diag -- 157336
 ```
 
 Il teste l'API, l'accès direct au CDN (sans en-tête, avec ceux du CDN, avec ceux du site),
-le passage par jbam avec son temps de réponse, puis le premier segment de la playlist
-obtenue — une playlist qui répond `200` ne prouve pas qu'un segment sortira. Il termine par
-le réglage à appliquer.
+le passage par jbam avec son temps de réponse, puis **descend les deux chaînes jusqu'à un
+vrai segment** — master → variante → segment.
+
+Cette dernière étape est la seule qui prouve quoi que ce soit. Un CDN qui refuse un segment
+ne répond pas forcément `403` : il sert volontiers une page d'erreur **en `200`**. Le
+lecteur n'y voit pas de vidéo, redemande, et boucle sans jamais démarrer — exactement le
+symptôme observé sur Link en accès direct, où les playlists se résolvaient parfaitement. Le
+diagnostic lit donc les **octets** du segment (`0x47` toutes les 188 octets pour du
+MPEG-TS, `ftyp`/`moof` pour du MP4 fragmenté, `<` pour une page HTML) et conclut sur le
+réglage à appliquer.
+
+Le proxy applique le même contrôle en fonctionnement : une réponse `text/html` là où une
+vidéo est attendue est signalée dans les logs plutôt que relayée en silence.
 
 **Obrigoz** ne connaît ni TMDB ni IMDb, seulement des titres : TMDB donne le titre français
 et l'année, une recherche sur le site rend une grille de fiches (l'**année** départage les

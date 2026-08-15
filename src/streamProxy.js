@@ -478,6 +478,17 @@ async function handle(req, res) {
     if (upstream.status >= 400) {
       console.warn(`[streamProxy] amont ${upstream.status} sur ${target.slice(0, 100)}`);
     }
+
+    // Un CDN qui refuse un segment ne repond pas forcement 403: il sert volontiers une
+    // page d'erreur en 200. Le lecteur n'y voit pas de video, redemande, et boucle sans
+    // jamais demarrer -- un symptome impossible a rattacher a sa cause sans ce signalement.
+    if (/text\/html/i.test(String(upstream.headers['content-type'] || ''))) {
+      console.warn(
+        `[streamProxy] l'amont a repondu du HTML la ou une video est attendue (${upstream.status}) ` +
+          `-- page d'erreur ou anti-bot ? ${target.slice(0, 100)}`,
+      );
+    }
+
     trace(req, target, `passe-plat ${upstream.status}${skip ? ` (amorce de ${skip} o retiree)` : ''}`);
 
     res.status(upstream.status);

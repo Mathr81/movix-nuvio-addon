@@ -48,6 +48,79 @@ async function timed(label, request) {
   }
 }
 
+/** Premiere URI de la playlist qui ne soit ni vide ni une balise. */
+function firstUri(body) {
+  return body
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith('#'));
+}
+
+/**
+ * Nature reelle d'une reponse, lue sur ses octets.
+ *
+ * Un CDN qui refuse un segment ne repond pas forcement 403: il sert volontiers une page
+ * d'erreur en 200. Le lecteur, lui, n'y voit pas de video, redemande, et boucle sans
+ * jamais demarrer -- ce que le seul code de statut ne montre pas.
+ */
+function identify(buffer) {
+  if (buffer.length === 0) return { kind: 'vide', playable: false };
+  const head = buffer.subarray(0, 16).toString('latin1');
+  if (head.trimStart().startsWith('<')) return { kind: 'HTML (page d\'erreur ou anti-bot)', playable: false };
+  if (head.startsWith('#EXTM3U')) return { kind: 'playlist', playable: false };
+  // MPEG-TS: octet de synchro 0x47 tous les 188 octets.
+  if (buffer[0] === 0x47 && (buffer.length < 189 || buffer[188] === 0x47)) return { kind: 'MPEG-TS', playable: true };
+  const boxType = buffer.subarray(4, 8).toString('latin1');
+  if (['ftyp', 'moof', 'styp', 'sidx'].includes(boxType)) return { kind: `MP4 fragmente (${boxType})`, playable: true };
+  return { kind: 'binaire non reconnu', playable: buffer.length > 10000 };
+}
+
+/**
+ * Suit la chaine master -> variante -> segment et rend compte du SEGMENT.
+ * C'est la seule etape qui prouve qu'un flux est jouable.
+ */
+async function walkToSegment(title, playlistUrl, headers, label) {
+  console.log(`\n${title}`);
+
+  let currentUrl = playlistUrl;
+  for (let depth = 0; depth < 3; depth += 1) {
+    const response = await timed(`playlist niveau ${depth + 1}`, () =>
+      http.get(currentUrl, { headers, responseType: 'text' }),
+    );
+    if (!response || response.status >= 400 || !response.isPlaylist) return null;
+
+    const uri = firstUri(response.body);
+    if (!uri) {
+      console.log('   (playlist sans element referencable)');
+      return null;
+    }
+
+    const childUrl = new URL(uri, currentUrl).toString();
+    // Encore une playlist ? On redescend. Sinon, c'est le segment.
+    if (response.body.includes('#EXT-X-STREAM-INF')) {
+      currentUrl = childUrl;
+      continue;
+    }
+
+    const segment = await timed('segment', () =>
+      http.get(childUrl, { headers, responseType: 'arraybuffer' }),
+    );
+    if (!segment) return null;
+
+    const buffer = Buffer.from(segment.data || []);
+    const nature = identify(buffer);
+    console.log(
+      `   -> ${label}: ${buffer.length} octets, ${nature.kind}` +
+        ` ${nature.playable ? '(LISIBLE)' : '(INEXPLOITABLE)'}`,
+    );
+    if (!nature.playable && buffer.length > 0) {
+      console.log(`      debut: ${buffer.subarray(0, 120).toString('utf8').replace(/\s+/g, ' ')}`);
+    }
+    return nature;
+  }
+  return null;
+}
+
 async function diagnose(tmdbId) {
   const site = config.AETHER_SITE_ORIGIN.replace(/\/+$/, '');
   const cdn = config.AETHER_LINK_ORIGIN.replace(/\/+$/, '');
@@ -106,41 +179,31 @@ async function diagnose(tmdbId) {
     }),
   );
 
-  // 4. Un segment sort-il vraiment ? Une playlist qui repond 200 ne prouve rien.
+  // 4. Descendre jusqu'a un VRAI segment. C'est l'etape decisive: une playlist qui repond
+  //    200 ne prouve rien, et c'est sur les segments que la lecture bloque.
   const winner = Object.entries(results).find(([, r]) => r?.isPlaylist);
-  if (winner) {
-    const [label, response] = winner;
-    const child = response.body
-      .split('\n')
-      .map((line) => line.trim())
-      .find((line) => line && !line.startsWith('#'));
-
-    if (child) {
-      console.log(`\n4) Premier element reference par la playlist (en-tetes: ${label})`);
-      const childUrl = new URL(child, stream).toString();
-      console.log(`   ${childUrl.slice(0, 110)}`);
-      await timed('GET enfant', () =>
-        http.get(childUrl, { headers: attempts[label], responseType: 'arraybuffer' }),
-      );
-    }
-  }
+  const directSegment = winner
+    ? await walkToSegment('4) Chaine complete en direct', stream, attempts[winner[0]], winner[0])
+    : null;
+  const jbamSegment = viaJbam?.isPlaylist
+    ? await walkToSegment('5) Chaine complete par jbam', jbamUrl, { origin: site, referer, 'user-agent': kit.BROWSER_UA }, 'jbam')
+    : null;
 
   // --- Verdict --------------------------------------------------------------
   console.log('\n=== Verdict ===');
-  if (winner) {
-    console.log(`Le CDN rend une playlist avec "${winner[0]}".`);
-    if (winner[0].includes(cdn)) {
-      console.log('C\'est la configuration par defaut (AETHER_LINK_VIA_JBAM=false): rien a changer ici,');
-      console.log('le probleme est donc en aval (lecture, proxy) et non a la resolution.');
-    } else {
-      console.log(`Ajuste AETHER_LINK_ORIGIN en consequence.`);
+  if (directSegment?.playable) {
+    console.log('L\'acces DIRECT sort un segment lisible de bout en bout.');
+    console.log('=> AETHER_LINK_VIA_JBAM=false convient, et est plus rapide.');
+  } else if (jbamSegment?.playable) {
+    console.log('Seul le chemin par JBAM sort un segment lisible.');
+    if (winner) {
+      console.log('En direct, la playlist se resout mais le segment ne suit pas: c\'est exactement');
+      console.log('ce qui fait boucler le lecteur sans jamais demarrer.');
     }
-  } else if (viaJbam?.isPlaylist) {
-    console.log('Seul le proxy du site rend une playlist: le CDN refuse l\'acces direct.');
-    console.log('=> Mets AETHER_LINK_VIA_JBAM=true dans .env.');
-    if (viaJbam.elapsed > 5000) {
-      console.log(`   (Il a mis ${viaJbam.elapsed} ms: augmente aussi STREAM_PROXY_TIMEOUT_MS et PROBE_TIMEOUT_MS.)`);
-    }
+    console.log('=> AETHER_LINK_VIA_JBAM=true (valeur par defaut).');
+  } else if (winner || viaJbam?.isPlaylist) {
+    console.log('Les playlists se resolvent mais AUCUN chemin ne sort de segment lisible.');
+    console.log('Le flux annonce est probablement lie a une session ou a l\'IP du demandeur.');
   } else {
     console.log('Aucun chemin ne rend de playlist -- ni en direct, ni par jbam.');
     console.log('Le flux annonce par l\'API est probablement expire, a usage unique, ou lie a une session.');
