@@ -494,6 +494,16 @@ async function handle(req, res) {
     if (clientRange) headers.Range = shifted ? shifted.header : clientRange;
     if (req.headers['if-range']) headers['If-Range'] = req.headers['if-range'];
 
+    // Jamais de compression sur un segment.
+    //
+    // axios reclame gzip par defaut. Avec `decompress: false`, on relayait donc un corps
+    // COMPRESSE accompagne de son Content-Encoding -- correct pour un navigateur, illisible
+    // pour les lecteurs video, qui ne dechiffrent pas cet en-tete et voient du bruit. Le
+    // proxy de reference contourne le probleme autrement (il decompresse et retire
+    // l'en-tete); demander l'identite est plus simple et ne coute rien: une video est deja
+    // compressee, gzip ne lui gagne rien.
+    headers['Accept-Encoding'] = 'identity';
+
     const upstream = await axios({
       method: isHead ? 'head' : 'get',
       url: target,

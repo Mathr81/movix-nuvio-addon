@@ -151,15 +151,19 @@ async function buildSubtitles({ type, tmdbId, season, episode, publicBaseUrl }) 
     byLang.set(lang, existing);
   }
 
+  // UNE piste par langue: la plus telechargee.
+  //
+  // On en proposait trois, en suffixant les suivantes ("fre (2)", "fre (3)") pour les
+  // distinguer. Or ce champ est un CODE de langue: tout ce qui n'en est pas un s'affiche
+  // "inconnu" dans le lecteur. Deux langues donnaient donc deux pistes nommees et quatre
+  // "inconnu" -- une liste illisible pour un choix que personne ne fait a l'aveugle.
   const subtitles = [];
   for (const [lang, entries] of byLang) {
-    entries.sort((a, b) => b.score - a.score);
-    entries.slice(0, 3).forEach((entry, index) => {
-      subtitles.push({
-        id: `movix-os-${lang}-${index}`,
-        lang: index === 0 ? lang : `${lang} (${index + 1})`,
-        url: subtitleUrl(publicBaseUrl, entry.link),
-      });
+    const best = entries.reduce((top, entry) => (entry.score > top.score ? entry : top));
+    subtitles.push({
+      id: `movix-os-${lang}`,
+      lang,
+      url: subtitleUrl(publicBaseUrl, best.link),
     });
   }
 

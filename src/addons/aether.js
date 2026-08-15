@@ -39,14 +39,14 @@ function apiHeaders(refererUrl) {
  * En-tetes de LECTURE, rejoues par le proxy sur la playlist puis sur chaque segment.
  * Plus complets que ceux des appels d'API: les CDN filtrent aussi sur les Client Hints.
  */
-function playbackHeaders(refererUrl) {
+function playbackHeaders(refererUrl, fetchSite = 'cross-site') {
   return {
     accept: '*/*',
     'accept-language': kit.ACCEPT_LANGUAGE,
     origin: siteOrigin(),
     referer: refererUrl,
     'user-agent': kit.BROWSER_UA,
-    ...kit.chromeHints(),
+    ...kit.chromeHints(fetchSite),
   };
 }
 
@@ -172,6 +172,9 @@ const SERVERS = {
       const headers = JSON.stringify({ Origin: cdnOrigin, Referer: `${cdnOrigin}/` });
       return {
         url: `${config.AETHER_M3U8_PROXY}?url=${quoteUrl(data.stream)}&headers=${quoteUrl(headers)}`,
+        // jbam est un sous-domaine du site: le navigateur annonce "same-site", pas
+        // "cross-site". On le reproduit tel quel (cf. requetes de reference du site).
+        headers: playbackHeaders(refererUrl, 'same-site'),
         // jbam sert playlists et segments sur des chemins sans extension: sans ces indices,
         // ses sous-playlists repartiraient sans etre reecrites.
         playlistHints: ['/m3u8-proxy', '/content'],

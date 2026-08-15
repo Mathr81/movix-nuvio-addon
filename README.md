@@ -365,6 +365,12 @@ un flux HLS — ils demandent une URL, point. L'addon leur donne donc **une URL 
 
 Aucun octet de vidéo n'est bufferisé : tout le reste est un passe-plat en streaming.
 
+**Jamais de compression sur un segment.** Le proxy demande `Accept-Encoding: identity` à
+l'amont. Sans ça, axios réclame `gzip` par défaut et l'on relaie un corps *compressé*
+accompagné de son `Content-Encoding` — correct pour un navigateur, illisible pour les
+lecteurs vidéo, qui ne déchiffrent pas cet en-tête et n'y voient que du bruit. Une vidéo
+est déjà compressée : gzip ne lui gagne rien.
+
 **La nature d'une réponse se décide sur ses octets, jamais sur son URL.** Un proxy HLS sert
 les playlists *et* les segments sur le même chemin (`jbam.aether.bar/m3u8-proxy?url=…`) :
 trancher sur l'URL revenait à relire des segments vidéo comme du texte UTF-8, donc à les
@@ -666,6 +672,11 @@ La console détaille aussi, par source, le nombre de liens et la raison d'un éc
   le **chemin** (`/subtitle/<base64url>.vtt`) et non plus en paramètre de requête : rien à
   tronquer ni à réécrire en route, et l'extension rassure les lecteurs qui la vérifient.
   L'ancienne forme `?src=` reste acceptée pour les liens déjà distribués.
+  OpenSubtitles est interrogé **une langue par requête** (`sublanguageid-fre`, puis
+  `sublanguageid-eng`) : la forme groupée `fre,eng` répond `400`, donc aucun sous-titre.
+  Une seule piste est proposée par langue — la plus téléchargée. Le champ `lang` est un
+  **code** de langue : y écrire autre chose (`fre (2)` pour distinguer une deuxième piste)
+  fait afficher « inconnu » dans le lecteur.
 - **Addons : films uniquement** pour l'instant. Seule la forme `/movie/<id>` a été
   observée côté Aether, et la grille de recherche d'Obrigoz est une grille de films, sans
   notion de saison ni d'épisode. L'équivalent série s'ajoute en une ligne dans chaque
