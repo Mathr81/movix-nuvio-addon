@@ -520,6 +520,44 @@ de la politesse : le CDN de `link` **limite le débit de requêtes par demandeur
 rafale rapide faisait expirer les requêtes suivantes — le diagnostic déclenchait donc
 lui-même la limite qu'il cherchait à mesurer, et concluait à tort que rien ne sortait.
 
+### Lisibilité de la liste
+
+Nuvio regroupe déjà les streams sous le nom de l'addon. Chaque ligne se limite donc à ce
+qui distingue *ce* lien des autres :
+
+```
+1080p                          au lieu de     Movix
+~2.3 Mb/s                                     1036p
+FStream · VFQ · uqload                        ~2.3 Mb/s
+                                              FStream
+                                              VFQ · uqload · ~2.3 Mb/s
+```
+
+- le nom de l'addon n'est plus répété sur chaque ligne ;
+- le débit n'apparaît plus deux fois ;
+- les hauteurs exotiques des masters HLS (`1036p`, `468p` — recadrages, encodages
+  anamorphiques) sont ramenées au **palier** correspondant, à 10 % près ;
+- un libellé de source déjà composé (`pulse | 1080p | MULTI`) perd la résolution qui y
+  faisait doublon.
+
+#### Tout garder, ou masquer les redondances
+
+`STREAM_LIST` choisit entre les deux :
+
+| Valeur | Effet |
+|---|---|
+| `compact` *(défaut)* | Écarte les liens qu'un autre de la **même source** surclasse à la fois en résolution **et** en débit — personne ne choisit le 480p à 1,1 Mb/s quand le même fournisseur donne 1080p à 2,3 — puis limite à `MAX_STREAMS_PER_SOURCE`. |
+| `complet` | Propose **tout** ce qui a été résolu, sans rien masquer. |
+
+Sur une liste réelle de 8 liens : 6 en `compact`, 8 en `complet`.
+
+`MAX_STREAMS_PER_SOURCE` (2 par défaut) ne s'applique qu'en mode compact. En garder plus
+d'un préserve un repli quand un hébergeur est en panne ; `0` lève la limite sans pour
+autant réintroduire les liens redondants.
+
+L'élagage est **purement un choix d'affichage** : `/debug/streams` montre dans tous les cas
+la totalité de ce qui a été résolu, avec `mode` et `affichesDansNuvio` pour comparer.
+
 ### Débit affiché
 
 Chaque stream annonce son **débit** à côté de la résolution. L'objectif est que deux liens

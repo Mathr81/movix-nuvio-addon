@@ -246,10 +246,9 @@ async function buildStreams({ tmdbId, type, season, episode }) {
 
   // Elagage APRES le tri, et seulement ici: /debug/streams doit continuer a montrer TOUT
   // ce qui a ete resolu et mesure, sans quoi il ne servirait plus a diagnostiquer.
-  const kept = capPerSource(
-    config.PRUNE_DOMINATED ? pruneDominated(enriched) : enriched,
-    config.MAX_STREAMS_PER_SOURCE,
-  );
+  const kept = config.keepAllStreams()
+    ? enriched
+    : capPerSource(pruneDominated(enriched), config.MAX_STREAMS_PER_SOURCE);
 
   if (kept.length < enriched.length) {
     console.log(`[streamBuilder] ${enriched.length - kept.length} lien(s) redondant(s) masque(s) (${kept.length} affiche(s))`);

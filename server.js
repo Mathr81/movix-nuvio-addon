@@ -4,7 +4,7 @@ const addonInterface = require('./src/addon');
 const config = require('./src/config');
 const { fetchAsVtt } = require('./src/subtitles');
 const { resolveId } = require('./src/idResolver');
-const { collectRawLinks, resolveStreams } = require('./src/streamBuilder');
+const { collectRawLinks, resolveStreams, buildStreams } = require('./src/streamBuilder');
 const { detectHoster, extractDirectUrl, normalizeEmbedUrl } = require('./src/hosterExtract');
 const { mainApi } = require('./src/movixClient');
 const streamProxy = require('./src/streamProxy');
@@ -170,7 +170,11 @@ app.get('/debug/streams/:type/:id', async (req, res) => {
     res.json({
       tmdbId,
       type,
+      // Cette liste montre TOUT ce qui a ete resolu; le mode compact en masque une partie
+      // a l'affichage. Donner les deux nombres evite de croire a une source perdue.
+      mode: config.STREAM_LIST,
       total: resolved.length,
+      affichesDansNuvio: (await buildStreams({ tmdbId, type, season, episode })).length,
       streams: resolved.map((r) => ({
         source: r.sourceName,
         proxifie: streamProxy.isProxied(r.url),

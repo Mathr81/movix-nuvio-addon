@@ -123,11 +123,12 @@ const config = {
   PROBE_PROXY_BASE_URL: readEnv('PROBE_PROXY_BASE_URL', ''),
 
   // --- Lisibilite de la liste de streams -----------------------------------
-  // Ecarter les liens qu'un autre de la MEME source surclasse a la fois en resolution et
-  // en debit. Ce ne sont pas des choix, juste du bruit.
-  PRUNE_DOMINATED: readBool('PRUNE_DOMINATED', true),
-  // Au plus N liens par source. Garder plus d'un preserve un repli quand un hebergeur est
-  // en panne. 0 = pas de limite.
+  // "compact" (defaut) ecarte les liens redondants: ceux qu'un autre de la MEME source
+  // surclasse a la fois en resolution et en debit, puis au-dela de MAX_STREAMS_PER_SOURCE.
+  // "complet" propose TOUT ce qui a ete resolu, sans rien masquer.
+  STREAM_LIST: readEnv('STREAM_LIST', 'compact').trim().toLowerCase(),
+  // En mode compact: au plus N liens par source. Garder plus d'un preserve un repli quand
+  // un hebergeur est en panne. 0 = pas de limite (l'elagage des redondants s'applique quand meme).
   MAX_STREAMS_PER_SOURCE: Number(readEnv('MAX_STREAMS_PER_SOURCE', 2)),
 
   // Sources activees (noms tels qu'exportes par src/sources/*.js).
@@ -204,5 +205,27 @@ if (config.SUBTITLES_ENABLED && !config.PUBLIC_URL) {
       'ce qui casse si l\'appareil de lecture n\'atteint pas ce host. Renseigne PUBLIC_URL (ex: http://100.x.x.x:8787).',
   );
 }
+
+// Un mode inconnu retomberait silencieusement sur "compact" et donnerait l'impression que
+// le reglage ne sert a rien: mieux vaut le dire.
+const STREAM_LIST_MODES = ['compact', 'complet'];
+if (!STREAM_LIST_MODES.includes(config.STREAM_LIST)) {
+  console.warn(
+    `[config] STREAM_LIST="${config.STREAM_LIST}" inconnu (attendu: ${STREAM_LIST_MODES.join(' ou ')}) -- "compact" applique`,
+  );
+  config.STREAM_LIST = 'compact';
+}
+
+// PRUNE_DOMINATED a ete remplace par STREAM_LIST. Le signaler plutot que de l'ignorer: un
+// .env qui contredit le code sans rien dire est exactement ce qui coute des heures.
+if (process.env.PRUNE_DOMINATED !== undefined) {
+  const equivalent = /^(1|true|yes|on)$/i.test(process.env.PRUNE_DOMINATED) ? 'compact' : 'complet';
+  console.warn(
+    `[config] PRUNE_DOMINATED n'existe plus -- remplace-le par STREAM_LIST=${equivalent} dans ton .env`,
+  );
+}
+
+/** Tous les liens resolus sont proposes, sans elagage. */
+config.keepAllStreams = () => config.STREAM_LIST === 'complet';
 
 module.exports = config;
