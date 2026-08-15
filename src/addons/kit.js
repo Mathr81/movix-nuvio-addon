@@ -70,6 +70,30 @@ async function titleOf(type, tmdbId) {
 }
 
 /**
+ * Ids TMDB INTERNES de la saison et de l'episode -- a ne pas confondre avec leurs numeros.
+ * Certains sites les portent dans l'URL de leur page de lecture, donc dans le Referer que
+ * leur CDN attend (ex: /media/tmdb-tv-273240-off-campus/421523/7061243).
+ *
+ * Une saison entiere tient en un appel: on met en cache la saison, pas l'episode, pour
+ * qu'une serie regardee d'affilee ne repaye jamais TMDB.
+ */
+async function episodeRef(tmdbId, seasonNumber, episodeNumber) {
+  const season = await cache.wrap(
+    `addon-season:${tmdbId}:${seasonNumber}`,
+    config.CACHE_TTL_MS,
+    config.CACHE_EMPTY_TTL_MS,
+    async () => {
+      const data = await tmdbClient.season(tmdbId, seasonNumber);
+      return {
+        seasonId: data?.id || null,
+        episodes: Object.fromEntries((data?.episodes || []).map((ep) => [ep.episode_number, ep.id])),
+      };
+    },
+  );
+  return { seasonId: season.seasonId, episodeId: season.episodes?.[episodeNumber] || null };
+}
+
+/**
  * Transforme une URL de flux en URL jouable par Nuvio/Stremio: le lien pointe sur notre
  * proxy, qui rejouera `spec.headers` a chaque segment.
  *
@@ -81,4 +105,13 @@ function proxied(url, spec) {
   return streamProxy.proxyUrl(url, spec);
 }
 
-module.exports = { BROWSER_UA, ACCEPT_LANGUAGE, chromeHints, slugify, createHttp, titleOf, proxied };
+module.exports = {
+  BROWSER_UA,
+  ACCEPT_LANGUAGE,
+  chromeHints,
+  slugify,
+  createHttp,
+  titleOf,
+  episodeRef,
+  proxied,
+};

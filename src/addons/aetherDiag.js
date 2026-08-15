@@ -12,7 +12,8 @@ const kit = require('./kit');
  * etiqueter de la video en text/html. Dans les deux cas le lecteur redemande en boucle
  * sans jamais demarrer, et rien dans les statuts ne le laisse voir.
  *
- *   npm run aether:diag -- 157336
+ *   npm run aether:diag -- 157336          (film)
+ *   npm run aether:diag -- 273240 1 1      (serie: tmdbId saison episode)
  */
 
 const insecureAgent = new https.Agent({ rejectUnauthorized: false });
@@ -117,19 +118,27 @@ async function walkToSegment(startUrl, headers) {
   return null;
 }
 
-async function diagnose(tmdbId) {
+async function diagnose(tmdbId, season, episode) {
   const site = config.AETHER_SITE_ORIGIN.replace(/\/+$/, '');
   const cdn = config.AETHER_LINK_ORIGIN.replace(/\/+$/, '');
+  const isSeries = season != null && episode != null;
+  const type = isSeries ? 'series' : 'movie';
 
-  const { slug } = await kit.titleOf('movie', tmdbId).catch(() => ({ slug: 'movie' }));
-  const referer = `${site}/media/tmdb-movie-${tmdbId}-${slug}`;
+  const { slug } = await kit.titleOf(type, tmdbId).catch(() => ({ slug: type === 'series' ? 'tv' : 'movie' }));
+  const { seasonId, episodeId } = isSeries
+    ? await kit.episodeRef(tmdbId, season, episode).catch(() => ({}))
+    : {};
 
-  console.log(`\n=== Aether / link -- tmdbId=${tmdbId} ===`);
+  const page = `${site}/media/tmdb-${isSeries ? 'tv' : 'movie'}-${tmdbId}-${slug}`;
+  const referer = isSeries && seasonId && episodeId ? `${page}/${seasonId}/${episodeId}` : page;
+  const path = isSeries ? `/tv/${tmdbId}/${season}/${episode}` : `/movie/${tmdbId}`;
+
+  console.log(`\n=== Aether / link -- tmdbId=${tmdbId}${isSeries ? ` S${season}E${episode}` : ''} ===`);
   console.log(`Page du media : ${referer}\n`);
 
-  console.log("1) API link.aether.cx");
-  const api = await timed('GET /movie/:id', () =>
-    http.get(`https://link.${config.AETHER_API_DOMAIN}/movie/${tmdbId}`, {
+  console.log('1) API link.aether.cx');
+  const api = await timed(`GET ${path}`, () =>
+    http.get(`https://link.${config.AETHER_API_DOMAIN}${path}`, {
       headers: {
         accept: '*/*',
         origin: site,
@@ -142,7 +151,7 @@ async function diagnose(tmdbId) {
   const stream = api?.data?.stream;
   if (!stream) {
     console.log("\n=> L'API ne rend aucun flux pour ce titre. Rien a diagnostiquer plus loin.");
-    console.log('   (Essaie un autre tmdbId: tous les films ne sont pas sur ce serveur.)');
+    console.log('   (Essaie un autre titre ou un autre episode: le catalogue de ce serveur a des trous.)');
     return;
   }
   console.log(`\n   Flux annonce : ${stream.slice(0, 110)}${stream.length > 110 ? '...' : ''}`);
@@ -172,7 +181,7 @@ async function diagnose(tmdbId) {
 module.exports = { diagnose, identify };
 
 if (require.main === module) {
-  diagnose(process.argv[2] || '157336').catch((err) => {
+  diagnose(process.argv[2] || '157336', process.argv[3], process.argv[4]).catch((err) => {
     console.error(err.message);
     process.exit(1);
   });

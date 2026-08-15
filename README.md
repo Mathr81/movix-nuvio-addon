@@ -382,7 +382,7 @@ déclare les en-têtes que ses CDN exigent. C'est la voie d'ajout d'un site reve
 
 | Addon | Contenu | Serveurs | Résolution |
 |---|---|---|---|
-| `aether` | Films | `aurora`, `lul`, `link` | par id TMDB |
+| `aether` | Films **et séries** | `aurora`, `lul`, `link` | par id TMDB |
 | `obrigoz` | Films | — | par **titre** TMDB + année |
 
 ```bash
@@ -515,11 +515,20 @@ Le site encapsule ce dernier dans son propre proxy HLS (`jbam.aether.bar`) parce
 **navigateur** ne peut ni forger un `Origin` ni échapper au CORS. Un serveur, si : on pose
 directement les en-têtes attendus (`AETHER_LINK_ORIGIN`) et on économise le rebond.
 
+Les **séries** passent par les mêmes trois serveurs, au chemin près : `/tv/<id>/<saison>/
+<épisode>` au lieu de `/movie/<id>`. Le `Referer`, lui, descend jusqu'à l'épisode et le
+désigne par les **ids TMDB internes**, pas par ses numéros —
+`/media/tmdb-tv-273240-off-campus/421523/7061243`. Ils viennent d'un appel `/tv/{id}/season
+/{n}`, mis en cache **par saison** : une série regardée d'affilée ne le repaye jamais. Si
+TMDB ne répond pas, le `Referer` retombe sur la page du titre plutôt que d'abandonner la
+résolution — un `Referer` moins précis reste meilleur qu'aucun flux.
+
 Quand un serveur Aether ne joue pas, un diagnostic suit la chaîne **jusqu'à un vrai
 segment** et se prononce sur ses **octets**, pas sur son code de statut :
 
 ```bash
-npm run aether:diag -- 157336
+npm run aether:diag -- 157336        # film
+npm run aether:diag -- 273240 1 1    # série : tmdbId saison épisode
 ```
 
 C'est la seule étape qui prouve quoi que ce soit, et elle a servi deux fois. Un CDN qui
@@ -699,10 +708,8 @@ c'est ce qui arrivait quand on suffixait les pistes (`fre (2)`, `fre (3)` : deux
 donnaient deux pistes nommées et **quatre « inconnu »**). D'où le défaut à un code pur, et
 le libellé du fournisseur derrière un réglage : à n'activer que si ton lecteur suit la
 spécification.
-- **Addons : films uniquement** pour l'instant. Seule la forme `/movie/<id>` a été
-  observée côté Aether, et la grille de recherche d'Obrigoz est une grille de films, sans
-  notion de saison ni d'épisode. L'équivalent série s'ajoute en une ligne dans chaque
-  résolveur le jour où il est identifié (`supports.series`).
+- **Obrigoz : films uniquement.** Sa grille de recherche est une grille de films
+  (`#search-film-grid`), sans notion de saison ni d'épisode. Aether, lui, gère les deux.
 - **Les flux des addons dépendent du proxy** : ils passent tous par `PUBLIC_URL`, qui doit
   être joignable depuis l'appareil de lecture. `STREAM_PROXY_ENABLED=false` sert le lien
   brut, que la plupart de ces CDN refuseront.

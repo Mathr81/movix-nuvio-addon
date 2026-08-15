@@ -15,9 +15,8 @@ const kit = require('./kit');
  * Point commun aux trois: les segments ne sortent que si la requete porte l'Origin du site
  * et le Referer de la page du media. C'est le proxy de flux qui s'en charge.
  *
- * Films uniquement: c'est la seule forme d'URL observee (`/movie/<tmdbId>`). Le jour ou
- * l'equivalent serie est identifie, il n'y a qu'a ajouter le chemin dans chaque resolveur
- * et basculer `supports.series`.
+ * Films ET series: la seule difference est la forme de l'URL, `/movie/<tmdbId>` d'un cote,
+ * `/tv/<tmdbId>/<saison>/<episode>` de l'autre -- les trois serveurs partagent ce schema.
  */
 
 const API_TIMEOUT_MS = 10000;
@@ -26,9 +25,23 @@ function siteOrigin() {
   return config.AETHER_SITE_ORIGIN.replace(/\/+$/, '');
 }
 
-/** URL de la page du media, telle que le site l'affiche -- c'est elle le Referer attendu. */
-function mediaPageUrl(tmdbId, slug) {
-  return `${siteOrigin()}/media/tmdb-movie-${tmdbId}-${slug || 'movie'}`;
+/**
+ * Chemin d'API du titre demande. Les numeros de saison et d'episode s'y ecrivent tels
+ * quels, comme le site le fait: `/tv/273240/1/1` pour S01E01.
+ */
+function mediaPath({ type, tmdbId, season, episode }) {
+  return type === 'series' ? `/tv/${tmdbId}/${season}/${episode}` : `/movie/${tmdbId}`;
+}
+
+/**
+ * URL de la page du media, telle que le site l'affiche -- c'est elle le Referer attendu.
+ * Pour une serie, la page descend jusqu'a l'episode, designe par les ids TMDB internes
+ * (et non par ses numeros): `/media/tmdb-tv-273240-off-campus/421523/7061243`.
+ */
+function mediaPageUrl({ type, tmdbId, slug, seasonId, episodeId }) {
+  const kind = type === 'series' ? 'tv' : 'movie';
+  const page = `${siteOrigin()}/media/tmdb-${kind}-${tmdbId}-${slug || kind}`;
+  return type === 'series' && seasonId && episodeId ? `${page}/${seasonId}/${episodeId}` : page;
 }
 
 function apiHeaders(refererUrl) {
@@ -73,8 +86,8 @@ function findM3u8(data, rawBody) {
 const SERVERS = {
   aurora: {
     label: 'Aurora',
-    async resolve({ http, tmdbId, refererUrl }) {
-      const { data, status } = await http.get(`https://nebula.${config.AETHER_API_DOMAIN}/movie/${tmdbId}`, {
+    async resolve({ http, path, refererUrl }) {
+      const { data, status } = await http.get(`https://nebula.${config.AETHER_API_DOMAIN}${path}`, {
         params: { ser: 'tik' },
         headers: apiHeaders(refererUrl),
         validateStatus: () => true,
@@ -95,8 +108,8 @@ const SERVERS = {
 
   lul: {
     label: 'Lul',
-    async resolve({ http, tmdbId, refererUrl }) {
-      const { data, status } = await http.get(`https://lul.${config.AETHER_API_DOMAIN}/movie/${tmdbId}`, {
+    async resolve({ http, path, refererUrl }) {
+      const { data, status } = await http.get(`https://lul.${config.AETHER_API_DOMAIN}${path}`, {
         headers: apiHeaders(`${refererUrl}?r=%2Fsettings%2Fsource%2Fembeds`),
         validateStatus: () => true,
       });
@@ -115,8 +128,8 @@ const SERVERS = {
 
   link: {
     label: 'Link',
-    async resolve({ http, tmdbId, refererUrl }) {
-      const { data, status } = await http.get(`https://link.${config.AETHER_API_DOMAIN}/movie/${tmdbId}`, {
+    async resolve({ http, path, refererUrl }) {
+      const { data, status } = await http.get(`https://link.${config.AETHER_API_DOMAIN}${path}`, {
         headers: apiHeaders(`${refererUrl}?r=%2Fsettings%2Fsource%2Fembeds`),
         validateStatus: () => true,
       });
@@ -151,27 +164,39 @@ function selectedServers() {
   );
 }
 
-async function getStreams({ tmdbId, type }) {
-  if (type !== 'movie') return [];
+async function getStreams({ tmdbId, type, season, episode }) {
+  if (type !== 'movie' && type !== 'series') return [];
+  if (type === 'series' && (season == null || episode == null)) {
+    log.ok('Aether', tmdbId, 'serie sans saison/episode: rien a demander');
+    return [];
+  }
 
-  const { slug } = await kit.titleOf(type, tmdbId).catch(() => ({ slug: 'movie' }));
-  const refererUrl = mediaPageUrl(tmdbId, slug);
+  const { slug } = await kit.titleOf(type, tmdbId).catch(() => ({ slug: null }));
+
+  // Les ids TMDB de la saison et de l'episode ne servent qu'a batir le Referer. Leur
+  // absence ne doit donc pas empecher la resolution: on retombe sur la page du titre.
+  const ref =
+    type === 'series'
+      ? await kit.episodeRef(tmdbId, season, episode).catch(() => ({ seasonId: null, episodeId: null }))
+      : {};
+
+  const refererUrl = mediaPageUrl({ type, tmdbId, slug, ...ref });
+  const path = mediaPath({ type, tmdbId, season, episode });
+  const label = type === 'series' ? `${tmdbId} S${season}E${episode}` : tmdbId;
   const http = kit.createHttp({ timeout: API_TIMEOUT_MS });
 
   const servers = selectedServers();
-  const settled = await Promise.allSettled(
-    servers.map(([, server]) => server.resolve({ http, tmdbId, refererUrl })),
-  );
+  const settled = await Promise.allSettled(servers.map(([, server]) => server.resolve({ http, path, refererUrl })));
 
   const results = [];
   settled.forEach((outcome, index) => {
     const [, server] = servers[index];
     if (outcome.status === 'rejected') {
-      log.ok('Aether', tmdbId, `${server.label}: echec (${outcome.reason?.message || outcome.reason})`);
+      log.ok('Aether', label, `${server.label}: echec (${outcome.reason?.message || outcome.reason})`);
       return;
     }
     if (!outcome.value) {
-      log.ok('Aether', tmdbId, `${server.label}: aucun flux`);
+      log.ok('Aether', label, `${server.label}: aucun flux`);
       return;
     }
 
@@ -191,14 +216,14 @@ async function getStreams({ tmdbId, type }) {
     });
   });
 
-  log.ok('Aether', tmdbId, `${results.length}/${servers.length} serveur(s) ont rendu un flux`);
+  log.ok('Aether', label, `${results.length}/${servers.length} serveur(s) ont rendu un flux`);
   return results;
 }
 
 module.exports = {
   id: 'aether',
   name: 'Aether',
-  supports: { movie: true, series: false },
+  supports: { movie: true, series: true },
   available: () => selectedServers().length > 0,
   getStreams,
   // Reglages effectifs, exposes par /debug/addons: un .env qui traine peut contredire un
