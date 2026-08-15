@@ -198,7 +198,10 @@ async function resolveStreams({ tmdbId, type, season, episode }) {
 
     const enriched = await mapLimit(deduped, MAX_CONCURRENT_EXTRACTIONS, async (r) => {
       const labelled = parseQuality(r.quality, r.player, r.sourceName, r.lang);
-      const measured = r.externalUrl
+      // `noProbe`: certaines sources limitent le debit de requetes par demandeur. Y peser
+      // 5 segments avant meme que l'utilisateur appuie sur lecture depense le quota, et le
+      // lecteur se retrouve ensuite devant un CDN muet. Un debit affiche ne vaut pas ca.
+      const measured = r.externalUrl || r.noProbe
         ? {}
         : await probe(r.url, { durationSeconds, refererUrl: r.embedUrl, hoster: r.hoster });
       return {

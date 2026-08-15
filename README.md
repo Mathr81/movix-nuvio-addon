@@ -428,6 +428,8 @@ async function getStreams({ tmdbId, type, season, episode }) {
     sourceName: 'MonSite',
     quality: '1080p',
     lang: 'VF',
+    // facultatif: ce CDN limite le debit de requetes -> pas de mesure de debit
+    // noProbe: true,
   }];
 }
 
@@ -492,6 +494,25 @@ réglage à appliquer.
 
 Le proxy applique le même contrôle en fonctionnement : une réponse `text/html` là où une
 vidéo est attendue est signalée dans les logs plutôt que relayée en silence.
+
+Le diagnostic espace ses requêtes de 1,5 s et commence par la chaîne complète. Ce n'est pas
+de la politesse : le CDN de `link` **limite le débit de requêtes par demandeur**, et une
+rafale rapide faisait expirer les requêtes suivantes — le diagnostic déclenchait donc
+lui-même la limite qu'il cherchait à mesurer, et concluait à tort que rien ne sortait.
+
+#### Sources qui limitent le débit de requêtes
+
+Un CDN peut cesser de répondre après quelques requêtes rapprochées, sans jamais renvoyer
+`429` : les premières passent, les suivantes expirent. C'est le cas du serveur `link`
+d'Aether, constaté sur deux exécutions du diagnostic.
+
+La conséquence est perverse : la **sonde de débit** pèse 5 segments par lien *avant* que tu
+appuies sur lecture. Sur une source limitée, elle épuise le quota, et le lecteur se
+retrouve ensuite devant un CDN muet — il redemande la playlist, les segments, en boucle,
+sans jamais démarrer. Le débit affiché coûtait le flux lui-même.
+
+Un addon peut donc marquer un lien `noProbe: true` : il est proposé normalement, mais sans
+mesure de débit. C'est le défaut pour `link` (`AETHER_PROBE_LINK=true` rétablit la mesure).
 
 **Obrigoz** ne connaît ni TMDB ni IMDb, seulement des titres : TMDB donne le titre français
 et l'année, une recherche sur le site rend une grille de fiches (l'**année** départage les

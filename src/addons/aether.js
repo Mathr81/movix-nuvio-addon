@@ -135,6 +135,9 @@ const SERVERS = {
 
   link: {
     label: 'Link',
+    // Ce CDN cesse de repondre apres quelques requetes rapprochees (verifie deux fois par
+    // aether:diag: les premieres passent, les suivantes expirent).
+    fragile: true,
     async resolve({ http, tmdbId, refererUrl }) {
       const { data, status } = await http.get(`https://link.${config.AETHER_API_DOMAIN}/movie/${tmdbId}`, {
         headers: apiHeaders(`${refererUrl}?r=%2Fsettings%2Fsource%2Fembeds`),
@@ -224,6 +227,10 @@ async function getStreams({ tmdbId, type }) {
       direct: true,
       sourceName: `Aether · ${server.label}`,
       lang: config.AETHER_LANG || undefined,
+      // Le CDN de "link" limite le debit de requetes par demandeur: mesurer son debit
+      // (une playlist + 5 segments) epuise le quota avant la lecture. Un chiffre affiche
+      // ne vaut pas un flux injouable.
+      noProbe: server.fragile && !config.AETHER_PROBE_LINK,
     });
   });
 

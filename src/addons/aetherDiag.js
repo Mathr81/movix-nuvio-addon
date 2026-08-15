@@ -16,6 +16,12 @@ const kit = require('./kit');
 
 const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 
+// Espacement entre deux requetes vers le meme CDN. Sans lui, le diagnostic declenche
+// lui-meme la limitation de debit qu'il cherche a mesurer.
+const REQUEST_SPACING_MS = 1500;
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const http = axios.create({
   timeout: 15000,
   maxRedirects: 5,
@@ -84,10 +90,14 @@ async function walkToSegment(title, playlistUrl, headers, label) {
 
   let currentUrl = playlistUrl;
   for (let depth = 0; depth < 3; depth += 1) {
+    await pause(REQUEST_SPACING_MS);
     const response = await timed(`playlist niveau ${depth + 1}`, () =>
       http.get(currentUrl, { headers, responseType: 'text' }),
     );
-    if (!response || response.status >= 400 || !response.isPlaylist) return null;
+    // Une expiration APRES un premier niveau servi n'est pas un refus: c'est le CDN qui
+    // s'est tu. On le distingue, c'est ce qui oriente vers la limitation de debit.
+    if (!response) return { playable: false, timedOut: depth > 0 };
+    if (response.status >= 400 || !response.isPlaylist) return null;
 
     const uri = firstUri(response.body);
     if (!uri) {
@@ -102,6 +112,7 @@ async function walkToSegment(title, playlistUrl, headers, label) {
       continue;
     }
 
+    await pause(REQUEST_SPACING_MS);
     const segment = await timed('segment', () =>
       http.get(childUrl, { headers, responseType: 'arraybuffer' }),
     );
@@ -152,42 +163,41 @@ async function diagnose(tmdbId) {
   }
   console.log(`\n   Flux annonce : ${stream.slice(0, 120)}${stream.length > 120 ? '...' : ''}`);
 
-  // 2. Quel jeu d'en-tetes le CDN accepte-t-il ?
-  console.log('\n2) Acces au CDN, meme URL, en-tetes differents');
+  const cdnHeaders = { origin: cdn, referer: `${cdn}/`, 'user-agent': kit.BROWSER_UA, accept: '*/*' };
+  const siteHeaders = { origin: site, referer, 'user-agent': kit.BROWSER_UA, accept: '*/*' };
+  const jbamUrl =
+    `${config.AETHER_M3U8_PROXY}?url=${encodeURIComponent(stream)}` +
+    `&headers=${encodeURIComponent(JSON.stringify({ Origin: cdn, Referer: `${cdn}/` }))}`;
+
+  // Les chaines completes D'ABORD, et une seule requete a la fois.
+  //
+  // Ce CDN limite le debit de requetes: une rafale rapide passe les premieres et fait
+  // expirer les suivantes. Mesurer la matrice d'en-tetes en premier declenchait donc la
+  // limite AVANT d'arriver aux segments, et faisait conclure a tort que rien ne sortait.
+  const directSegment = await walkToSegment('2) Chaine complete en direct', stream, cdnHeaders, 'direct');
+  const jbamSegment = await walkToSegment('3) Chaine complete par jbam', jbamUrl, siteHeaders, 'jbam');
+
+  // Quel jeu d'en-tetes le CDN accepte-t-il ? Secondaire: on sait deja que la lecture
+  // n'echoue pas la-dessus, et c'est l'etape la plus consommatrice en requetes.
+  console.log('\n4) Acces au CDN, meme URL, en-tetes differents');
   const attempts = {
     'aucun en-tete': {},
-    [`origin ${cdn}`]: { origin: cdn, referer: `${cdn}/`, 'user-agent': kit.BROWSER_UA, accept: '*/*' },
-    [`origin ${site}`]: { origin: site, referer, 'user-agent': kit.BROWSER_UA, accept: '*/*' },
-    'referer seul': { referer: `${cdn}/`, 'user-agent': kit.BROWSER_UA },
+    [`origin ${cdn}`]: cdnHeaders,
+    [`origin ${site}`]: siteHeaders,
     'user-agent seul': { 'user-agent': kit.BROWSER_UA },
   };
 
   const results = {};
   for (const [label, headers] of Object.entries(attempts)) {
+    await pause(REQUEST_SPACING_MS);
     results[label] = await timed(label, () => http.get(stream, { headers, responseType: 'text' }));
   }
-
-  // 3. Et par le proxy du site, pour comparer les temps de reponse.
-  console.log('\n3) Par le proxy HLS du site (jbam)');
-  const jbamUrl =
-    `${config.AETHER_M3U8_PROXY}?url=${encodeURIComponent(stream)}` +
-    `&headers=${encodeURIComponent(JSON.stringify({ Origin: cdn, Referer: `${cdn}/` }))}`;
-  const viaJbam = await timed('GET /m3u8-proxy', () =>
-    http.get(jbamUrl, {
-      headers: { origin: site, referer, 'user-agent': kit.BROWSER_UA, accept: '*/*' },
-      responseType: 'text',
-    }),
-  );
-
-  // 4. Descendre jusqu'a un VRAI segment. C'est l'etape decisive: une playlist qui repond
-  //    200 ne prouve rien, et c'est sur les segments que la lecture bloque.
   const winner = Object.entries(results).find(([, r]) => r?.isPlaylist);
-  const directSegment = winner
-    ? await walkToSegment('4) Chaine complete en direct', stream, attempts[winner[0]], winner[0])
-    : null;
-  const jbamSegment = viaJbam?.isPlaylist
-    ? await walkToSegment('5) Chaine complete par jbam', jbamUrl, { origin: site, referer, 'user-agent': kit.BROWSER_UA }, 'jbam')
-    : null;
+
+  // Des expirations qui n'apparaissent qu'apres coup ne disent rien des en-tetes: elles
+  // disent que le CDN a cesse de repondre a CE demandeur.
+  const timeouts = Object.values(results).filter((r) => r === null).length;
+  const rateLimited = timeouts > 0 && Object.values(results).some((r) => r?.isPlaylist);
 
   // --- Verdict --------------------------------------------------------------
   console.log('\n=== Verdict ===');
@@ -201,9 +211,17 @@ async function diagnose(tmdbId) {
       console.log('ce qui fait boucler le lecteur sans jamais demarrer.');
     }
     console.log('=> AETHER_LINK_VIA_JBAM=true (valeur par defaut).');
-  } else if (winner || viaJbam?.isPlaylist) {
-    console.log('Les playlists se resolvent mais AUCUN chemin ne sort de segment lisible.');
-    console.log('Le flux annonce est probablement lie a une session ou a l\'IP du demandeur.');
+  } else if (rateLimited || directSegment?.timedOut || jbamSegment?.timedOut) {
+    console.log('Le CDN a cesse de repondre en cours de route, apres avoir servi les premieres');
+    console.log('requetes: il LIMITE LE DEBIT de requetes par demandeur.');
+    console.log('');
+    console.log('C\'est coherent avec le symptome de lecture: la sonde de debit depense le');
+    console.log('quota en pesant 5 segments avant meme que tu appuies sur lecture, et le');
+    console.log('lecteur se retrouve devant un CDN muet -- d\'ou la boucle sans demarrage.');
+    console.log('=> AETHER_PROBE_LINK=false (defaut) empeche la sonde de toucher ce serveur.');
+  } else if (winner) {
+    console.log('Les playlists se resolvent mais aucun segment lisible n\'a ete obtenu.');
+    console.log('Le flux annonce est peut-etre lie a une session ou a l\'IP du demandeur.');
   } else {
     console.log('Aucun chemin ne rend de playlist -- ni en direct, ni par jbam.');
     console.log('Le flux annonce par l\'API est probablement expire, a usage unique, ou lie a une session.');

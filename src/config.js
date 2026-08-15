@@ -166,6 +166,10 @@ const config = {
   // la playlist mais ne joue pas. Le chemin prouve l'emporte sur le chemin elegant.
   AETHER_LINK_VIA_JBAM: readBool('AETHER_LINK_VIA_JBAM', true),
   AETHER_M3U8_PROXY: readEnv('AETHER_M3U8_PROXY', 'https://jbam.aether.bar/m3u8-proxy'),
+  // Mesurer le debit du serveur "link". Desactive par defaut: son CDN limite le nombre de
+  // requetes par demandeur, et peser 5 segments avant la lecture epuise le quota -- le
+  // lecteur se retrouve alors devant un CDN muet. Le debit ne vaut pas un flux injouable.
+  AETHER_PROBE_LINK: readBool('AETHER_PROBE_LINK', false),
   // Aucune des trois API n'annonce la langue de la piste: on l'etiquette a la main pour
   // que le tri par PREFERRED_LANGS reste coherent.
   AETHER_LANG: readEnv('AETHER_LANG', 'VO'),
