@@ -5,6 +5,7 @@ const config = require('./src/config');
 const { fetchAsVtt } = require('./src/subtitles');
 const { resolveId } = require('./src/idResolver');
 const { collectRawLinks, resolveStreams, buildStreams } = require('./src/streamBuilder');
+const { breakerState: probeBreakerState } = require('./src/probe');
 const { detectHoster, extractDirectUrl, normalizeEmbedUrl, breakerState } = require('./src/hosterExtract');
 const { mainApi } = require('./src/movixClient');
 const streamProxy = require('./src/streamProxy');
@@ -178,11 +179,17 @@ app.get('/debug/streams/:type/:id', async (req, res) => {
       mode: config.STREAM_LIST,
       total: resolved.length,
       affichesDansNuvio: (await buildStreams({ tmdbId, type, season, episode })).length,
+      // Voies de mesure momentanement ecartees (un service qui ne repond plus).
+      ecartes: probeBreakerState(),
       streams: resolved.map((r) => ({
         source: r.sourceName,
         proxifie: streamProxy.isProxied(r.url),
         cible: streamProxy.targetOf(r.url) || r.url,
         qualiteAnnoncee: r.quality || null,
+        // La resolution telle que le master l'annonce, et le palier qui en decoule. Un film
+        // en scope (1920x800) doit sortir en 1080p: c'est la largeur qui le dit.
+        resolution: r.width && r.height ? `${r.width}x${r.height}` : r.height || null,
+        palier: r.tier || null,
         hauteurRetenue: r.height || null,
         debitBps: r.bitrate || null,
         // "declare" = lu dans le master HLS (AVERAGE-BANDWIDTH), "mesure" = calcule sur des

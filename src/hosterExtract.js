@@ -1,5 +1,6 @@
 const axios = require('axios');
 const config = require('./config');
+const breaker = require('./breaker');
 const voe = require('./hosterVoe');
 const streamProxy = require('./streamProxy');
 const { mainApi, proxiesEmbed } = require('./movixClient');
@@ -163,51 +164,16 @@ function pickStreamUrl(data) {
 }
 
 /**
- * Disjoncteur par hebergeur.
- *
- * Quand un service tombe, il tombe pour TOUS ses liens: seekstreaming rendait cinq 502
- * d'affilee par fiche, chacun paye au prix d'un aller-retour et d'un timeout. Les essais
- * suivants n'apprennent rien -- ils ne font qu'allonger l'ouverture de la fiche.
- *
- * Seules les pannes de SERVICE arment le disjoncteur (5xx, timeout, erreur reseau). Un 400
- * ou un 404 parle d'UNE video ("Uqload media URL not found") et ne dit rien des suivantes:
- * le compter reviendrait a couper un hebergeur en bon etat parce que trois de ses videos
- * ont ete supprimees.
+ * Disjoncteur par hebergeur: seekstreaming rendait cinq 502 d'affilee par fiche, chacun
+ * paye au prix d'un aller-retour et d'un delai d'attente.
  */
-const breakers = new Map();
+const extractBreaker = breaker.create({
+  streak: () => config.HOSTER_FAILURE_STREAK,
+  cooldownMs: () => config.HOSTER_COOLDOWN_MS,
+  label: 'extract',
+});
 
-function isOpen(hoster) {
-  const state = breakers.get(hoster);
-  if (!state || state.until <= Date.now()) return false;
-  return true;
-}
-
-function noteOutage(hoster) {
-  const state = breakers.get(hoster) || { streak: 0, until: 0 };
-  state.streak += 1;
-  if (state.streak >= config.HOSTER_FAILURE_STREAK) {
-    state.until = Date.now() + config.HOSTER_COOLDOWN_MS;
-    state.streak = 0;
-    console.warn(
-      `[extract:${hoster}] ${config.HOSTER_FAILURE_STREAK} pannes d'affilee -- mis de cote ${Math.round(config.HOSTER_COOLDOWN_MS / 1000)}s`,
-    );
-  }
-  breakers.set(hoster, state);
-}
-
-function noteRecovery(hoster) {
-  breakers.delete(hoster);
-}
-
-/** Etat du disjoncteur, pour /debug/extract. */
-function breakerState() {
-  const now = Date.now();
-  return Object.fromEntries(
-    [...breakers]
-      .filter(([, state]) => state.until > now)
-      .map(([hoster, state]) => [hoster, `ecarte encore ${Math.round((state.until - now) / 1000)}s`]),
-  );
-}
+const breakerState = extractBreaker.state;
 
 /**
  * Voe extrait ici, quand le service a renonce.
@@ -251,7 +217,7 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
   if (!hoster) return { ok: false, reason: 'no-extractor' };
 
   // Service connu pour etre en panne a l'instant: on ne paye pas l'aller-retour.
-  if (isOpen(hoster)) return { ok: false, reason: 'cooldown', hoster };
+  if (extractBreaker.isOpen(hoster)) return { ok: false, reason: 'cooldown', hoster };
 
   // --- Extracteurs par scraping HTML direct (pas de service dedie cote Movix) ---
   if (hoster === 'darkibox' || hoster === 'oneupload') {
@@ -342,7 +308,7 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
     console.warn(`[extract:${hoster}] echec HTTP pour ${target}: status=${status ?? 'n/a'} msg=${err.message}${body}`);
 
     // Panne de service (5xx, timeout, reseau) vs refus portant sur cette video (4xx).
-    if (!status || status >= 500) noteOutage(hoster);
+    if (!status || status >= 500) extractBreaker.noteOutage(hoster);
 
     if (hoster === 'voe') {
       const local = await extractVoeLocally(target);
@@ -351,7 +317,7 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
     return { ok: false, reason: 'http-error', hoster, status, error: err.response?.data?.error };
   }
 
-  noteRecovery(hoster);
+  extractBreaker.noteRecovery(hoster);
   const url = pickStreamUrl(data);
 
   if (!url) {

@@ -608,6 +608,26 @@ FStream · VFQ · uqload                        ~2.3 Mb/s
 - un libellé de source déjà composé (`pulse | 1080p | MULTI`) perd la résolution qui y
   faisait doublon.
 
+**Le palier se lit sur la largeur, pas sur la hauteur.** Un film en 2.40:1 est encodé
+`1920x800` : juger sur la hauteur le faisait passer pour du **720p** alors que son image
+est exactement aussi définie qu'un `1920x1080` — les 280 lignes d'écart sont des bandes
+noires qui n'existent pas dans le fichier. C'est le cas de la plupart des grosses
+productions. La hauteur ne sert plus qu'à défaut : master sans `RESOLUTION`, fichier
+direct, ou libellé de source (`1080p`). L'inverse est vrai aussi : un vieux `1024x768`
+sort en `720p` et non en `1080p`.
+
+| Résolution réelle | Affiché |
+|---|---|
+| `1920x800` (scope) | **1080p** |
+| `1920x1080` | 1080p |
+| `1280x534` | 720p |
+| `1024x768` (4:3) | 720p |
+| `3840x1600` (scope 4K) | **4K** |
+
+Ce palier sert aussi au **tri** et à l'**élagage** : sans ça, deux liens seraient comparés
+sur une échelle et affichés sur une autre — et un `1280x800` aurait éliminé un `1920x800`,
+les deux se valant en hauteur. `/debug/streams` montre `resolution` (brute) et `palier`.
+
 #### Tout garder, ou masquer les redondances
 
 `STREAM_LIST` choisit entre les deux :
@@ -716,6 +736,12 @@ Seules les **pannes de service** comptent (`5xx`, timeout, erreur réseau) : un 
 compter reviendrait à couper un hébergeur en bon état parce que trois de ses vidéos ont été
 supprimées. `/debug/extract` affiche les hébergeurs écartés (`ecartes`), sans quoi un
 `0/3` ressemblerait à une extraction ratée alors qu'aucune requête n'est partie.
+
+Le même disjoncteur couvre les **voies de mesure** : `vidzy-proxy` dépasse régulièrement
+les 3,5 s, et chaque lien vidzy repayait ce délai avant de tomber sur le repli. Seules les
+voies qui sont des **services partagés** y sont soumises (`<hébergeur>-proxy`, `proxy`) —
+`amont` et `direct` visent chacun un CDN différent, généraliser n'aurait aucun sens.
+`/debug/streams` les liste sous `ecartes`.
 
 **Une sonde lente retardait la liste entière.** `PROBE_PHASE_BUDGET_MS` (9 s) borne la
 phase de mesure pour une ouverture de fiche : au-delà, les liens restants sont rendus

@@ -57,17 +57,49 @@ function langScore(...labels) {
   return config.PREFERRED_LANGS.some((lang) => haystack.includes(lang.toUpperCase())) ? 0 : 1;
 }
 
-// Paliers auxquels on pense en choisissant un stream. Les masters HLS annoncent parfois
-// des hauteurs exotiques (1036, 468: recadrages, encodages anamorphiques) qui n'apportent
-// aucune information de plus que le palier, et donnent une liste difficile a parcourir.
-const QUALITY_TIERS = [2160, 1440, 1080, 720, 480, 360, 240];
+// Paliers auxquels on pense en choisissant un stream, avec la LARGEUR de reference de
+// chacun. Les masters HLS annoncent des resolutions exotiques (1036, 468, 800) qui
+// n'apportent rien de plus que le palier et rendent la liste penible a parcourir.
+const QUALITY_TIERS = [
+  { height: 2160, width: 3840 },
+  { height: 1440, width: 2560 },
+  { height: 1080, width: 1920 },
+  { height: 720, width: 1280 },
+  { height: 480, width: 854 },
+  { height: 360, width: 640 },
+  { height: 240, width: 426 },
+];
 
-function formatQuality(height) {
-  if (!height) return null;
+/**
+ * Palier d'un stream, en pixels de hauteur (1080, 720...).
+ *
+ * La LARGEUR prime quand elle est connue. Un film en 2.40:1 est encode 1920x800: juger sur
+ * la hauteur le faisait passer pour du 720p, alors que son image est exactement aussi
+ * definie qu'un 1920x1080 -- les 280 lignes d'ecart sont des bandes noires qui n'existent
+ * pas dans le fichier. C'est le cas de tous les films en scope, c'est-a-dire de la plupart
+ * des grosses productions.
+ *
+ * La hauteur ne sert donc que faute de mieux (libelle "1080p" d'une source, master sans
+ * RESOLUTION).
+ */
+function resolutionTier(width, height) {
+  if (width > 0) {
+    const byWidth = QUALITY_TIERS.find((tier) => width >= tier.width * 0.9);
+    if (byWidth) return byWidth.height;
+  }
+  if (!height) return 0;
   // 10% de tolerance: 1036 se lit "1080p", mais un vrai 720p reste un 720p.
-  const tier = QUALITY_TIERS.find((value) => height >= value * 0.9);
-  if (!tier) return `${height}p`;
+  return QUALITY_TIERS.find((tier) => height >= tier.height * 0.9)?.height || height;
+}
+
+function formatQuality(tier) {
+  if (!tier) return null;
   return tier >= 2160 ? '4K' : `${tier}p`;
+}
+
+/** Palier d'un lien deja mesure, recalcule au besoin (entrees anterieures au champ). */
+function tierOf(stream) {
+  return stream.tier || resolutionTier(stream.width, stream.height);
 }
 
 /**
@@ -91,8 +123,8 @@ function pruneDominated(streams) {
       if (other.langRank !== candidate.langRank) return false;
       // Sans debit mesure des deux cotes, la comparaison n'a pas de sens: on garde.
       if (!other.bitrate || !candidate.bitrate) return false;
-      const betterOrEqual = other.height >= candidate.height && other.bitrate >= candidate.bitrate;
-      const strictlyBetter = other.height > candidate.height || other.bitrate > candidate.bitrate;
+      const betterOrEqual = tierOf(other) >= tierOf(candidate) && other.bitrate >= candidate.bitrate;
+      const strictlyBetter = tierOf(other) > tierOf(candidate) || other.bitrate > candidate.bitrate;
       // A egalite parfaite, seul le premier survit (sinon les deux s'eliminent).
       return betterOrEqual && (strictlyBetter || otherIndex < index);
     });
@@ -216,10 +248,15 @@ async function resolveStreams({ tmdbId, type, season, episode }) {
             hoster: r.hoster,
             deadline: probeDeadline,
           });
+      const height = measured.height || labelled;
       return {
         ...r,
         // Une RESOLUTION lue dans un master HLS vaut mieux qu'un libelle "HD" approximatif.
-        height: measured.height || labelled,
+        height,
+        width: measured.width,
+        // Palier retenu: une seule notion pour l'affichage, le tri ET l'elagage, sans quoi
+        // deux liens seraient compares sur une echelle et affiches sur une autre.
+        tier: resolutionTier(measured.width, height),
         bitrate: measured.bitrate,
         bytes: measured.bytes,
         bitrateEstimated: measured.estimated,
@@ -234,7 +271,7 @@ async function resolveStreams({ tmdbId, type, season, episode }) {
     // qui separe un vrai 1080p d'un upscale compresse. Les liens externes en dernier.
     enriched.sort((a, b) => {
       if (a.langRank !== b.langRank) return a.langRank - b.langRank;
-      if (b.height !== a.height) return b.height - a.height;
+      if (tierOf(b) !== tierOf(a)) return tierOf(b) - tierOf(a);
       if ((b.bitrate || 0) !== (a.bitrate || 0)) return (b.bitrate || 0) - (a.bitrate || 0);
       return (a.externalUrl ? 1 : 0) - (b.externalUrl ? 1 : 0);
     });
@@ -270,7 +307,7 @@ async function buildStreams({ tmdbId, type, season, episode }) {
   }
 
   return kept.map((r) => {
-    const quality = formatQuality(r.height);
+    const quality = formatQuality(tierOf(r));
     const label = tidySourceName(r.sourceName);
     // N'ajouter que ce qui n'est pas deja dans le libelle de la source (PurStream renvoie
     // par exemple "pulse | 1080p | MULTI", inutile de repeter la langue et la qualite).
@@ -290,7 +327,7 @@ async function buildStreams({ tmdbId, type, season, episode }) {
     const stream = {
       name: [quality, bitrateLabel].filter(Boolean).join('\n') || 'Movix',
       title: [label, details].filter(Boolean).join(' · '),
-      behaviorHints: { bingeGroup: `movix-${r.sourceName || 'source'}-${r.height || 'na'}` },
+      behaviorHints: { bingeGroup: `movix-${r.sourceName || 'source'}-${tierOf(r) || 'na'}` },
     };
 
     if (r.externalUrl) {

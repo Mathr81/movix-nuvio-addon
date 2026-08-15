@@ -3,6 +3,7 @@ const https = require('https');
 const config = require('./config');
 const cache = require('./cache');
 const streamProxy = require('./streamProxy');
+const breaker = require('./breaker');
 
 /**
  * Mesure du debit d'un lien, pour l'afficher a cote de la resolution.
@@ -69,6 +70,14 @@ function headersFor(url, refererUrl) {
 // Les CDN de hosters ont regulierement des certificats invalides; le proxy du site les
 // ignore lui aussi (verify=False). Sans ca, la mesure echoue avant meme la requete.
 const insecureAgent = new https.Agent({ rejectUnauthorized: false });
+
+// Le proxy d'un hebergeur peut ne plus repondre (vidzy-proxy est regulierement au-dela des
+// 3,5 s): chaque lien de cet hebergeur repayait alors le timeout, puis celui du repli.
+const probeBreaker = breaker.create({
+  streak: () => config.HOSTER_FAILURE_STREAK,
+  cooldownMs: () => config.HOSTER_COOLDOWN_MS,
+  label: 'probe',
+});
 
 /** Meme forme que buildProxyUrl cote site, et que la route /proxy/<path:target> de bypass403. */
 function throughProxy(url) {
@@ -150,13 +159,17 @@ function upstreamAccess(url) {
 
 function proxyAccess() {
   // Le proxy pose lui-meme les en-tetes: y ajouter les notres n'aurait aucun effet.
-  return { http: makeClient({ 'User-Agent': DEFAULT_UA }), resolve: throughProxy, label: 'proxy' };
+  return { http: makeClient({ 'User-Agent': DEFAULT_UA }), resolve: throughProxy, label: 'proxy', service: 'proxy' };
 }
 
 function hosterProxyAccess(hoster) {
   const resolve = hosterProxyResolver(hoster);
   if (!resolve) return null;
-  return { http: makeClient({ 'User-Agent': DEFAULT_UA }), resolve, label: `${hoster}-proxy` };
+  // `service`: cette voie est un service PARTAGE par tous les liens de l'hebergeur. Quand
+  // il ne repond plus, il ne repond plus pour aucun -- d'ou le disjoncteur. Les acces
+  // "amont" et "direct", eux, visent chacun un CDN different: generaliser n'aurait aucun
+  // sens.
+  return { http: makeClient({ 'User-Agent': DEFAULT_UA }), resolve, label: `${hoster}-proxy`, service: `${hoster}-proxy` };
 }
 
 // Garde-fou du dernier recours: on accepte de telecharger un segment pour le peser, jamais
@@ -241,6 +254,10 @@ function parseMaster(text) {
     variants.push({
       peak: Number(/(?:^|,)BANDWIDTH=(\d+)/.exec(attrs)?.[1]) || 0,
       average: Number(/(?:^|,)AVERAGE-BANDWIDTH=(\d+)/.exec(attrs)?.[1]) || 0,
+      // La LARGEUR est remontee telle quelle: c'est elle qui situe un format large. Un film
+      // en 2.40:1 est encode 1920x800 -- les 280 lignes "manquantes" sont des bandes noires
+      // qui n'existent pas dans le fichier, pas une image de moindre definition.
+      width: resolution ? Number(resolution[1]) : 0,
       height: resolution ? Number(resolution[2]) : 0,
       uri,
     });
@@ -249,8 +266,10 @@ function parseMaster(text) {
   if (variants.length === 0) return null;
   // Le lecteur ira sur la meilleure variante disponible: c'est elle qu'on decrit. La
   // resolution prime sur le debit -- un 720p tres compresse n'est pas "mieux" qu'un 1080p.
+  // Comparee sur la largeur, pour la meme raison que ci-dessus.
   return variants.reduce((best, v) => {
-    if (v.height !== best.height) return v.height > best.height ? v : best;
+    const [a, b] = [v.width || v.height, best.width || best.height];
+    if (a !== b) return a > b ? v : best;
     return (v.average || v.peak) > (best.average || best.peak) ? v : best;
   });
 }
@@ -347,17 +366,21 @@ async function probeHls(access, url, depth = 0) {
     if (!best) return {};
 
     // Valeur declaree ET moyenne: rien de mieux a esperer, on la prend telle quelle.
-    if (best.average) return { bitrate: best.average, height: best.height };
+    if (best.average) return { bitrate: best.average, height: best.height, width: best.width };
 
     // Sinon on descend mesurer la variante: une moyenne calculee sur ses segments est
     // comparable aux autres liens, la ou un debit de pointe ne l'est pas.
     if (best.uri && depth < 2) {
       const measured = await probeHls(access, new URL(best.uri, url).toString(), depth + 1);
-      if (measured.bitrate) return { ...measured, height: best.height || measured.height };
+      if (measured.bitrate) {
+        return { ...measured, height: best.height || measured.height, width: best.width || measured.width };
+      }
     }
 
     // Rien n'a pu etre mesure: le pic reste une indication, signalee comme approximative.
-    return best.peak ? { bitrate: best.peak, height: best.height, estimated: true } : { height: best.height };
+    return best.peak
+      ? { bitrate: best.peak, height: best.height, width: best.width, estimated: true }
+      : { height: best.height, width: best.width };
   }
 
   if (data.includes('#EXTINF')) return probeMediaPlaylist(access, url, data);
@@ -411,10 +434,19 @@ async function probe(url, { durationSeconds, refererUrl, hoster, deadline } = {}
       // Un repli ne demarre plus une fois le budget epuise: c'est du temps ajoute a
       // l'ouverture de la fiche pour un resultat qui a deja echoue une fois.
       if (deadline && Date.now() > deadline) break;
+      // Service partage deja connu pour ne pas repondre: on ne repaye pas son timeout.
+      if (access.service && probeBreaker.isOpen(access.service)) continue;
+
       try {
         const result = await attempt(access, access.entry || url, durationSeconds);
-        if (result && Object.keys(result).length > 0) return result;
+        if (result && Object.keys(result).length > 0) {
+          if (access.service) probeBreaker.noteRecovery(access.service);
+          return result;
+        }
       } catch (err) {
+        // Une exception ici est un timeout ou une erreur reseau (les statuts HTTP, eux, ne
+        // levent pas): c'est bien le service qui ne repond pas, pas ce lien-la.
+        if (access.service) probeBreaker.noteOutage(access.service);
         console.warn(`[probe] ${access.label} a echoue sur ${url.slice(0, 80)}: ${err.message}`);
       }
     }
@@ -438,4 +470,4 @@ function formatSize(bytes) {
   return gb >= 1 ? `${gb.toFixed(1)} Go` : `${Math.round(bytes / 1e6)} Mo`;
 }
 
-module.exports = { probe, formatBitrate, formatSize };
+module.exports = { probe, formatBitrate, formatSize, breakerState: probeBreaker.state };
