@@ -28,30 +28,50 @@ app.use((_req, res, next) => {
 // --- Proxy de sous-titres -------------------------------------------------
 // OpenSubtitles sert des .gz contenant du .srt; Stremio/Nuvio attendent du .vtt lisible
 // directement. On telecharge, decompresse, convertit et sert a la volee.
-app.get('/subtitle.vtt', async (req, res) => {
-  const src = req.query.src;
+async function serveSubtitle(src, res) {
   if (!src || !/^https?:\/\//i.test(src)) {
-    return res.status(400).type('text/plain').send('parametre "src" manquant ou invalide');
+    console.warn(`[subtitle] source manquante ou invalide: ${JSON.stringify(String(src || '').slice(0, 120))}`);
+    return res.status(400).type('text/plain').send('source de sous-titre manquante ou invalide');
   }
+
   // Ne relayer que vers OpenSubtitles: sans cette borne, la route serait un proxy HTTP ouvert.
   let host;
   try {
     host = new URL(src).hostname;
   } catch {
-    return res.status(400).type('text/plain').send('parametre "src" invalide');
+    console.warn(`[subtitle] source illisible: ${src.slice(0, 120)}`);
+    return res.status(400).type('text/plain').send('source de sous-titre invalide');
   }
   if (!/(^|\.)opensubtitles\.org$/i.test(host)) {
+    console.warn(`[subtitle] host non autorise: ${host}`);
     return res.status(403).type('text/plain').send('host non autorise');
   }
 
   try {
     const vtt = await fetchAsVtt(src);
-    res.type('text/vtt').send(vtt);
+    return res.type('text/vtt').send(vtt);
   } catch (err) {
-    console.error(`[subtitle.vtt] echec pour ${src}: ${err.message}`);
-    res.status(502).type('text/plain').send('sous-titre indisponible');
+    console.error(`[subtitle] echec pour ${src.slice(0, 120)}: ${err.message}`);
+    return res.status(502).type('text/plain').send('sous-titre indisponible');
   }
+}
+
+// Forme servie aux lecteurs: la source est encodee dans le CHEMIN et l'URL se termine
+// par ".vtt". Rien a mal interpreter en route, et l'extension rassure les lecteurs qui la
+// verifient -- contrairement au parametre de requete, qu'un intermediaire peut tronquer.
+app.get('/subtitle/:payload', (req, res) => {
+  const encoded = String(req.params.payload).replace(/\.vtt$/i, '');
+  let src;
+  try {
+    src = Buffer.from(encoded, 'base64url').toString('utf8');
+  } catch {
+    src = '';
+  }
+  return serveSubtitle(src, res);
 });
+
+// Ancienne forme (?src=), conservee pour les liens deja distribues a un client.
+app.get('/subtitle.vtt', (req, res) => serveSubtitle(req.query.src, res));
 
 // --- Proxy de flux --------------------------------------------------------
 // Rejoue les en-tetes (Origin/Referer/User-Agent...) exiges par les CDN des addons, que

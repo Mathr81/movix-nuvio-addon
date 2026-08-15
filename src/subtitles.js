@@ -79,8 +79,21 @@ async function fetchAsVtt(downloadUrl) {
 }
 
 /**
+ * URL de notre route de conversion pour un fichier OpenSubtitles.
+ *
+ * La source voyage dans le CHEMIN, encodee en base64url, et l'URL se termine par ".vtt".
+ * Elle transitait auparavant par un parametre de requete (`?src=...`), ce qui la rendait
+ * tributaire de tout ce qui touche a la query en route -- lecteur qui la tronque, proxy
+ * inverse qui la reecrit -- et se soldait par un 400 sans explication. Un chemin opaque
+ * ne peut pas etre mal interprete, et l'extension rassure les lecteurs qui la verifient.
+ */
+function subtitleUrl(publicBaseUrl, downloadUrl) {
+  return `${publicBaseUrl}/subtitle/${Buffer.from(downloadUrl, 'utf8').toString('base64url')}.vtt`;
+}
+
+/**
  * Construit la liste de sous-titres au format Stremio.
- * Chaque URL pointe vers notre propre route /subtitle.vtt qui fait la conversion a la volee.
+ * Chaque URL pointe vers notre propre route qui fait la conversion a la volee.
  */
 async function buildSubtitles({ type, tmdbId, season, episode, publicBaseUrl }) {
   if (!config.SUBTITLES_ENABLED) return [];
@@ -113,7 +126,7 @@ async function buildSubtitles({ type, tmdbId, season, episode, publicBaseUrl }) 
       subtitles.push({
         id: `movix-os-${lang}-${index}`,
         lang: index === 0 ? lang : `${lang} (${index + 1})`,
-        url: `${publicBaseUrl}/subtitle.vtt?src=${encodeURIComponent(entry.link)}`,
+        url: subtitleUrl(publicBaseUrl, entry.link),
       });
     });
   }
@@ -122,4 +135,4 @@ async function buildSubtitles({ type, tmdbId, season, episode, publicBaseUrl }) 
   return subtitles;
 }
 
-module.exports = { buildSubtitles, fetchAsVtt };
+module.exports = { buildSubtitles, fetchAsVtt, subtitleUrl };

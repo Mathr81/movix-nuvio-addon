@@ -351,7 +351,7 @@ un flux HLS — ils demandent une URL, point. L'addon leur donne donc **une URL 
 À chaque requête, le proxy :
 
 1. **vérifie la signature HMAC** de l'URL — sans elle, la route serait un relais HTTP
-   ouvert (même précaution que `/subtitle.vtt`) ;
+   ouvert (même précaution que pour les sous-titres) ;
 2. **rejoue les en-têtes** de l'addon, en relayant le `Range` du lecteur ;
 3. **réécrit les playlists m3u8** — chaque URI (segment, sous-playlist, clé AES-128,
    `EXT-X-MAP`) repasse par le proxy, sinon le lecteur irait chercher les segments en
@@ -492,8 +492,13 @@ diagnostic lit donc les **octets** du segment (`0x47` toutes les 188 octets pour
 MPEG-TS, `ftyp`/`moof` pour du MP4 fragmenté, `<` pour une page HTML) et conclut sur le
 réglage à appliquer.
 
-Le proxy applique le même contrôle en fonctionnement : une réponse `text/html` là où une
-vidéo est attendue est signalée dans les logs plutôt que relayée en silence.
+Le proxy applique le même contrôle en fonctionnement, et il en tire une **correction** :
+quand l'amont étiquette `text/html` (ou n'étiquette rien) ce qui est en réalité du MPEG-TS
+ou du MP4 fragmenté, le `Content-Type` est rectifié avant d'être servi. C'était le cas de
+jbam, qui rend ses segments en `text/html; charset=UTF-8` alors que les octets commencent
+bien par `0x47` — le lecteur refusait un segment parfaitement valide, redemandait, et
+bouclait. S'il s'agit d'une vraie page d'erreur, rien n'est modifié et un avertissement est
+écrit dans les logs.
 
 Le diagnostic espace ses requêtes de 1,5 s et commence par la chaîne complète. Ce n'est pas
 de la politesse : le CDN de `link` **limite le débit de requêtes par demandeur**, et une
@@ -657,7 +662,10 @@ La console détaille aussi, par source, le nombre de liens et la raison d'un éc
 - **Darkino / Nightflix est retiré côté site** (`WatchMovie.tsx:313`), il n'y a donc
   rien à intégrer de ce côté.
 - **Sous-titres** : nécessite `PUBLIC_URL` correctement renseignée, sinon l'appareil de
-  lecture ne saura pas joindre la route de conversion.
+  lecture ne saura pas joindre la route de conversion. L'URL servie encode la source dans
+  le **chemin** (`/subtitle/<base64url>.vtt`) et non plus en paramètre de requête : rien à
+  tronquer ni à réécrire en route, et l'extension rassure les lecteurs qui la vérifient.
+  L'ancienne forme `?src=` reste acceptée pour les liens déjà distribués.
 - **Addons : films uniquement** pour l'instant. Seule la forme `/movie/<id>` a été
   observée côté Aether, et la grille de recherche d'Obrigoz est une grille de films, sans
   notion de saison ni d'épisode. L'équivalent série s'ajoute en une ligne dans chaque

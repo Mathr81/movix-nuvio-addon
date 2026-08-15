@@ -217,6 +217,21 @@ function peek(stream, size) {
   });
 }
 
+/**
+ * Type MIME deduit des premiers octets d'un flux.
+ *
+ * Un CDN peut parfaitement servir de la video en l'etiquetant "text/html" -- jbam le fait
+ * sur ses segments. Le lecteur refuse alors un segment valide, redemande, et boucle sans
+ * jamais demarrer. Ici comme ailleurs, ce sont les octets qui font foi.
+ */
+function sniffMediaType(head) {
+  // MPEG-TS: octet de synchro 0x47 tous les 188 octets.
+  if (head.length > 0 && head[0] === 0x47 && (head.length <= 188 || head[188] === 0x47)) return 'video/mp2t';
+  const box = head.subarray(4, 8).toString('latin1');
+  if (['ftyp', 'moof', 'styp', 'sidx'].includes(box)) return 'video/mp4';
+  return null;
+}
+
 /** Une playlist commence par #EXTM3U -- eventuellement precede d'un BOM ou d'un saut de ligne. */
 function startsPlaylist(head) {
   return head.toString('utf8').replace(/^﻿/, '').trimStart().startsWith('#EXTM3U');
@@ -479,25 +494,41 @@ async function handle(req, res) {
       console.warn(`[streamProxy] amont ${upstream.status} sur ${target.slice(0, 100)}`);
     }
 
-    // Un CDN qui refuse un segment ne repond pas forcement 403: il sert volontiers une
-    // page d'erreur en 200. Le lecteur n'y voit pas de video, redemande, et boucle sans
-    // jamais demarrer -- un symptome impossible a rattacher a sa cause sans ce signalement.
-    if (/text\/html/i.test(String(upstream.headers['content-type'] || ''))) {
-      console.warn(
-        `[streamProxy] l'amont a repondu du HTML la ou une video est attendue (${upstream.status}) ` +
-          `-- page d'erreur ou anti-bot ? ${target.slice(0, 100)}`,
-      );
-    }
-
-    trace(req, target, `passe-plat ${upstream.status}${skip ? ` (amorce de ${skip} o retiree)` : ''}`);
-
     res.status(upstream.status);
     for (const name of PASSTHROUGH_HEADERS) {
       const value = upstream.headers[name];
       if (value !== undefined) res.set(name, value);
     }
 
+    // Un type MIME de page web sur ce qui devrait etre un segment: soit l'amont a
+    // repondu une page d'erreur en 200 (les CDN le font au lieu d'un 403), soit il a
+    // simplement mal etiquete de la video. Les deux cas se distinguent en lisant les
+    // octets -- et se confondaient jusqu'ici en un lecteur qui boucle sans rien dire.
+    const upstreamType = String(upstream.headers['content-type'] || '');
+    let corrected = null;
+    if (!isHead && !rule.contentType && (!upstreamType || /text\/(html|plain)/i.test(upstreamType))) {
+      const head = await peek(upstream.data, 512);
+      corrected = sniffMediaType(head);
+      if (corrected) {
+        res.set('Content-Type', corrected);
+        console.warn(
+          `[streamProxy] type MIME corrige "${upstreamType || '(absent)'}" -> ${corrected} sur ${target.slice(0, 80)}`,
+        );
+      } else if (upstreamType) {
+        console.warn(
+          `[streamProxy] l'amont a repondu du ${upstreamType} la ou une video est attendue ` +
+            `(${upstream.status}) -- page d'erreur ou anti-bot ? ${target.slice(0, 90)}`,
+        );
+      }
+    }
+
     if (rule.contentType) res.set('Content-Type', rule.contentType);
+
+    trace(
+      req,
+      target,
+      `passe-plat ${upstream.status}${skip ? ` (amorce de ${skip} o retiree)` : ''}${corrected ? ` (type corrige -> ${corrected})` : ''}`,
+    );
 
     if (skip) {
       if (shifted && upstream.headers['content-range']) {
