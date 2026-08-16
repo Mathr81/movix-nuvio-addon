@@ -115,6 +115,43 @@ async function listEndpoints() {
   };
 }
 
+/**
+ * Noms des parametres d'une RPC, lus dans la spec.
+ *
+ * Une RPC Postgres se resout par son nom ET sa liste d'arguments: appeler
+ * `sync_delete_watch_progress(p_id, p_profile_id)` quand elle est declaree
+ * `(p_keys, p_profile_id)` renvoie un 404 PGRST202 -- la fonction est introuvable, pas
+ * la ligne. On lit donc la signature au lieu de la supposer.
+ */
+async function rpcParameters(name) {
+  const spec = await describeApi();
+  const post = spec?.paths?.[`/rpc/${name}`]?.post;
+  if (!post) return null;
+
+  // PostgREST decrit le corps soit en ligne, soit par $ref vers `definitions`.
+  const schema = (post.parameters || []).find((p) => p.in === 'body')?.schema || post.requestBody?.content?.['application/json']?.schema;
+  const resolved = schema?.$ref
+    ? spec.definitions?.[decodeURIComponent(schema.$ref.replace(/^#\/definitions\//, ''))]
+    : schema;
+
+  const properties = resolved?.properties;
+  return properties ? Object.keys(properties) : null;
+}
+
+/**
+ * Signature annoncee par PostgREST dans le `hint` d'une erreur PGRST202
+ * ("Perhaps you meant to call the function public.foo(p_keys, p_profile_id)").
+ * C'est la source la plus fiable quand la spec est muette: elle vient du serveur lui-meme.
+ */
+function paramsFromHint(err, name) {
+  const hint = err?.body?.hint;
+  if (typeof hint !== 'string') return null;
+  const match = hint.match(new RegExp(`${name}\\(([^)]*)\\)`));
+  if (!match) return null;
+  const params = match[1].split(',').map((s) => s.trim()).filter(Boolean);
+  return params.length > 0 ? params : null;
+}
+
 /** DELETE PostgREST filtre (`?id=eq.<valeur>`). Renvoie le nombre de lignes supprimees. */
 async function removeRows(table, filters) {
   const token = await accessToken();
@@ -204,6 +241,8 @@ module.exports = {
   rpc,
   describeApi,
   listEndpoints,
+  rpcParameters,
+  paramsFromHint,
   removeRows,
   pullProfiles,
   pullLibrary,

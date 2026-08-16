@@ -233,9 +233,23 @@ même règle que pour les conflits du hub, la seule qui ne fasse jamais reculer 
 > donc ne pas renvoyer une ligne suffit à la supprimer). Pour la progression et les
 > éléments vus, les endpoints `sync_push_*` sont **additifs** : retirer l'exemplaire IMDb
 > demande une suppression, que l'addon cherche dans ce que l'API publie elle-même
-> (`GET /debug/nuvio/api`). Si le compte n'expose ni RPC de suppression ni accès direct à
-> la table, la fusion des positions a quand même lieu et le résumé dit franchement ce qui
-> n'a pas pu être retiré, au lieu de prétendre l'avoir fait.
+> (`GET /debug/nuvio/api`).
+
+Deux choses ne sont jamais supposées, parce qu'elles diffèrent d'un compte à l'autre :
+
+- **La signature de la fonction de suppression.** Une RPC Postgres se résout par son nom
+  *et* sa liste d'arguments : appeler `sync_delete_watch_progress(p_id, p_profile_id)`
+  quand elle est déclarée `(p_keys, p_profile_id)` renvoie un `404 PGRST202` — la
+  *fonction* est introuvable, pas la ligne. Elle est donc lue dans la spec OpenAPI, et à
+  défaut dans le champ `hint` que PostgREST renvoie avec l'erreur.
+- **La clé attendue.** `row.id` est un UUID technique alors que la clé logique ressemble à
+  `tt0903747_s1e5`. Chaque champ plausible est essayé, puis **vérifié en relisant** —
+  une RPC peut accepter un appel sans rien supprimer, et un résumé annonçant 48
+  suppressions imaginaires est pire qu'un résumé qui admet n'avoir rien fait.
+
+Si aucune clé n'est acceptée, les positions restent correctement fusionnées et le résumé
+liste ce qui a été tenté. `GET /debug/nuvio/sample` donne alors les noms de champs réels
+d'une ligne et la signature des RPC de suppression.
 
 ### Hub de synchronisation (les deux sens, en continu)
 

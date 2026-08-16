@@ -107,7 +107,85 @@ async function deleteStrategy(kind) {
   return null;
 }
 
-async function deleteRows(kind, profileId, rows) {
+/**
+ * Corps d'appel construit depuis la signature annoncee, et non depuis une convention
+ * supposee: le parametre qui parle du profil recoit le profil, l'autre recoit les cles.
+ * Un nom au pluriel (`p_keys`) attend le lot entier, un nom au singulier une cle par appel.
+ */
+function buildBody(params, profileId, keys) {
+  const body = {};
+  for (const param of params) {
+    body[param] = /profile/i.test(param) ? profileId : keys;
+  }
+  return body;
+}
+
+const wantsBatch = (params) => params.some((p) => !/profile/i.test(p) && /s$/i.test(p));
+
+/**
+ * Champs candidats pour la cle attendue.
+ *
+ * `row.id` est un UUID technique, alors que la cle logique d'une entree ressemble a
+ * `tt0903747_s1e5`. Rien n'indique laquelle la fonction veut, donc on essaie -- et on
+ * VERIFIE en relisant, plutot que de croire un appel qui n'a pas leve d'erreur.
+ */
+function keyFieldCandidates(rows) {
+  const sample = rows[0] || {};
+  const named = ['key', 'entry_key', 'item_key'].filter((f) => sample[f] != null);
+  // Repli sans connaitre le nom du champ: celui dont la valeur derive du content_id.
+  const derived = Object.keys(sample).filter(
+    (f) =>
+      !named.includes(f) &&
+      typeof sample[f] === 'string' &&
+      sample.content_id &&
+      sample[f] !== sample.content_id &&
+      sample[f].startsWith(String(sample.content_id)),
+  );
+  return [...named, ...derived, 'id'].filter((f, i, all) => all.indexOf(f) === i && sample[f] != null);
+}
+
+/** Un seul essai de suppression, pour un champ de cle donne. */
+async function attemptDelete(strategy, profileId, rows, field) {
+  const keys = rows.map((row) => row[field]).filter((k) => k !== undefined && k !== null);
+  if (keys.length === 0) return { tente: 0 };
+
+  if (strategy.table) {
+    for (const key of keys) await nuvio.removeRows(strategy.table, { [field]: `eq.${key}` });
+    return { tente: keys.length };
+  }
+
+  // La signature vient de la spec; si elle est muette, de l'erreur que PostgREST renvoie.
+  let params = (await nuvio.rpcParameters(strategy.rpcName)) || ['p_keys', 'p_profile_id'];
+  try {
+    await callRpc(strategy.rpcName, params, profileId, keys);
+  } catch (err) {
+    const fromHint = nuvio.paramsFromHint(err, strategy.rpcName);
+    if (!fromHint || fromHint.join() === params.join()) throw err;
+    params = fromHint;
+    await callRpc(strategy.rpcName, params, profileId, keys);
+  }
+  return { tente: keys.length, params: params.join(', ') };
+}
+
+async function callRpc(rpcName, params, profileId, keys) {
+  if (wantsBatch(params)) {
+    // Lots bornes: une liste de plusieurs centaines de cles fait grossir le corps sans
+    // raison, et une erreur au milieu deviendrait tout ou rien.
+    for (let i = 0; i < keys.length; i += 200) {
+      await nuvio.rpc(rpcName, buildBody(params, profileId, keys.slice(i, i + 200)));
+    }
+    return;
+  }
+  for (const key of keys) await nuvio.rpc(rpcName, buildBody(params, profileId, key));
+}
+
+/**
+ * Supprime les lignes heritees, en essayant chaque champ de cle plausible et en
+ * verifiant apres coup ce qui a REELLEMENT disparu -- une RPC peut accepter un appel
+ * sans rien supprimer, et un resume qui annonce 48 suppressions imaginaires est pire
+ * qu'un resume qui admet n'avoir rien fait.
+ */
+async function deleteRows(kind, profileId, rows, recount) {
   if (rows.length === 0) return { supprimees: 0 };
 
   const strategy = await deleteStrategy(kind);
@@ -122,27 +200,36 @@ async function deleteRows(kind, profileId, rows) {
     };
   }
 
-  let supprimees = 0;
-  const echecs = [];
-  for (const row of rows) {
+  const avant = rows.length;
+  const essais = [];
+
+  for (const field of keyFieldCandidates(rows)) {
     try {
-      if (strategy.rpcName) {
-        await nuvio.rpc(strategy.rpcName, { p_profile_id: profileId, p_id: row.id });
-      } else {
-        await nuvio.removeRows(strategy.table, { id: `eq.${row.id}` });
+      const { tente, params } = await attemptDelete(strategy, profileId, rows, field);
+      if (!tente) continue;
+      const restantes = await recount();
+      essais.push(`${field}: ${avant - restantes}/${avant} supprimee(s)`);
+      if (restantes === 0) {
+        return { supprimees: avant, via: strategy.via, cle: field, ...(params ? { signature: params } : {}) };
       }
-      supprimees += 1;
+      if (restantes < avant) {
+        return { supprimees: avant - restantes, restantes, via: strategy.via, cle: field, essais };
+      }
     } catch (err) {
-      echecs.push(`${row.id}: ${err.message}`);
+      essais.push(`${field}: ${err.message.slice(0, 200)}`);
     }
   }
 
-  const result = { supprimees, via: strategy.via };
-  if (echecs.length > 0) {
-    result.restantes = echecs.length;
-    result.premiereErreur = echecs[0];
-  }
-  return result;
+  return {
+    supprimees: 0,
+    restantes: avant,
+    via: strategy.via,
+    essais,
+    note:
+      'la fusion des positions a bien eu lieu (les entrees tmdb sont a jour), mais aucune ' +
+      'cle acceptee par la fonction de suppression: les exemplaires IMDb restent visibles. ' +
+      'Envoie la sortie de /debug/nuvio/sample pour identifier le champ attendu.',
+  };
 }
 
 // --- Fusion par collection --------------------------------------------------
@@ -203,7 +290,9 @@ async function mergeProgress(profileId, dryRun) {
   if (dryRun) return { fusionnees: entries.length, aSupprimer: toDelete.length, apercu: entries.slice(0, 3) };
 
   await nuvio.pushWatchProgress(profileId, entries);
-  return { fusionnees: entries.length, ...(await deleteRows('progress', profileId, toDelete)) };
+  const recount = async () =>
+    (await nuvio.pullWatchProgress(profileId)).filter((row) => ids.isLegacyId(row?.content_id)).length;
+  return { fusionnees: entries.length, ...(await deleteRows('progress', profileId, toDelete, recount)) };
 }
 
 async function mergeWatched(profileId, dryRun) {
@@ -230,7 +319,9 @@ async function mergeWatched(profileId, dryRun) {
   if (dryRun) return { fusionnees: items.length, aSupprimer: toDelete.length };
 
   await nuvio.pushWatchedItems(profileId, items);
-  return { fusionnees: items.length, ...(await deleteRows('watched', profileId, toDelete)) };
+  const recount = async () =>
+    (await nuvio.pullWatchedItems(profileId)).filter((row) => ids.isLegacyId(row?.content_id)).length;
+  return { fusionnees: items.length, ...(await deleteRows('watched', profileId, toDelete, recount)) };
 }
 
 /**

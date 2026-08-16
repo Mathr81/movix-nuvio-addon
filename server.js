@@ -292,6 +292,30 @@ app.get('/debug/nuvio/api', async (_req, res) => {
   }
 });
 
+// Forme reelle d'une ligne Nuvio (noms de champs + signature des RPC de suppression).
+// C'est ce qui evite de deviner quelle cle la fonction attend.
+app.get('/debug/nuvio/sample', async (_req, res) => {
+  try {
+    const profileId = await hub.resolveProfileId();
+    const [progress, watched, endpoints] = await Promise.all([
+      nuvioCloud.pullWatchProgress(profileId).catch(() => []),
+      nuvioCloud.pullWatchedItems(profileId).catch(() => []),
+      nuvioCloud.listEndpoints(),
+    ]);
+    const deleteRpcs = endpoints.rpcs.filter((n) => /(delete|remove)/i.test(n));
+    res.json({
+      profileId,
+      progress: { champs: Object.keys(progress[0] || {}), exemple: progress[0] || null },
+      watched: { champs: Object.keys(watched[0] || {}), exemple: watched[0] || null },
+      signatures: Object.fromEntries(
+        await Promise.all(deleteRpcs.map(async (n) => [n, await nuvioCloud.rpcParameters(n)])),
+      ),
+    });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
 // ?dryRun=1 montre ce qui serait fusionne sans rien ecrire.
 app.post('/nuvio/merge', async (req, res) => {
   const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
