@@ -1,12 +1,12 @@
 const fs = require('fs');
 const path = require('path');
-const config = require('./config');
-const cache = require('./cache');
-const movixSync = require('./movixSync');
-const nuvio = require('./nuvioCloud');
-const simkl = require('./simklCloud');
-const tmdbClient = require('./tmdb');
-const journal = require('./journal');
+const config = require('./core/config');
+const cache = require('./core/cache');
+const movixSync = require('./integrations/movixSync');
+const nuvio = require('./integrations/nuvioCloud');
+const simkl = require('./integrations/simklCloud');
+const tmdbClient = require('./integrations/tmdb');
+const journal = require('./core/journal');
 
 /**
  * Hub de synchronisation bidirectionnel Movix <-> Nuvio Sync -> Simkl.

@@ -1,5 +1,5 @@
 const axios = require('axios');
-const config = require('./config');
+const config = require('../core/config');
 
 // Origin/Referer spoofes: domainRestriction (Mainapi/middleware/security.js) ne verifie que ces
 // headers cote client, pas une vraie CORS -- un serveur Node les controle entierement.

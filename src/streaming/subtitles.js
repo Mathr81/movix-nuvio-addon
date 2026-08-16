@@ -1,9 +1,9 @@
 const axios = require('axios');
 const zlib = require('zlib');
 const { promisify } = require('util');
-const config = require('./config');
-const tmdbClient = require('./tmdb');
-const cache = require('./cache');
+const config = require('../core/config');
+const tmdbClient = require('../integrations/tmdb');
+const cache = require('../core/cache');
 
 const gunzip = promisify(zlib.gunzip);
 

@@ -1,6 +1,6 @@
 const https = require('https');
 const axios = require('axios');
-const config = require('../config');
+const config = require('../core/config');
 const kit = require('./kit');
 
 /**

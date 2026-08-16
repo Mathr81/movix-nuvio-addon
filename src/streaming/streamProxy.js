@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const https = require('https');
 const { Transform } = require('stream');
 const axios = require('axios');
-const config = require('./config');
+const config = require('../core/config');
 
 /**
  * Proxy de flux interne -- l'equivalent local de proxiesembed, mais pilote par les addons.

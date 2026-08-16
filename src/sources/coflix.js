@@ -1,5 +1,5 @@
-const { mainApi } = require('../movixClient');
-const log = require('../log');
+const { mainApi } = require('../integrations/movixClient');
+const log = require('../core/log');
 
 // Coflix, monte sur /api/tmdb/:type/:id malgre le nom de la route (Mainapi/routes/tmdb.js:302).
 async function getStreams({ tmdbId, type, season, episode }) {

@@ -1,5 +1,5 @@
-const { mainApi } = require('../movixClient');
-const log = require('../log');
+const { mainApi } = require('../integrations/movixClient');
+const log = require('../core/log');
 
 // PurStream est la seule source qui renvoie deja des URLs directes (pas d'embed a extraire).
 async function getStreams({ tmdbId, type, season, episode }) {

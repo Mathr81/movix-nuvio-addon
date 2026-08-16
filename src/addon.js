@@ -1,16 +1,16 @@
 const { addonBuilder } = require('stremio-addon-sdk');
 const manifest = require('./manifest');
-const tmdbClient = require('./tmdb');
-const config = require('./config');
-const cache = require('./cache');
-const { resolveId } = require('./idResolver');
-const { buildStreams, prefetchNextEpisode } = require('./streamBuilder');
-const { buildSubtitles } = require('./subtitles');
-const { genreId } = require('./genres');
-const movixSync = require('./movixSync');
-const trakt = require('./traktCloud');
-const { personalRecommendations } = require('./recommend');
-const catalogs = require('./catalogs');
+const tmdbClient = require('./integrations/tmdb');
+const config = require('./core/config');
+const cache = require('./core/cache');
+const { resolveId } = require('./catalog/idResolver');
+const { buildStreams, prefetchNextEpisode } = require('./streaming/streamBuilder');
+const { buildSubtitles } = require('./streaming/subtitles');
+const { genreId } = require('./catalog/genres');
+const movixSync = require('./integrations/movixSync');
+const trakt = require('./integrations/traktCloud');
+const { personalRecommendations } = require('./catalog/recommend');
+const catalogs = require('./catalog/catalogs');
 
 const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500';
 const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280';

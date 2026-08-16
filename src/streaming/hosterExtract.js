@@ -1,9 +1,9 @@
 const axios = require('axios');
-const config = require('./config');
-const breaker = require('./breaker');
+const config = require('../core/config');
+const breaker = require('../core/breaker');
 const voe = require('./hosterVoe');
 const streamProxy = require('./streamProxy');
-const { mainApi, proxiesEmbed } = require('./movixClient');
+const { mainApi, proxiesEmbed } = require('../integrations/movixClient');
 
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';

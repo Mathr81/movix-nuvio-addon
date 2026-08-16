@@ -1,5 +1,5 @@
 const axios = require('axios');
-const config = require('./config');
+const config = require('../core/config');
 
 /**
  * Client de l'API cloud Nuvio (Supabase).

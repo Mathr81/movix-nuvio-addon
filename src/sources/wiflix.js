@@ -1,5 +1,5 @@
-const { mainApi } = require('../movixClient');
-const log = require('../log');
+const { mainApi } = require('../integrations/movixClient');
+const log = require('../core/log');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

@@ -1,5 +1,5 @@
-const config = require('./config');
-const cache = require('./cache');
+const config = require('../core/config');
+const cache = require('../core/cache');
 const movixSync = require('./movixSync');
 const simkl = require('./simklCloud');
 const tmdbClient = require('./tmdb');

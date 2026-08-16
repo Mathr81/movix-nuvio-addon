@@ -36,6 +36,50 @@ Le serveur écoute sur **toutes les interfaces** — l'IP LAN ou Tailscale du se
 fonctionne donc directement. Le message `HTTP addon accessible at: http://127.0.0.1:...`
 affiché par le SDK est une chaîne fixe, pas le reflet du binding réel.
 
+### Structure du projet
+
+```
+server.js              Point d'entrée HTTP (Express) : monte le SDK Stremio, le proxy
+                        de flux et les routes de diagnostic/push.
+
+src/
+├── addon.js            Handlers Stremio (catalog/meta/stream/subtitles)
+├── manifest.js          Manifest de l'addon
+├── hub.js                Orchestrateur de synchro (Movix ↔ Trakt/Simkl/Nuvio)
+│
+├── core/                Infrastructure transverse
+│   ├── config.js         Lecture/validation des variables d'environnement
+│   ├── cache.js           Cache TTL persistant sur disque
+│   ├── log.js              Logging des sources
+│   ├── journal.js          Journal des synchros (retour arrière)
+│   └── breaker.js          Disjoncteur pour les services en panne
+│
+├── catalog/             Construction des catalogues Stremio
+│   ├── catalogs.js        Catalogues personnalisables (config → TMDB)
+│   ├── genres.js           Résolution des genres TMDB
+│   ├── recommend.js         Recommandations locales
+│   └── idResolver.js        Résolution tmdb:/tt… → id TMDB
+│
+├── streaming/           Résolution et diffusion des flux vidéo
+│   ├── streamBuilder.js    Agrège sources + addons, construit les objets stream
+│   ├── streamProxy.js       Proxy HTTP qui rejoue les en-têtes attendus par les CDN
+│   ├── hosterExtract.js      Détection d'hébergeur, extraction d'URL directe
+│   ├── hosterVoe.js           Résolution spécifique aux domaines tournants Voe
+│   ├── probe.js               Sonde le débit/la taille réels d'un flux
+│   └── subtitles.js            Sous-titres (recherche + conversion VTT)
+│
+├── integrations/        Clients des services externes
+│   ├── movixClient.js      Client HTTP vers Mainapi (Movix)
+│   ├── movixSync.js         Lecture des collections Movix (watchlist/favoris/historique)
+│   ├── tmdb.js               Client TMDB
+│   ├── traktCloud.js / traktPush.js   Auth + push vers Trakt
+│   ├── simklCloud.js / simklPush.js / simklProbe.js   Auth + push vers Simkl
+│   └── nuvioCloud.js / nuvioPush.js   Auth + push vers Nuvio Sync
+│
+├── sources/             Scrapers de sites tiers (passent par movixClient)
+└── addons/              Sources autonomes (indépendantes de Mainapi), voir plus bas
+```
+
 ## Ce que l'addon fournit
 
 | Ressource | Détail |
@@ -348,7 +392,7 @@ qu'ignoré.
 **Reconnaître ne suffit pas.** Sur ces mêmes domaines récents, `proxiesembed` répond
 `404 Content not found` : il a bien chargé la page, mais n'y a pas trouvé le bloc JSON
 qu'il attendait. Le lien est alors détecté, envoyé, refusé — et perdu. Un **extracteur Voe
-local** (`src/hosterVoe.js`) prend le relais dans ce cas : il suit les rebonds de la page
+local** (`src/streaming/hosterVoe.js`) prend le relais dans ce cas : il suit les rebonds de la page
 (`window.location`, `meta refresh`, lien `/e/…` — aucun n'est un vrai `3xx`, donc aucun
 client HTTP ne les suit seul), lit le bloc obfusqué et le déchiffre.
 

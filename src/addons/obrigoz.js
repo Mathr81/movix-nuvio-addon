@@ -1,5 +1,5 @@
-const config = require('../config');
-const log = require('../log');
+const config = require('../core/config');
+const log = require('../core/log');
 const kit = require('./kit');
 
 /**

@@ -1,4 +1,4 @@
-const tmdbClient = require('./tmdb');
+const tmdbClient = require('../integrations/tmdb');
 
 // Formats acceptes: "tmdb:12345", "tmdb:12345:1:2" (serie), "tt1234567", "tt1234567:1:2".
 async function resolveId(type, rawId) {

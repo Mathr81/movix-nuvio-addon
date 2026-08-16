@@ -1,6 +1,6 @@
-const config = require('./config');
-const trakt = require('./traktCloud');
-const { manifestCatalogs } = require('./catalogs');
+const config = require('./core/config');
+const trakt = require('./integrations/traktCloud');
+const { manifestCatalogs } = require('./catalog/catalogs');
 
 const personalEnabled = !!(config.MOVIX_JWT && config.MOVIX_USER_ID);
 // Etat lu au demarrage: apres un `npm run trakt:auth`, redemarre l'addon pour que la

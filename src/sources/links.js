@@ -1,5 +1,5 @@
-const { mainApi } = require('../movixClient');
-const log = require('../log');
+const { mainApi } = require('../integrations/movixClient');
+const log = require('../core/log');
 
 // Liens communautaires stockes en MySQL et exposes par /api/links/:type/:id (admin.js:110).
 // C'est la source "custom" + "mp4" du site: chaque entree est soit une chaine, soit un objet

@@ -1,6 +1,6 @@
-const { mainApi } = require('../movixClient');
-const tmdbClient = require('../tmdb');
-const log = require('../log');
+const { mainApi } = require('../integrations/movixClient');
+const tmdbClient = require('../integrations/tmdb');
+const log = require('../core/log');
 
 // FrenchStream ("Omega" cote site), monte sur /api/imdb/:type/:id (Mainapi/routes/tmdb.js:553).
 // ATTENTION: cette route attend un id IMDB (ttXXXXXXX), pas un id TMDB -- le frontend resout

@@ -1,9 +1,9 @@
 const axios = require('axios');
 const https = require('https');
-const config = require('./config');
-const cache = require('./cache');
+const config = require('../core/config');
+const cache = require('../core/cache');
 const streamProxy = require('./streamProxy');
-const breaker = require('./breaker');
+const breaker = require('../core/breaker');
 
 /**
  * Mesure du debit d'un lien, pour l'afficher a cote de la resolution.

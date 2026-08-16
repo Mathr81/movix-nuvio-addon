@@ -1,6 +1,6 @@
 const { mainApi } = require('./movixClient');
-const config = require('./config');
-const cache = require('./cache');
+const config = require('../core/config');
+const cache = require('../core/cache');
 
 /**
  * Lit les donnees synchronisees du compte Movix (GET /api/sync/:userType/:userId/:profileId).

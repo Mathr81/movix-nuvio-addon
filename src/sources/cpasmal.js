@@ -1,5 +1,5 @@
-const { mainApi } = require('../movixClient');
-const log = require('../log');
+const { mainApi } = require('../integrations/movixClient');
+const log = require('../core/log');
 
 // Cpasmal: {links: {vf: [...], vostfr: [...]}} (Mainapi/routes/cpasmal.js:61-63).
 function extractLinks(data) {

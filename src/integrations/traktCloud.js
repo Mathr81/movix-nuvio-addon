@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const config = require('./config');
+const config = require('../core/config');
 
 /**
  * Client de l'API Trakt.

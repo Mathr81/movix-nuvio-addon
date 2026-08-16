@@ -1,5 +1,5 @@
-const config = require('./config');
-const cache = require('./cache');
+const config = require('../core/config');
+const cache = require('../core/cache');
 const movixSync = require('./movixSync');
 const nuvio = require('./nuvioCloud');
 const tmdbClient = require('./tmdb');

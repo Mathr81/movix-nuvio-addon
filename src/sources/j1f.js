@@ -1,5 +1,5 @@
-const { mainApi } = require('../movixClient');
-const log = require('../log');
+const { mainApi } = require('../integrations/movixClient');
+const log = require('../core/log');
 
 // 1jour1film (Mainapi/routes/j1f.js:349-375) -- forme exacte des players non entierement
 // documentee, on tente les cles habituelles (url/link, player/name) de facon defensive.

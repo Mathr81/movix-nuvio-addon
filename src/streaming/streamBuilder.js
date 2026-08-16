@@ -1,9 +1,9 @@
-const movixSources = require('./sources');
-const addons = require('./addons');
+const movixSources = require('../sources');
+const addons = require('../addons');
 const { extractDirectUrl } = require('./hosterExtract');
-const config = require('./config');
-const cache = require('./cache');
-const tmdbClient = require('./tmdb');
+const config = require('../core/config');
+const cache = require('../core/cache');
+const tmdbClient = require('../integrations/tmdb');
 const { probe, formatBitrate, formatSize } = require('./probe');
 
 const MAX_CONCURRENT_EXTRACTIONS = config.EXTRACT_CONCURRENCY;

@@ -1,8 +1,8 @@
 const axios = require('axios');
-const config = require('../config');
-const cache = require('../cache');
-const tmdbClient = require('../tmdb');
-const streamProxy = require('../streamProxy');
+const config = require('../core/config');
+const cache = require('../core/cache');
+const tmdbClient = require('../integrations/tmdb');
+const streamProxy = require('../streaming/streamProxy');
 
 /**
  * Boite a outils commune aux addons.

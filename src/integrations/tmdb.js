@@ -1,5 +1,5 @@
 const axios = require('axios');
-const config = require('./config');
+const config = require('../core/config');
 
 const tmdb = axios.create({
   baseURL: 'https://api.themoviedb.org/3',

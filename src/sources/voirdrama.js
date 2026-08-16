@@ -1,5 +1,5 @@
-const { mainApi } = require('../movixClient');
-const log = require('../log');
+const { mainApi } = require('../integrations/movixClient');
+const log = require('../core/log');
 
 // Voirdrama (dramas asiatiques), series uniquement: /api/drama/tv/:tmdbid?season=&episode=
 // La route refuse explicitement type=movie (voirdrama.js:305-310).

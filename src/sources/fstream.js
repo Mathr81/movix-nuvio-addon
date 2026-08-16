@@ -1,5 +1,5 @@
-const { mainApi } = require('../movixClient');
-const log = require('../log');
+const { mainApi } = require('../integrations/movixClient');
+const log = require('../core/log');
 
 // FStream: players.organized.{VFQ,VFF,VOSTFR,Default} -> [{url,type:'embed',quality,player}]
 // (Mainapi/routes/fstream.js:1568-1631).

@@ -1,5 +1,5 @@
-const movixSync = require('./movixSync');
-const tmdbClient = require('./tmdb');
+const movixSync = require('../integrations/movixSync');
+const tmdbClient = require('../integrations/tmdb');
 
 /**
  * Recommandations calculees localement a partir de l'historique Movix.
