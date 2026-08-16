@@ -1,6 +1,6 @@
 const fs = require('fs');
-const path = require('path');
 const config = require('../core/config');
+const paths = require('../core/paths');
 const { genreNames } = require('./genres');
 
 /**
@@ -14,7 +14,7 @@ const { genreNames } = require('./genres');
  *
  * L'ordre du tableau est celui que Stremio/Nuvio respectent dans l'interface.
  */
-const CONFIG_FILE = config.CATALOGS_FILE || path.join(__dirname, '..', 'catalogs.json');
+const CONFIG_FILE = config.CATALOGS_FILE || paths.inRoot('catalogs.json');
 
 // Rangees integrees. `personal` = necessite le sync compte Movix, `trakt` = necessite
 // une connexion Trakt active.

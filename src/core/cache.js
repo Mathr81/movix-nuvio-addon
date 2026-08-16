@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('./config');
+const paths = require('./paths');
 
 const store = new Map();
 
@@ -69,7 +70,7 @@ function del(key) {
 let dirty = false;
 
 function cacheFile() {
-  return config.CACHE_FILE || path.join(__dirname, '..', 'data', 'cache.json');
+  return config.CACHE_FILE || paths.inData('cache.json');
 }
 
 /**

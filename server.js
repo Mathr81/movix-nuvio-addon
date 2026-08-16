@@ -11,6 +11,8 @@ const { mainApi } = require('./src/integrations/movixClient');
 const streamProxy = require('./src/streaming/streamProxy');
 const addons = require('./src/addons');
 const { pushToNuvio } = require('./src/integrations/nuvioPush');
+const nuvioCloud = require('./src/integrations/nuvioCloud');
+const nuvioMerge = require('./src/integrations/nuvioMerge');
 const { pushToTrakt } = require('./src/integrations/traktPush');
 const trakt = require('./src/integrations/traktCloud');
 const { pushToSimkl } = require('./src/integrations/simklPush');
@@ -266,6 +268,38 @@ app.post('/nuvio/push', async (req, res) => {
     const body = err.response?.data;
     console.error(`[nuvio-push] echec: status=${status ?? 'n/a'} msg=${err.message}`);
     res.status(502).json({ ok: false, error: err.message, status, body });
+  }
+});
+
+// Entrees Nuvio encore identifiees par un id IMDb: c'est ce qui faisait apparaitre la
+// meme serie en double. Lecture seule -- `POST /nuvio/merge` fait la fusion.
+app.get('/debug/nuvio/duplicates', async (_req, res) => {
+  try {
+    const profileId = await hub.resolveProfileId();
+    res.json({ profileId, enImdb: await nuvioMerge.countLegacy(profileId) });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+// Ce que l'API Nuvio expose reellement (tables + RPC). Sert a savoir si une suppression
+// est possible: les endpoints `sync_push_*` sont additifs et ne retirent jamais rien.
+app.get('/debug/nuvio/api', async (_req, res) => {
+  try {
+    res.json(await nuvioCloud.listEndpoints());
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+// ?dryRun=1 montre ce qui serait fusionne sans rien ecrire.
+app.post('/nuvio/merge', async (req, res) => {
+  const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
+  try {
+    const summary = await hub.mergeNuvioIds({ dryRun });
+    res.status(summary.ok ? 200 : 400).json(summary);
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
   }
 });
 

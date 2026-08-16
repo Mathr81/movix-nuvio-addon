@@ -1,7 +1,7 @@
 const fs = require('fs');
-const path = require('path');
 const axios = require('axios');
 const config = require('../core/config');
+const paths = require('../core/paths');
 
 /**
  * Client de l'API Trakt.
@@ -16,7 +16,7 @@ const config = require('../core/config');
  * on affiche un code, l'utilisateur le saisit sur trakt.tv/activate, on recupere un jeton
  * valable 3 mois, renouvelable.
  */
-const TOKEN_FILE = config.TRAKT_TOKEN_FILE || path.join(__dirname, '..', '.trakt-token.json');
+const TOKEN_FILE = config.TRAKT_TOKEN_FILE || paths.inRoot('.trakt-token.json');
 
 const client = axios.create({ baseURL: config.TRAKT_BASE_URL, timeout: 20000 });
 

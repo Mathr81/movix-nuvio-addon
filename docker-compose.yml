@@ -1,0 +1,28 @@
+# docker compose up -d
+#
+# Un seul volume porte tout ce qui doit survivre au conteneur: cache persistant,
+# instantane et journal du hub, jetons Trakt/Simkl.
+#
+# Les jetons sont rediriges vers ce volume par TRAKT_TOKEN_FILE / SIMKL_TOKEN_FILE, au
+# lieu d'etre montes fichier par fichier: un bind-mount dont la source n'existe pas
+# encore fait creer un REPERTOIRE par Docker a sa place, et l'ecriture du jeton echoue
+# ensuite sans explication (c'est le cas au tout premier `up`, avant la connexion).
+services:
+  movix-addon:
+    build: .
+    image: movix-addon
+    container_name: movix-addon
+    restart: unless-stopped
+    ports:
+      - '${PORT:-8787}:8787'
+    env_file: .env
+    environment:
+      TRAKT_TOKEN_FILE: /app/data/.trakt-token.json
+      SIMKL_TOKEN_FILE: /app/data/.simkl-token.json
+      # Catalogues personnalises: deposer le fichier dans le volume (voir README).
+      CATALOGS_FILE: /app/data/catalogs.json
+    volumes:
+      - movix-data:/app/data
+
+volumes:
+  movix-data:

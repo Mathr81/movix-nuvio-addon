@@ -48,8 +48,10 @@ const config = {
   NUVIO_EMAIL: readEnv('NUVIO_EMAIL', ''),
   NUVIO_PASSWORD: readEnv('NUVIO_PASSWORD', ''),
   NUVIO_PROFILE_INDEX: Number(readEnv('NUVIO_PROFILE_INDEX', 0)) || null,
-  // imdb (recommande, aligne sur Cinemeta) ou tmdb
-  NUVIO_ID_PREFERENCE: readEnv('NUVIO_ID_PREFERENCE', 'imdb'),
+  // Fusionner au demarrage d'un cycle les entrees Nuvio encore identifiees en IMDb vers
+  // la forme canonique `tmdb:` (cf. src/integrations/nuvioIds.js). Sans frais quand il
+  // n'y a rien a fusionner; `npm run nuvio:merge:dry` montre ce qui serait touche.
+  NUVIO_MERGE_LEGACY_IDS: readBool('NUVIO_MERGE_LEGACY_IDS', true),
   // Push periodique automatique. 0 = desactive (push manuel via POST /nuvio/push).
   NUVIO_PUSH_INTERVAL_MS: Number(readEnv('NUVIO_PUSH_INTERVAL_MS', 0)),
 
@@ -262,6 +264,18 @@ if (!STREAM_LIST_MODES.includes(config.STREAM_LIST)) {
     `[config] STREAM_LIST="${config.STREAM_LIST}" inconnu (attendu: ${STREAM_LIST_MODES.join(' ou ')}) -- "compact" applique`,
   );
   config.STREAM_LIST = 'compact';
+}
+
+// NUVIO_ID_PREFERENCE decidait de la forme du content_id ecrit dans Nuvio, mais seul le
+// push direct le lisait: le hub ecrivait toujours `tmdb:`. Les deux ecrivains ne
+// s'accordaient donc pas et la meme serie finissait en double dans Nuvio. La forme
+// canonique est desormais `tmdb:` partout -- le reglage n'a plus d'effet.
+if (process.env.NUVIO_ID_PREFERENCE !== undefined) {
+  console.warn(
+    "[config] NUVIO_ID_PREFERENCE n'a plus d'effet -- les entrees Nuvio sont toutes ecrites en " +
+      '`tmdb:<id>` (deux formats produisaient des doublons). Les entrees IMDb deja enregistrees ' +
+      'sont fusionnees automatiquement; `npm run nuvio:merge:dry` montre lesquelles.',
+  );
 }
 
 // PRUNE_DOMINATED a ete remplace par STREAM_LIST. Le signaler plutot que de l'ignorer: un

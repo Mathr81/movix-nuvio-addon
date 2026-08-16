@@ -36,6 +36,30 @@ Le serveur écoute sur **toutes les interfaces** — l'IP LAN ou Tailscale du se
 fonctionne donc directement. Le message `HTTP addon accessible at: http://127.0.0.1:...`
 affiché par le SDK est une chaîne fixe, pas le reflet du binding réel.
 
+### Avec Docker
+
+```bash
+cp .env.example .env   # puis remplis les valeurs
+docker compose up -d
+docker compose logs -f
+```
+
+Un **seul volume** (`movix-data` → `/app/data`) porte tout ce qui doit survivre au
+conteneur : cache persistant, instantané et journal du hub, jetons Trakt/Simkl. Sans lui,
+chaque redémarrage repaye le scraping, l'extraction et la mesure de débit de chaque fiche.
+
+> Les jetons sont redirigés vers ce volume par `TRAKT_TOKEN_FILE` / `SIMKL_TOKEN_FILE`
+> plutôt que montés fichier par fichier : un bind-mount dont la source n'existe pas encore
+> fait créer un **répertoire** par Docker à sa place, et l'écriture du jeton échoue ensuite
+> sans explication — ce qui est exactement le cas au premier démarrage, avant connexion.
+
+Pour des catalogues personnalisés, dépose `catalogs.json` dans le volume :
+
+```bash
+docker compose cp catalogs.json movix-addon:/app/data/catalogs.json
+docker compose restart
+```
+
 ### Structure du projet
 
 ```
@@ -45,14 +69,22 @@ server.js              Point d'entrée HTTP (Express) : monte le SDK Stremio, le
 src/
 ├── addon.js            Handlers Stremio (catalog/meta/stream/subtitles)
 ├── manifest.js          Manifest de l'addon
-├── hub.js                Orchestrateur de synchro (Movix ↔ Trakt/Simkl/Nuvio)
+│
+├── hub/                 Synchro bidirectionnelle Movix ↔ Nuvio → Simkl
+│   ├── index.js          Orchestration d'un cycle (lit, compare, écrit)
+│   ├── model.js           Modèle canonique + clés partagées
+│   ├── state.js            Instantané persisté d'un cycle à l'autre
+│   ├── diff.js              Ce qui a changé/disparu, et ce qu'il est prudent de propager
+│   ├── readers/             Lecture des trois sources → modèle canonique
+│   └── writers/             Écriture du modèle vers chaque source
 │
 ├── core/                Infrastructure transverse
 │   ├── config.js         Lecture/validation des variables d'environnement
-│   ├── cache.js           Cache TTL persistant sur disque
-│   ├── log.js              Logging des sources
-│   ├── journal.js          Journal des synchros (retour arrière)
-│   └── breaker.js          Disjoncteur pour les services en panne
+│   ├── paths.js           Chemins ancrés à la racine (data/, jetons)
+│   ├── cache.js            Cache TTL persistant sur disque
+│   ├── log.js               Logging des sources
+│   ├── journal.js           Journal des synchros (retour arrière)
+│   └── breaker.js           Disjoncteur pour les services en panne
 │
 ├── catalog/             Construction des catalogues Stremio
 │   ├── catalogs.js        Catalogues personnalisables (config → TMDB)
@@ -74,7 +106,9 @@ src/
 │   ├── tmdb.js               Client TMDB
 │   ├── traktCloud.js / traktPush.js   Auth + push vers Trakt
 │   ├── simklCloud.js / simklPush.js / simklProbe.js   Auth + push vers Simkl
-│   └── nuvioCloud.js / nuvioPush.js   Auth + push vers Nuvio Sync
+│   ├── nuvioCloud.js / nuvioPush.js   Auth + push vers Nuvio Sync
+│   ├── nuvioIds.js            Politique d'identifiants Nuvio (source unique)
+│   └── nuvioMerge.js           Fusion des entrées IMDb héritées vers `tmdb:`
 │
 ├── sources/             Scrapers de sites tiers (passent par movixClient)
 └── addons/              Sources autonomes (indépendantes de Mainapi), voir plus bas
@@ -164,6 +198,44 @@ Ce qui est transféré :
 > depuis Nuvio est préservé. Ne contourne pas cette étape.
 
 > Ce push est unidirectionnel. Pour les deux sens, voir le **hub** ci-dessous.
+
+#### Un seul identifiant, sinon la même série apparaît deux fois
+
+Les entrées Nuvio sont toutes écrites en **`tmdb:<id>`**.
+
+Auparavant il y avait deux écrivains vers Nuvio, chacun fabriquant son `content_id` de
+son côté : le push direct suivait `NUVIO_ID_PREFERENCE` et écrivait un id IMDb
+(`tt0903747`), le hub écrivait toujours `tmdb:1396`. Même série, deux clés — Breaking Bad
+apparaissait **en double dans Nuvio**, avec une progression différente dans chaque
+exemplaire. Pire, à la lecture les deux lignes retombaient sur la même clé canonique et
+c'est la dernière résolue qui gagnait : un ordre qui dépend de la latence de TMDB, donc
+une position qui pouvait **reculer** — et le hub propageait ensuite ce recul jusqu'à Movix.
+
+`NUVIO_ID_PREFERENCE` n'a donc plus d'effet (le signaler au démarrage plutôt que
+l'ignorer), et `src/integrations/nuvioIds.js` est le seul endroit qui décide de la forme
+d'un identifiant. La lecture, elle, reste tolérante aux deux formes.
+
+Les entrées déjà enregistrées en IMDb sont **fusionnées vers la clé `tmdb:`**, au début de
+chaque cycle du hub (`NUVIO_MERGE_LEGACY_IDS`, activé par défaut) ou à la demande :
+
+```bash
+npm run nuvio:merge:dry   # montre ce qui serait fusionné, n'écrit rien
+npm run nuvio:merge       # applique
+# ou, serveur démarré :
+curl http://localhost:8787/debug/nuvio/duplicates    # combien d'entrées encore en IMDb
+curl -X POST "http://localhost:8787/nuvio/merge?dryRun=1"
+```
+
+Quand les deux formes portent le **même épisode**, la position la plus avancée gagne —
+même règle que pour les conflits du hub, la seule qui ne fasse jamais reculer une reprise.
+
+> La bibliothèque se nettoie toute seule (`sync_push_library` remplace la liste entière,
+> donc ne pas renvoyer une ligne suffit à la supprimer). Pour la progression et les
+> éléments vus, les endpoints `sync_push_*` sont **additifs** : retirer l'exemplaire IMDb
+> demande une suppression, que l'addon cherche dans ce que l'API publie elle-même
+> (`GET /debug/nuvio/api`). Si le compte n'expose ni RPC de suppression ni accès direct à
+> la table, la fusion des positions a quand même lieu et le résumé dit franchement ce qui
+> n'a pas pu être retiré, au lieu de prétendre l'avoir fait.
 
 ### Hub de synchronisation (les deux sens, en continu)
 
@@ -873,6 +945,15 @@ curl http://localhost:8787/debug/movie/tmdb:157336     # ce que chaque source a 
 curl http://localhost:8787/debug/addons                # addons chargés / écartés, état du proxy
 curl http://localhost:8787/debug/extract/movie/tmdb:157336   # sort de chaque embed, et pourquoi
 curl http://localhost:8787/debug/streams/movie/tmdb:157336   # débit mesuré par lien, et son origine
+```
+
+Côté synchronisation :
+
+```bash
+curl http://localhost:8787/hub/status                  # dernier cycle, erreurs éventuelles
+curl http://localhost:8787/debug/sync                  # ce que Movix renvoie
+curl http://localhost:8787/debug/nuvio/duplicates      # entrées encore identifiées en IMDb
+curl http://localhost:8787/debug/nuvio/api             # tables et RPC réellement exposées par Nuvio
 ```
 
 `/debug` liste chaque lien brut avec sa source et l'extracteur détecté — un lien marqué

@@ -1,7 +1,7 @@
 const fs = require('fs');
-const path = require('path');
 const axios = require('axios');
 const config = require('../core/config');
+const paths = require('../core/paths');
 
 /**
  * Client de l'API Simkl.
@@ -15,7 +15,7 @@ const config = require('../core/config');
  * Authentification par PIN, pensee pour les TV et les scripts sans navigateur.
  * Le jeton Simkl n'expire pas: aucune mecanique de refresh n'est necessaire.
  */
-const TOKEN_FILE = config.SIMKL_TOKEN_FILE || path.join(__dirname, '..', '.simkl-token.json');
+const TOKEN_FILE = config.SIMKL_TOKEN_FILE || paths.inRoot('.simkl-token.json');
 
 const client = axios.create({ baseURL: config.SIMKL_BASE_URL, timeout: 20000 });
 

@@ -1,0 +1,17 @@
+.git
+.gitignore
+node_modules
+npm-debug.log
+data
+logs
+.env
+.env.*
+!.env.example
+.trakt-token.json
+.simkl-token.json
+catalogs.json
+Dockerfile
+.dockerignore
+docker-compose.yml
+README.md
+ecosystem.config.cjs

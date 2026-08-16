@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('./config');
+const paths = require('./paths');
 
 /**
  * Journal des ecritures du hub, au format JSONL (une operation par ligne).
@@ -13,7 +14,7 @@ const config = require('./config');
  * JSONL plutot que JSON: un fichier append-only ne se corrompt pas si le process meurt
  * en plein cycle, et se lit a la main (`tail -f`, `grep remove`).
  */
-const JOURNAL_FILE = config.HUB_JOURNAL_FILE || path.join(__dirname, '..', 'data', 'hub-journal.jsonl');
+const JOURNAL_FILE = config.HUB_JOURNAL_FILE || paths.inData('hub-journal.jsonl');
 
 let cycleId = null;
 

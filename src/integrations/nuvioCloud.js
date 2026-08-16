@@ -85,6 +85,49 @@ async function rpc(name, body = {}) {
   }
 }
 
+/**
+ * Spec OpenAPI de PostgREST (`GET /rest/v1/`): la liste de ce que l'API expose
+ * REELLEMENT -- tables et fonctions RPC. Sert a supprimer sans deviner: les endpoints
+ * `sync_push_*` sont additifs, donc retirer une ligne heritee demande soit une RPC de
+ * suppression, soit un DELETE direct sur la table, et rien ne dit d'avance laquelle
+ * existe sur ce compte.
+ */
+let apiSpec;
+async function describeApi() {
+  if (apiSpec !== undefined) return apiSpec;
+  try {
+    const token = await accessToken();
+    const { data } = await client.get('/rest/v1/', { headers: authHeaders(token) });
+    apiSpec = data && typeof data === 'object' ? data : null;
+  } catch {
+    apiSpec = null;
+  }
+  return apiSpec;
+}
+
+/** Noms des chemins exposes par PostgREST: `/rpc/xxx` pour les fonctions, `/xxx` pour les tables. */
+async function listEndpoints() {
+  const spec = await describeApi();
+  const paths = Object.keys(spec?.paths || {});
+  return {
+    rpcs: paths.filter((p) => p.startsWith('/rpc/')).map((p) => p.slice(5)),
+    tables: paths.filter((p) => p !== '/' && !p.startsWith('/rpc/')).map((p) => p.replace(/^\//, '')),
+  };
+}
+
+/** DELETE PostgREST filtre (`?id=eq.<valeur>`). Renvoie le nombre de lignes supprimees. */
+async function removeRows(table, filters) {
+  const token = await accessToken();
+  const params = new URLSearchParams(filters).toString();
+  const { headers } = await client.delete(`/rest/v1/${table}?${params}`, {
+    headers: { ...authHeaders(token), Prefer: 'return=representation,count=exact' },
+  });
+  // PostgREST renvoie le total dans Content-Range (`0-2/3`); absent = suppression muette.
+  const range = headers?.['content-range'];
+  const total = range ? Number(String(range).split('/')[1]) : NaN;
+  return Number.isFinite(total) ? total : null;
+}
+
 async function pullProfiles() {
   const rows = await rpc('sync_pull_profiles', {});
   return Array.isArray(rows) ? rows : [];
@@ -159,6 +202,9 @@ async function pushWatchProgress(profileId, entries) {
 
 module.exports = {
   rpc,
+  describeApi,
+  listEndpoints,
+  removeRows,
   pullProfiles,
   pullLibrary,
   pullWatchedItems,

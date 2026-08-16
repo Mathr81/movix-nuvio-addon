@@ -2,32 +2,18 @@ const config = require('../core/config');
 const cache = require('../core/cache');
 const movixSync = require('./movixSync');
 const nuvio = require('./nuvioCloud');
+const ids = require('./nuvioIds');
 const tmdbClient = require('./tmdb');
 
 const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500';
 const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280';
 
 /**
- * content_id attendu par Nuvio: un id IMDb (`tt...`) de preference, sinon `tmdb:<id>`.
- * L'ecosysteme Stremio/Nuvio (Cinemeta) indexe par IMDb: utiliser le meme identifiant
- * permet aux entrees poussees de correspondre aux fiches que Nuvio affiche.
+ * Le `content_id` vient de nuvioIds, partage avec le hub. Ce module fabriquait le sien
+ * (un id IMDb quand NUVIO_ID_PREFERENCE=imdb) pendant que le hub ecrivait `tmdb:` --
+ * d'ou les doublons dans Nuvio. Voir nuvioIds.js pour le detail.
  */
-async function contentId(type, tmdbId) {
-  if (config.NUVIO_ID_PREFERENCE !== 'imdb') return `tmdb:${tmdbId}`;
-
-  const key = `imdb:${type}:${tmdbId}`;
-  const cached = cache.get(key);
-  if (cached !== undefined) return cached;
-
-  let id;
-  try {
-    id = (await tmdbClient.getImdbId(type, tmdbId)) || `tmdb:${tmdbId}`;
-  } catch {
-    id = `tmdb:${tmdbId}`;
-  }
-  cache.set(key, id, 24 * 60 * 60 * 1000);
-  return id;
-}
+const contentId = (tmdbId) => ids.contentIdFor(tmdbId);
 
 function nuvioType(type) {
   return type === 'series' ? 'series' : 'movie';
@@ -80,7 +66,7 @@ async function libraryEntry(type, tmdbId, addedAt) {
   );
 
   return {
-    content_id: await contentId(type, tmdbId),
+    content_id: contentId(tmdbId),
     content_type: nuvioType(type),
     name: details.title || details.name,
     poster: details.poster_path ? `${TMDB_POSTER_BASE}${details.poster_path}` : null,
@@ -143,7 +129,7 @@ async function buildWatchedItems() {
     for (const item of items) {
       tasks.push(
         (async () => ({
-          content_id: await contentId(type, item.id),
+          content_id: contentId(item.id),
           content_type: nuvioType(type),
           title: item.title || item.name || (await titleFor(type, item.id)) || `TMDB ${item.id}`,
           watched_at: toEpochMs(item.watchedAt || item.addedAt),
@@ -157,12 +143,9 @@ async function buildWatchedItems() {
   for (const ep of episodes) {
     tasks.push(
       (async () => {
-        const [base, showTitle] = await Promise.all([
-          contentId('series', ep.showId),
-          titleFor('series', ep.showId),
-        ]);
+        const showTitle = await titleFor('series', ep.showId);
         return {
-          content_id: base,
+          content_id: contentId(ep.showId),
           content_type: 'series',
           title: `${showTitle || `TMDB ${ep.showId}`} S${pad2(ep.season)}E${pad2(ep.episode)}`,
           season: ep.season,
@@ -181,7 +164,7 @@ async function buildProgressEntries() {
 
   return settleAll(
     entries.map(async (e) => {
-      const base = await contentId(e.type, e.id);
+      const base = contentId(e.id);
       const duration = toMs(e.duration);
       // Rester strictement dans ]0, duree[: une position egale a la duree ferait
       // passer le titre pour termine et non pour "en cours".
