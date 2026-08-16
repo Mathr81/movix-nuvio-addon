@@ -123,30 +123,55 @@ function buildBody(params, profileId, keys) {
 const wantsBatch = (params) => params.some((p) => !/profile/i.test(p) && /s$/i.test(p));
 
 /**
- * Champs candidats pour la cle attendue.
+ * Formes de cle a essayer, de la plus specifique a la plus large.
  *
- * `row.id` est un UUID technique, alors que la cle logique d'une entree ressemble a
- * `tt0903747_s1e5`. Rien n'indique laquelle la fonction veut, donc on essaie -- et on
- * VERIFIE en relisant, plutot que de croire un appel qui n'a pas leve d'erreur.
+ * Deux raisons de ne pas se contenter des champs bruts:
+ *  - `row.id` est un UUID technique, alors que la cle logique d'une entree ressemble a
+ *    `tt0903747_s1e5`, qui n'existe comme champ sur aucune ligne -- il faut la batir;
+ *  - un champ peut etre renseigne pour les series et NUL pour les films (`video_id`),
+ *    auquel cas il faut un repli pour les lignes qu'il laisse de cote.
+ *
+ * Une forme n'est retenue que si la relecture confirme la disparition des lignes: une
+ * RPC peut accepter un appel sans rien supprimer.
  */
-function keyFieldCandidates(rows) {
-  const sample = rows[0] || {};
-  const named = ['key', 'entry_key', 'item_key'].filter((f) => sample[f] != null);
-  // Repli sans connaitre le nom du champ: celui dont la valeur derive du content_id.
-  const derived = Object.keys(sample).filter(
-    (f) =>
-      !named.includes(f) &&
-      typeof sample[f] === 'string' &&
-      sample.content_id &&
-      sample[f] !== sample.content_id &&
-      sample[f].startsWith(String(sample.content_id)),
+// `colonne: true` = le nom est aussi une colonne reelle, donc utilisable dans un filtre
+// PostgREST. Les formes batties (`tt0903747_s1e5`) ne le sont pas: elles n'ont de sens
+// que passees a la RPC, qui les interprete comme des cles logiques.
+const KEY_FORMS = [
+  { nom: 'key', colonne: true, valueOf: (row) => row.key },
+  { nom: 'entry_key', colonne: true, valueOf: (row) => row.entry_key },
+  { nom: 'video_id', colonne: true, valueOf: (row) => row.video_id },
+  {
+    nom: 'content_id_sXeY',
+    valueOf: (row) => (row.season ? `${row.content_id}_s${row.season}e${row.episode}` : row.content_id),
+  },
+  {
+    nom: 'content_id:s:e',
+    valueOf: (row) => (row.season ? `${row.content_id}:${row.season}:${row.episode}` : row.content_id),
+  },
+  // Sans saison ni episode: retire toutes les entrees de ce titre sous son id IMDb.
+  // Sans danger ici, ces lignes n'ayant plus qu'un doublon canonique en `tmdb:`.
+  { nom: 'content_id', colonne: true, valueOf: (row) => row.content_id },
+  { nom: 'id', colonne: true, valueOf: (row) => row.id },
+];
+
+/**
+ * Formes exploitables sur ce lot: au moins une ligne doit produire une valeur, et un
+ * DELETE direct ne peut filtrer que sur une vraie colonne.
+ */
+function keyForms(rows, viaTable) {
+  return KEY_FORMS.filter(
+    (form) => (!viaTable || form.colonne) && rows.some((row) => form.valueOf(row) != null),
   );
-  return [...named, ...derived, 'id'].filter((f, i, all) => all.indexOf(f) === i && sample[f] != null);
 }
 
-/** Un seul essai de suppression, pour un champ de cle donne. */
-async function attemptDelete(strategy, profileId, rows, field) {
-  const keys = rows.map((row) => row[field]).filter((k) => k !== undefined && k !== null);
+/** Cles produites par une forme, dedupliquees (plusieurs episodes -> un seul content_id). */
+function keysFor(rows, valueOf) {
+  return [...new Set(rows.map(valueOf).filter((k) => k !== undefined && k !== null))];
+}
+
+/** Un seul essai de suppression, pour une forme de cle donnee. */
+async function attemptDelete(strategy, profileId, keys, field) {
   if (keys.length === 0) return { tente: 0 };
 
   if (strategy.table) {
@@ -185,7 +210,7 @@ async function callRpc(rpcName, params, profileId, keys) {
  * sans rien supprimer, et un resume qui annonce 48 suppressions imaginaires est pire
  * qu'un resume qui admet n'avoir rien fait.
  */
-async function deleteRows(kind, profileId, rows, recount) {
+async function deleteRows(kind, profileId, rows, reload) {
   if (rows.length === 0) return { supprimees: 0 };
 
   const strategy = await deleteStrategy(kind);
@@ -200,36 +225,56 @@ async function deleteRows(kind, profileId, rows, recount) {
     };
   }
 
-  const avant = rows.length;
+  const total = rows.length;
   const essais = [];
+  const cles = [];
+  let signature;
+  let restants = rows;
 
-  for (const field of keyFieldCandidates(rows)) {
+  // Une forme peut n'en couvrir qu'une partie (`video_id` est nul sur les films): on
+  // enchaine sur les lignes ENCORE presentes, au lieu de s'arreter au premier succes.
+  const dejaTentees = new Set();
+
+  for (const { nom: field, valueOf } of keyForms(rows, !!strategy.table)) {
+    if (restants.length === 0) break;
+
+    // Sur un film, `content_id_sXeY` et `content_id:s:e` retombent tous deux sur le
+    // content_id nu: sans ce garde-fou, la meme requete partirait trois fois.
+    const keys = keysFor(restants, valueOf);
+    const empreinte = JSON.stringify(keys);
+    if (keys.length === 0 || dejaTentees.has(empreinte)) continue;
+    dejaTentees.add(empreinte);
+
+    let attempt;
     try {
-      const { tente, params } = await attemptDelete(strategy, profileId, rows, field);
-      if (!tente) continue;
-      const restantes = await recount();
-      essais.push(`${field}: ${avant - restantes}/${avant} supprimee(s)`);
-      if (restantes === 0) {
-        return { supprimees: avant, via: strategy.via, cle: field, ...(params ? { signature: params } : {}) };
-      }
-      if (restantes < avant) {
-        return { supprimees: avant - restantes, restantes, via: strategy.via, cle: field, essais };
-      }
+      attempt = await attemptDelete(strategy, profileId, keys, field);
     } catch (err) {
       essais.push(`${field}: ${err.message.slice(0, 200)}`);
+      continue;
     }
+    if (!attempt.tente) continue;
+    if (attempt.params) signature = attempt.params;
+
+    const avant = restants.length;
+    restants = await reload();
+    const gagnees = avant - restants.length;
+    essais.push(`${field}: ${gagnees}/${avant} supprimee(s)`);
+    if (gagnees > 0) cles.push(field);
   }
 
-  return {
-    supprimees: 0,
-    restantes: avant,
-    via: strategy.via,
-    essais,
-    note:
-      'la fusion des positions a bien eu lieu (les entrees tmdb sont a jour), mais aucune ' +
-      'cle acceptee par la fonction de suppression: les exemplaires IMDb restent visibles. ' +
-      'Envoie la sortie de /debug/nuvio/sample pour identifier le champ attendu.',
-  };
+  const supprimees = total - restants.length;
+  const result = { supprimees, via: strategy.via };
+  if (cles.length > 0) result.cle = cles.join(' + ');
+  if (signature) result.signature = signature;
+  if (restants.length > 0) {
+    result.restantes = restants.length;
+    result.essais = essais;
+    result.note =
+      'la fusion a bien eu lieu (les entrees tmdb sont a jour), mais aucune forme de cle ' +
+      "n'a fait disparaitre ces lignes: leurs exemplaires IMDb restent visibles. " +
+      'Envoie la sortie de /debug/nuvio/sample pour identifier le champ attendu.';
+  }
+  return result;
 }
 
 // --- Fusion par collection --------------------------------------------------
@@ -290,9 +335,11 @@ async function mergeProgress(profileId, dryRun) {
   if (dryRun) return { fusionnees: entries.length, aSupprimer: toDelete.length, apercu: entries.slice(0, 3) };
 
   await nuvio.pushWatchProgress(profileId, entries);
-  const recount = async () =>
-    (await nuvio.pullWatchProgress(profileId)).filter((row) => ids.isLegacyId(row?.content_id)).length;
-  return { fusionnees: entries.length, ...(await deleteRows('progress', profileId, toDelete, recount)) };
+  // Renvoie les lignes heritees ENCORE presentes: c'est sur elles que la forme de cle
+  // suivante sera essayee, et c'est ce qui distingue un appel accepte d'un appel utile.
+  const reload = async () =>
+    (await nuvio.pullWatchProgress(profileId)).filter((row) => ids.isLegacyId(row?.content_id));
+  return { fusionnees: entries.length, ...(await deleteRows('progress', profileId, toDelete, reload)) };
 }
 
 async function mergeWatched(profileId, dryRun) {
@@ -319,9 +366,9 @@ async function mergeWatched(profileId, dryRun) {
   if (dryRun) return { fusionnees: items.length, aSupprimer: toDelete.length };
 
   await nuvio.pushWatchedItems(profileId, items);
-  const recount = async () =>
-    (await nuvio.pullWatchedItems(profileId)).filter((row) => ids.isLegacyId(row?.content_id)).length;
-  return { fusionnees: items.length, ...(await deleteRows('watched', profileId, toDelete, recount)) };
+  const reload = async () =>
+    (await nuvio.pullWatchedItems(profileId)).filter((row) => ids.isLegacyId(row?.content_id));
+  return { fusionnees: items.length, ...(await deleteRows('watched', profileId, toDelete, reload)) };
 }
 
 /**

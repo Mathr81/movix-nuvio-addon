@@ -243,9 +243,13 @@ Deux choses ne sont jamais supposées, parce qu'elles diffèrent d'un compte à 
   *fonction* est introuvable, pas la ligne. Elle est donc lue dans la spec OpenAPI, et à
   défaut dans le champ `hint` que PostgREST renvoie avec l'erreur.
 - **La clé attendue.** `row.id` est un UUID technique alors que la clé logique ressemble à
-  `tt0903747_s1e5`. Chaque champ plausible est essayé, puis **vérifié en relisant** —
-  une RPC peut accepter un appel sans rien supprimer, et un résumé annonçant 48
-  suppressions imaginaires est pire qu'un résumé qui admet n'avoir rien fait.
+  `tt0903747_s1e5` — laquelle n'existe comme champ sur aucune ligne et doit être bâtie.
+  Chaque forme plausible est essayée, puis **vérifiée en relisant** : une RPC peut
+  accepter un appel sans rien supprimer, et un résumé annonçant 48 suppressions
+  imaginaires est pire qu'un résumé qui admet n'avoir rien fait. Une forme qui n'en
+  couvre qu'une partie (`video_id` est renseigné sur les épisodes, nul sur les films)
+  n'arrête pas la recherche : les lignes restantes repassent par la forme suivante, d'où
+  un `cle` qui peut en lister plusieurs.
 
 Si aucune clé n'est acceptée, les positions restent correctement fusionnées et le résumé
 liste ce qui a été tenté. `GET /debug/nuvio/sample` donne alors les noms de champs réels
