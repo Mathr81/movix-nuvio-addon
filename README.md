@@ -98,7 +98,12 @@ src/
 │   ├── hosterExtract.js      Détection d'hébergeur, extraction d'URL directe
 │   ├── hosterVoe.js           Résolution spécifique aux domaines tournants Voe
 │   ├── probe.js               Sonde le débit/la taille réels d'un flux
-│   └── subtitles.js            Sous-titres (recherche + conversion VTT)
+│   └── subtitles/              Sous-titres : cascade de fournisseurs, conversion VTT
+│       ├── index.js             Cascade par langue, route de conversion, liste blanche
+│       ├── vdrk.js               Fournisseur par défaut (déjà en VTT, indexé TMDB)
+│       ├── opensubtitles.js       Fournisseur de repli
+│       ├── langs.js                Libellés vdrk → codes ISO 639-2/B
+│       └── vtt.js                   SRT→VTT, encodage, retrait des publicités
 │
 ├── integrations/        Clients des services externes
 │   ├── movixClient.js      Client HTTP vers Mainapi (Movix)
@@ -121,7 +126,7 @@ src/
 | `catalog` | Catalogues personnels (sync compte), recommandations, Tendances / Populaires / Mieux notés / Nouveautés, filtrables par genre, avec recherche |
 | `meta` | Fiches complètes, épisodes par saison, casting, genres |
 | `stream` | Agrégation des sources Movix + addons autonomes, extraction serveur des embeds |
-| `subtitles` | OpenSubtitles, converti à la volée en WebVTT (KissKH fournit les siens, rattachés au flux) |
+| `subtitles` | vdrk puis OpenSubtitles en repli, nettoyés et servis en WebVTT (KissKH fournit les siens, rattachés au flux) |
 
 ### Catalogues personnalisables
 
@@ -461,6 +466,50 @@ périodique.
 > c'est Nuvio qui l'alimente ensuite. La rangée « Recommandé pour vous » de cet addon
 > disparaît alors (elle exige une connexion active) — la rangée locale
 > « Parce que tu as regardé » prend le relais.
+
+### Sous-titres
+
+Deux fournisseurs, interrogés **dans l'ordre de `SUBTITLE_PROVIDERS`** (défaut :
+`vdrk,opensubtitles`).
+
+| | vdrk | OpenSubtitles |
+|---|---|---|
+| Format servi | **WebVTT** directement | `.gz` → `.srt` → conversion |
+| Encodage | UTF-8 annoncé | non annoncé, souvent latin-1 (accents cassés si lu en UTF-8) |
+| Indexation | **id TMDB** | id IMDb → un appel `/external_ids` de plus |
+| Requêtes | une seule, toutes langues | **une par langue** (la forme groupée répond 400) |
+| Clé / quota | aucune | aucune, mais l'API publique est capricieuse |
+
+La cascade se fait **par langue**, pas en tout ou rien : si vdrk a l'anglais mais pas le
+français sur un titre confidentiel, OpenSubtitles n'est interrogé que pour le français —
+et pas du tout s'il ne manque rien. C'est tout l'intérêt d'un repli : combler un trou,
+pas remplacer l'ensemble.
+
+vdrk nomme ses pistes en anglais avec un numéro pour les variantes (`French`, `French2`,
+`French3`…), traduits en codes ISO 639-2/B par `langs.js`. Attention : ce sont les codes
+*bibliographiques* (`fre` et non `fra`, `ger`, `dut`, `gre`, `rum`, `per`, `cze`) — Nuvio
+normalise ce champ et affiche « inconnu » pour tout le reste. La piste sans numéro est
+celle que vdrk présente en premier, donc celle retenue par défaut.
+
+#### Les publicités sont retirées
+
+Ce n'est pas théorique : la piste française de Breaking Bad S01E01 s'ouvre sur
+`Visit hoofoot.ru to watch all sports livestream and highlights for free`, affiché six
+secondes avant la première réplique. Les deux fournisseurs en ont, et on en compte **4 par
+épisode** sur ce fichier.
+
+Le nettoyage raisonne par **réplique entière** (horodatage + texte) et non ligne à ligne :
+supprimer le texte en laissant son horodatage produirait un cartouche vide que certains
+lecteurs affichent en noir. La détection exige une forme de *domaine* (`quelquechose.tld`)
+plutôt qu'une simple extension — chercher `.fr` ou `.tv` nu emporterait du dialogue
+légitime — plus une liste de signatures connues (`opensubtitles`, `addic7ed`, `sous-titres
+par`, `traduction :`…).
+
+> Les pistes vdrk sont déjà du WebVTT et seraient jouables en direct. Elles passent quand
+> même par `/subtitle/`, pour ce nettoyage et pour ne dépendre que d'un seul chemin
+> éprouvé (PUBLIC_URL, cache, en-têtes). Cette route n'accepte de relayer que vers les
+> hôtes des fournisseurs déclarés — la liste est **dérivée** d'eux, sans quoi ajouter un
+> fournisseur se solderait par un 403 sans rapport apparent.
 
 ### Sources agrégées
 

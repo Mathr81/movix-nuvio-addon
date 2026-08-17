@@ -221,9 +221,17 @@ const config = {
   OBRIGOZ_PATH_PREFIX: readEnv('OBRIGOZ_PATH_PREFIX', '2662df1'),
   OBRIGOZ_LANG: readEnv('OBRIGOZ_LANG', 'VF'),
 
-  // Langues de sous-titres proposees (codes OpenSubtitles ISO 639-2, ex: fre,eng).
+  // Langues de sous-titres proposees (codes ISO 639-2/B, ex: fre,eng).
   SUBTITLE_LANGS: readList('SUBTITLE_LANGS', ['fre', 'eng']),
   SUBTITLES_ENABLED: readBool('SUBTITLES_ENABLED', true),
+  // Fournisseurs interroges, DANS L'ORDRE. La cascade se fait par langue: le second
+  // n'est appele que pour les langues que le premier n'a pas fournies.
+  //   vdrk           deja en WebVTT, indexe par id TMDB, sans cle
+  //   opensubtitles  plus fourni sur les titres anciens, mais .gz + SRT + encodage devine
+  SUBTITLE_PROVIDERS: readList('SUBTITLE_PROVIDERS', ['vdrk', 'opensubtitles']),
+  VDRK_BASE_URL: readEnv('VDRK_BASE_URL', 'https://sub.vdrk.site'),
+  // Origin/Referer attendus par l'index vdrk (le site qui l'utilise).
+  VDRK_ORIGIN: readEnv('VDRK_ORIGIN', 'https://aether.bar'),
   // Pistes proposees par langue (les plus telechargees d'abord). Au-dela de 1, elles
   // portent toutes le meme nom de langue -- le protocole ne les distingue que par leur id.
   SUBTITLES_PER_LANG: Number(readEnv('SUBTITLES_PER_LANG', 1)),
@@ -279,6 +287,22 @@ if (!STREAM_LIST_MODES.includes(config.STREAM_LIST)) {
     `[config] STREAM_LIST="${config.STREAM_LIST}" inconnu (attendu: ${STREAM_LIST_MODES.join(' ou ')}) -- "compact" applique`,
   );
   config.STREAM_LIST = 'compact';
+}
+
+// Un fournisseur de sous-titres inconnu serait ignore en silence, et la liste paraitrait
+// simplement vide sur les titres que l'autre ne couvre pas.
+const SUBTITLE_PROVIDER_IDS = ['vdrk', 'opensubtitles'];
+const unknownProviders = config.SUBTITLE_PROVIDERS.filter(
+  (id) => !SUBTITLE_PROVIDER_IDS.includes(String(id).toLowerCase()),
+);
+if (unknownProviders.length > 0) {
+  console.warn(
+    `[config] SUBTITLE_PROVIDERS: "${unknownProviders.join(', ')}" inconnu(s) ` +
+      `(attendu: ${SUBTITLE_PROVIDER_IDS.join(', ')}) -- ignore(s)`,
+  );
+}
+if (config.SUBTITLES_ENABLED && config.SUBTITLE_PROVIDERS.length === unknownProviders.length) {
+  console.warn('[config] aucun fournisseur de sous-titres valide -- la liste sera vide');
 }
 
 const ID_FORMATS = ['imdb', 'tmdb'];

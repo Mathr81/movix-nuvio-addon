@@ -2,7 +2,7 @@ const express = require('express');
 const { getRouter } = require('stremio-addon-sdk');
 const addonInterface = require('./src/addon');
 const config = require('./src/core/config');
-const { fetchAsVtt } = require('./src/streaming/subtitles');
+const { fetchAsVtt, isAllowedHost } = require('./src/streaming/subtitles');
 const { resolveId } = require('./src/catalog/idResolver');
 const { collectRawLinks, resolveStreams, buildStreams } = require('./src/streaming/streamBuilder');
 const { breakerState: probeBreakerState } = require('./src/streaming/probe');
@@ -30,15 +30,18 @@ app.use((_req, res, next) => {
 });
 
 // --- Proxy de sous-titres -------------------------------------------------
-// OpenSubtitles sert des .gz contenant du .srt; Stremio/Nuvio attendent du .vtt lisible
-// directement. On telecharge, decompresse, convertit et sert a la volee.
+// Les fournisseurs servent du .vtt (vdrk) ou un .gz contenant du .srt (OpenSubtitles);
+// Stremio/Nuvio n'attendent que du .vtt. On telecharge, convertit, retire les repliques
+// publicitaires et sert a la volee.
 async function serveSubtitle(src, res) {
   if (!src || !/^https?:\/\//i.test(src)) {
     console.warn(`[subtitle] source manquante ou invalide: ${JSON.stringify(String(src || '').slice(0, 120))}`);
     return res.status(400).type('text/plain').send('source de sous-titre manquante ou invalide');
   }
 
-  // Ne relayer que vers OpenSubtitles: sans cette borne, la route serait un proxy HTTP ouvert.
+  // Ne relayer que vers les hotes des fournisseurs declares: sans cette borne, la route
+  // serait un proxy HTTP ouvert. La liste vient du module de sous-titres, donc ajouter un
+  // fournisseur n'oblige plus a penser a l'autoriser ici.
   let host;
   try {
     host = new URL(src).hostname;
@@ -46,7 +49,7 @@ async function serveSubtitle(src, res) {
     console.warn(`[subtitle] source illisible: ${src.slice(0, 120)}`);
     return res.status(400).type('text/plain').send('source de sous-titre invalide');
   }
-  if (!/(^|\.)opensubtitles\.org$/i.test(host)) {
+  if (!isAllowedHost(host)) {
     console.warn(`[subtitle] host non autorise: ${host}`);
     return res.status(403).type('text/plain').send('host non autorise');
   }
