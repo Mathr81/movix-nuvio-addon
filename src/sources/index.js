@@ -8,4 +8,5 @@ module.exports = [
   require('./cpasmal'),
   require('./j1f'),
   require('./voirdrama'),
+  require('./kisskh'),
 ];

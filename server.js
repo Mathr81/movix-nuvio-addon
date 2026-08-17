@@ -13,6 +13,7 @@ const addons = require('./src/addons');
 const { pushToNuvio } = require('./src/integrations/nuvioPush');
 const nuvioCloud = require('./src/integrations/nuvioCloud');
 const nuvioMerge = require('./src/integrations/nuvioMerge');
+const contentIds = require('./src/integrations/contentIds');
 const { pushToTrakt } = require('./src/integrations/traktPush');
 const trakt = require('./src/integrations/traktCloud');
 const { pushToSimkl } = require('./src/integrations/simklPush');
@@ -86,6 +87,59 @@ streamProxy.mount(app);
 // --- Diagnostic -----------------------------------------------------------
 // Montre ce que chaque source a reellement renvoye, avant extraction. Utile quand
 // Nuvio affiche "aucun stream" sans qu'on sache quelle etape a lache.
+// --- Diagnostic Nuvio -----------------------------------------------------
+// Declarees AVANT `/debug/:type/:id`: Express prend la premiere route qui
+// correspond, et ce motif generique capturait `/debug/nuvio/sample` en le lisant
+// comme type=nuvio, id=sample -- d'ou un "Format d'id non supporte: sample".
+// Entrees Nuvio encore identifiees par un id IMDb: c'est ce qui faisait apparaitre la
+// meme serie en double. Lecture seule -- `POST /nuvio/merge` fait la fusion.
+app.get('/debug/nuvio/duplicates', async (_req, res) => {
+  try {
+    const profileId = await hub.resolveProfileId();
+    res.json({
+      profileId,
+      format: contentIds.format(),
+      aFusionner: await nuvioMerge.countLegacy(profileId),
+    });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+// Ce que l'API Nuvio expose reellement (tables + RPC). Sert a savoir si une suppression
+// est possible: les endpoints `sync_push_*` sont additifs et ne retirent jamais rien.
+app.get('/debug/nuvio/api', async (_req, res) => {
+  try {
+    res.json(await nuvioCloud.listEndpoints());
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+// Forme reelle d'une ligne Nuvio (noms de champs + signature des RPC de suppression).
+// C'est ce qui evite de deviner quelle cle la fonction attend.
+app.get('/debug/nuvio/sample', async (_req, res) => {
+  try {
+    const profileId = await hub.resolveProfileId();
+    const [progress, watched, endpoints] = await Promise.all([
+      nuvioCloud.pullWatchProgress(profileId).catch(() => []),
+      nuvioCloud.pullWatchedItems(profileId).catch(() => []),
+      nuvioCloud.listEndpoints(),
+    ]);
+    const deleteRpcs = endpoints.rpcs.filter((n) => /(delete|remove)/i.test(n));
+    res.json({
+      profileId,
+      progress: { champs: Object.keys(progress[0] || {}), exemple: progress[0] || null },
+      watched: { champs: Object.keys(watched[0] || {}), exemple: watched[0] || null },
+      signatures: Object.fromEntries(
+        await Promise.all(deleteRpcs.map(async (n) => [n, await nuvioCloud.rpcParameters(n)])),
+      ),
+    });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
 app.get('/debug/:type/:id', async (req, res) => {
   try {
     const { type, id } = req.params;
@@ -268,51 +322,6 @@ app.post('/nuvio/push', async (req, res) => {
     const body = err.response?.data;
     console.error(`[nuvio-push] echec: status=${status ?? 'n/a'} msg=${err.message}`);
     res.status(502).json({ ok: false, error: err.message, status, body });
-  }
-});
-
-// Entrees Nuvio encore identifiees par un id IMDb: c'est ce qui faisait apparaitre la
-// meme serie en double. Lecture seule -- `POST /nuvio/merge` fait la fusion.
-app.get('/debug/nuvio/duplicates', async (_req, res) => {
-  try {
-    const profileId = await hub.resolveProfileId();
-    res.json({ profileId, enImdb: await nuvioMerge.countLegacy(profileId) });
-  } catch (err) {
-    res.status(502).json({ ok: false, error: err.message });
-  }
-});
-
-// Ce que l'API Nuvio expose reellement (tables + RPC). Sert a savoir si une suppression
-// est possible: les endpoints `sync_push_*` sont additifs et ne retirent jamais rien.
-app.get('/debug/nuvio/api', async (_req, res) => {
-  try {
-    res.json(await nuvioCloud.listEndpoints());
-  } catch (err) {
-    res.status(502).json({ ok: false, error: err.message });
-  }
-});
-
-// Forme reelle d'une ligne Nuvio (noms de champs + signature des RPC de suppression).
-// C'est ce qui evite de deviner quelle cle la fonction attend.
-app.get('/debug/nuvio/sample', async (_req, res) => {
-  try {
-    const profileId = await hub.resolveProfileId();
-    const [progress, watched, endpoints] = await Promise.all([
-      nuvioCloud.pullWatchProgress(profileId).catch(() => []),
-      nuvioCloud.pullWatchedItems(profileId).catch(() => []),
-      nuvioCloud.listEndpoints(),
-    ]);
-    const deleteRpcs = endpoints.rpcs.filter((n) => /(delete|remove)/i.test(n));
-    res.json({
-      profileId,
-      progress: { champs: Object.keys(progress[0] || {}), exemple: progress[0] || null },
-      watched: { champs: Object.keys(watched[0] || {}), exemple: watched[0] || null },
-      signatures: Object.fromEntries(
-        await Promise.all(deleteRpcs.map(async (n) => [n, await nuvioCloud.rpcParameters(n)])),
-      ),
-    });
-  } catch (err) {
-    res.status(502).json({ ok: false, error: err.message });
   }
 });
 

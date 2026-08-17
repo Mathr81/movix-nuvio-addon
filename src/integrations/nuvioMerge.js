@@ -1,14 +1,17 @@
 const nuvio = require('./nuvioCloud');
-const ids = require('./nuvioIds');
+const ids = require('./contentIds');
 
 /**
- * Fusion des entrees Nuvio identifiees par un id IMDb vers la forme canonique `tmdb:`.
+ * Fusion des entrees Nuvio vers la forme configuree par ID_FORMAT.
  *
- * Le probleme repare: deux ecrivains fabriquaient leur `content_id` chacun de son cote
- * (voir nuvioIds.js), donc la meme serie existait en double dans Nuvio -- `tt0903747` et
- * `tmdb:1396` pour Breaking Bad -- avec une progression differente dans chaque
- * exemplaire. Les nouveaux ecrits ne peuvent plus diverger; restent les lignes deja
- * enregistrees, que cette operation ramene sur une seule cle.
+ * Le probleme repare: le `content_id` etait fabrique a trois endroits avec deux
+ * politiques (voir contentIds.js), donc la meme serie existait en double dans Nuvio --
+ * `tt0903747` et `tmdb:1396` pour Breaking Bad -- avec une progression differente dans
+ * chaque exemplaire. Les nouveaux ecrits ne peuvent plus diverger; restent les lignes
+ * deja enregistrees, que cette operation ramene sur une seule cle.
+ *
+ * La CIBLE suit le reglage: en mode imdb ce sont les entrees `tmdb:` qui sont fusionnees
+ * vers `tt`, et l'inverse en mode tmdb. Changer ID_FORMAT et relancer bascule le compte.
  *
  * Regle de fusion: quand les deux formes portent le MEME episode, on garde la position
  * la plus avancee. C'est la meme regle que le hub applique a ses conflits, et la seule
@@ -74,7 +77,7 @@ function bestRow(rows) {
  * entierement canonique n'a rien a faire ici, meme s'il compte plusieurs lignes.
  */
 function needsMerge(group) {
-  return group.rows.some((row) => ids.isLegacyId(row.content_id));
+  return group.rows.some((row) => ids.isForeign(row.content_id));
 }
 
 // --- Suppression des lignes heritees ---------------------------------------
@@ -108,19 +111,38 @@ async function deleteStrategy(kind) {
 }
 
 /**
- * Corps d'appel construit depuis la signature annoncee, et non depuis une convention
- * supposee: le parametre qui parle du profil recoit le profil, l'autre recoit les cles.
- * Un nom au pluriel (`p_keys`) attend le lot entier, un nom au singulier une cle par appel.
+ * Corps d'appel construit depuis la signature annoncee.
+ *
+ * Seuls deux parametres sont renseignes: celui du profil et celui des cles. Tout le
+ * reste part a `null` -- et c'est essentiel. `sync_delete_watched_items` est declaree
+ * `(p_keys, p_origin_client_id, p_profile_id)`: remplir p_origin_client_id avec le
+ * tableau de cles, comme le faisait la regle "tout ce qui n'est pas le profil recoit les
+ * cles", faisait accepter l'appel sans rien supprimer. Un parametre dont on ignore le
+ * sens se laisse vide, il ne s'invente pas.
  */
+const isProfileParam = (param) => /profile/i.test(param);
+
+/**
+ * Le parametre qui porte les cles: celui qui le dit dans son nom, sinon le seul restant
+ * une fois le profil ecarte. Sans ce repli, une signature sans "key" ne recevrait aucune
+ * cle et l'appel ne supprimerait rien.
+ */
+function keyParamOf(params) {
+  return params.find((p) => /key/i.test(p)) || params.find((p) => !isProfileParam(p)) || null;
+}
+
 function buildBody(params, profileId, keys) {
+  const keyParam = keyParamOf(params);
   const body = {};
   for (const param of params) {
-    body[param] = /profile/i.test(param) ? profileId : keys;
+    if (isProfileParam(param)) body[param] = profileId;
+    else if (param === keyParam) body[param] = keys;
+    else body[param] = null;
   }
   return body;
 }
 
-const wantsBatch = (params) => params.some((p) => !/profile/i.test(p) && /s$/i.test(p));
+const wantsBatch = (params) => /s$/i.test(keyParamOf(params) || '');
 
 /**
  * Formes de cle a essayer, de la plus specifique a la plus large.
@@ -219,7 +241,7 @@ async function deleteRows(kind, profileId, rows, reload) {
       supprimees: 0,
       restantes: rows.length,
       note:
-        "l'API ne publie ni RPC de suppression ni acces direct a la table: les entrees IMDb " +
+        "l'API ne publie ni RPC de suppression ni acces direct a la table: les entrees a fusionner " +
         'ont ete fusionnees (position a jour sur la cle tmdb) mais restent visibles. ' +
         'Supprime-les depuis Nuvio, ou relance apres avoir verifie /debug/nuvio/api.',
     };
@@ -286,7 +308,7 @@ async function deleteRows(kind, profileId, rows, reload) {
  */
 async function mergeLibrary(profileId, dryRun) {
   const rows = await nuvio.pullLibrary(profileId);
-  const legacy = rows.filter((row) => ids.isLegacyId(row.content_id));
+  const legacy = rows.filter((row) => ids.isForeign(row.content_id));
   if (legacy.length === 0) return { fusionnees: 0 };
 
   const merged = new Map();
@@ -294,7 +316,7 @@ async function mergeLibrary(profileId, dryRun) {
     const type = rowType(row);
     const tmdbId = await ids.toTmdbId(row.content_id, type);
     // Irresolvable: on la garde sous sa cle d'origine, la perdre serait pire.
-    const contentId = tmdbId ? ids.contentIdFor(tmdbId) : row.content_id;
+    const contentId = tmdbId ? await ids.contentIdFor(type, tmdbId) : row.content_id;
     const existing = merged.get(contentId);
     // A cle egale, la fiche la plus anciennement ajoutee gagne: c'est la date que
     // l'utilisateur a vue s'afficher, et elle ordonne la bibliotheque.
@@ -318,7 +340,7 @@ async function mergeProgress(profileId, dryRun) {
     if (!needsMerge(group)) continue;
 
     const winner = bestRow(group.rows);
-    const contentId = ids.contentIdFor(group.tmdbId);
+    const contentId = await ids.contentIdFor(group.type, group.tmdbId);
     entries.push({
       content_id: contentId,
       content_type: group.type === 'series' ? 'series' : 'movie',
@@ -328,7 +350,7 @@ async function mergeProgress(profileId, dryRun) {
       last_watched: num(winner.last_watched) || Date.now(),
       ...(group.season ? { season: group.season, episode: group.episode } : {}),
     });
-    toDelete.push(...group.rows.filter((row) => ids.isLegacyId(row.content_id)));
+    toDelete.push(...group.rows.filter((row) => ids.isForeign(row.content_id)));
   }
 
   if (entries.length === 0) return { fusionnees: 0 };
@@ -338,7 +360,7 @@ async function mergeProgress(profileId, dryRun) {
   // Renvoie les lignes heritees ENCORE presentes: c'est sur elles que la forme de cle
   // suivante sera essayee, et c'est ce qui distingue un appel accepte d'un appel utile.
   const reload = async () =>
-    (await nuvio.pullWatchProgress(profileId)).filter((row) => ids.isLegacyId(row?.content_id));
+    (await nuvio.pullWatchProgress(profileId)).filter((row) => ids.isForeign(row?.content_id));
   return { fusionnees: entries.length, ...(await deleteRows('progress', profileId, toDelete, reload)) };
 }
 
@@ -353,13 +375,13 @@ async function mergeWatched(profileId, dryRun) {
 
     const winner = bestRow(group.rows);
     items.push({
-      content_id: ids.contentIdFor(group.tmdbId),
+      content_id: await ids.contentIdFor(group.type, group.tmdbId),
       content_type: group.type === 'series' ? 'series' : 'movie',
       title: winner.title || `TMDB ${group.tmdbId}`,
       ...(group.season ? { season: group.season, episode: group.episode } : {}),
       watched_at: num(winner.watched_at) || Date.now(),
     });
-    toDelete.push(...group.rows.filter((row) => ids.isLegacyId(row.content_id)));
+    toDelete.push(...group.rows.filter((row) => ids.isForeign(row.content_id)));
   }
 
   if (items.length === 0) return { fusionnees: 0 };
@@ -367,7 +389,7 @@ async function mergeWatched(profileId, dryRun) {
 
   await nuvio.pushWatchedItems(profileId, items);
   const reload = async () =>
-    (await nuvio.pullWatchedItems(profileId)).filter((row) => ids.isLegacyId(row?.content_id));
+    (await nuvio.pullWatchedItems(profileId)).filter((row) => ids.isForeign(row?.content_id));
   return { fusionnees: items.length, ...(await deleteRows('watched', profileId, toDelete, reload)) };
 }
 
@@ -402,7 +424,7 @@ async function countLegacy(profileId) {
     nuvio.pullWatchedItems(profileId).catch(() => []),
     nuvio.pullWatchProgress(profileId).catch(() => []),
   ]);
-  const count = (rows) => rows.filter((row) => ids.isLegacyId(row?.content_id)).length;
+  const count = (rows) => rows.filter((row) => ids.isForeign(row?.content_id)).length;
   return { library: count(library), watched: count(watched), progress: count(progress) };
 }
 

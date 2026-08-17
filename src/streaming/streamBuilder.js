@@ -424,6 +424,13 @@ async function buildStreams({ tmdbId, type, season, episode, refresh = false }) 
       stream.url = r.url;
       stream.behaviorHints.notWebReady = true;
     }
+
+    // Sous-titres fournis par la source elle-meme (KissKH en livre avec chaque episode).
+    // Ils ne passent pas par la resource `subtitles` de l'addon, qui interroge
+    // OpenSubtitles: celui-ci couvre mal les dramas asiatiques, alors que la source
+    // connait ses propres pistes -- dont, souvent, la seule VF disponible.
+    if (Array.isArray(r.subtitles) && r.subtitles.length > 0) stream.subtitles = r.subtitles;
+
     return stream;
   });
 }

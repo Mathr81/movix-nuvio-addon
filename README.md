@@ -107,8 +107,8 @@ src/
 │   ├── traktCloud.js / traktPush.js   Auth + push vers Trakt
 │   ├── simklCloud.js / simklPush.js / simklProbe.js   Auth + push vers Simkl
 │   ├── nuvioCloud.js / nuvioPush.js   Auth + push vers Nuvio Sync
-│   ├── nuvioIds.js            Politique d'identifiants Nuvio (source unique)
-│   └── nuvioMerge.js           Fusion des entrées IMDb héritées vers `tmdb:`
+│   ├── contentIds.js          Forme des identifiants, servis ET poussés (source unique)
+│   └── nuvioMerge.js           Fusion des entrées vers la forme configurée
 │
 ├── sources/             Scrapers de sites tiers (passent par movixClient)
 └── addons/              Sources autonomes (indépendantes de Mainapi), voir plus bas
@@ -121,7 +121,7 @@ src/
 | `catalog` | Catalogues personnels (sync compte), recommandations, Tendances / Populaires / Mieux notés / Nouveautés, filtrables par genre, avec recherche |
 | `meta` | Fiches complètes, épisodes par saison, casting, genres |
 | `stream` | Agrégation des sources Movix + addons autonomes, extraction serveur des embeds |
-| `subtitles` | OpenSubtitles, converti à la volée en WebVTT |
+| `subtitles` | OpenSubtitles, converti à la volée en WebVTT (KissKH fournit les siens, rattachés au flux) |
 
 ### Catalogues personnalisables
 
@@ -201,59 +201,73 @@ Ce qui est transféré :
 
 #### Un seul identifiant, sinon la même série apparaît deux fois
 
-Les entrées Nuvio sont toutes écrites en **`tmdb:<id>`**.
+`ID_FORMAT` décide de la forme des identifiants — **et il gouverne les deux bouts à la
+fois** : les ids que l'addon *sert* (catalogues, fiches, épisodes) et les `content_id`
+*écrits* dans Nuvio.
 
-Auparavant il y avait deux écrivains vers Nuvio, chacun fabriquant son `content_id` de
-son côté : le push direct suivait `NUVIO_ID_PREFERENCE` et écrivait un id IMDb
-(`tt0903747`), le hub écrivait toujours `tmdb:1396`. Même série, deux clés — Breaking Bad
-apparaissait **en double dans Nuvio**, avec une progression différente dans chaque
-exemplaire. Pire, à la lecture les deux lignes retombaient sur la même clé canonique et
-c'est la dernière résolue qui gagnait : un ordre qui dépend de la latence de TMDB, donc
-une position qui pouvait **reculer** — et le hub propageait ensuite ce recul jusqu'à Movix.
+| `ID_FORMAT` | Forme | Ce que ça implique |
+|---|---|---|
+| `imdb` (défaut) | `tt0903747` | Aligné sur Cinemeta et le reste de l'écosystème : une série ouverte depuis cet addon ou depuis un autre est **la même fiche**, avec une seule progression. Coûte une résolution TMDB → IMDb par titre, mise en cache 24 h. |
+| `tmdb` | `tmdb:1396` | Aucun appel supplémentaire, mais les titres n'ont rien en commun avec ceux des addons indexés par IMDb. |
 
-`NUVIO_ID_PREFERENCE` n'a donc plus d'effet (le signaler au démarrage plutôt que
-l'ignorer), et `src/integrations/nuvioIds.js` est le seul endroit qui décide de la forme
-d'un identifiant. La lecture, elle, reste tolérante aux deux formes.
+Les deux bouts doivent s'accorder parce que **Nuvio enregistre la progression sous l'id
+de la fiche qu'il lit**. Servir une forme tout en poussant l'autre crée deux entrées pour
+le même titre — c'est l'origine exacte du doublon Breaking Bad (`tt0903747` *et*
+`tmdb:1396`, avec une progression différente dans chacun). Le `content_id` était en fait
+fabriqué à trois endroits avec deux politiques : `NUVIO_ID_PREFERENCE` ne pilotait que le
+push direct, ni le hub ni les ids servis. `src/integrations/contentIds.js` est désormais
+le seul module qui en décide, et `NUVIO_ID_PREFERENCE` est remplacé par `ID_FORMAT`.
 
-Les entrées déjà enregistrées en IMDb sont **fusionnées vers la clé `tmdb:`**, au début de
-chaque cycle du hub (`NUVIO_MERGE_LEGACY_IDS`, activé par défaut) ou à la demande :
+Un second effet, plus sournois : à la lecture, les deux formes retombaient sur la même clé
+canonique et c'est la dernière résolue qui gagnait — un ordre qui dépend de la latence de
+TMDB. Une position pouvait donc **reculer**, et le hub propageait ce recul jusqu'à Movix.
+Le lecteur garde maintenant la position la plus avancée.
+
+Les entrées qui ne sont pas dans la forme configurée sont **fusionnées vers celle-ci**, au
+début de chaque cycle du hub (`NUVIO_MERGE_LEGACY_IDS`) ou à la demande :
 
 ```bash
 npm run nuvio:merge:dry   # montre ce qui serait fusionné, n'écrit rien
 npm run nuvio:merge       # applique
 # ou, serveur démarré :
-curl http://localhost:8787/debug/nuvio/duplicates    # combien d'entrées encore en IMDb
+curl http://localhost:8787/debug/nuvio/duplicates    # combien d'entrées à aligner
 curl -X POST "http://localhost:8787/nuvio/merge?dryRun=1"
 ```
 
-Quand les deux formes portent le **même épisode**, la position la plus avancée gagne —
-même règle que pour les conflits du hub, la seule qui ne fasse jamais reculer une reprise.
+La cible suit le réglage : en mode `imdb` ce sont les entrées `tmdb:` qui basculent vers
+`tt`, et l'inverse en mode `tmdb`. **Changer `ID_FORMAT` puis relancer le merge fait donc
+basculer tout le compte.** Quand les deux formes portent le même épisode, la position la
+plus avancée gagne — même règle que pour les conflits du hub, la seule qui ne fasse jamais
+reculer une reprise.
 
 > La bibliothèque se nettoie toute seule (`sync_push_library` remplace la liste entière,
 > donc ne pas renvoyer une ligne suffit à la supprimer). Pour la progression et les
-> éléments vus, les endpoints `sync_push_*` sont **additifs** : retirer l'exemplaire IMDb
-> demande une suppression, que l'addon cherche dans ce que l'API publie elle-même
-> (`GET /debug/nuvio/api`).
+> éléments vus, les endpoints `sync_push_*` sont **additifs** : retirer l'exemplaire en
+> trop demande une suppression, que l'addon cherche dans ce que l'API publie elle-même.
 
-Deux choses ne sont jamais supposées, parce qu'elles diffèrent d'un compte à l'autre :
+Trois choses ne sont jamais supposées, parce qu'elles diffèrent d'un compte à l'autre :
 
 - **La signature de la fonction de suppression.** Une RPC Postgres se résout par son nom
   *et* sa liste d'arguments : appeler `sync_delete_watch_progress(p_id, p_profile_id)`
   quand elle est déclarée `(p_keys, p_profile_id)` renvoie un `404 PGRST202` — la
   *fonction* est introuvable, pas la ligne. Elle est donc lue dans la spec OpenAPI, et à
   défaut dans le champ `hint` que PostgREST renvoie avec l'erreur.
+- **Les paramètres qu'on ne comprend pas.** `sync_delete_watched_items` est déclarée
+  `(p_keys, p_origin_client_id, p_profile_id)`. Seuls le profil et les clés sont
+  renseignés ; tout le reste part à `null`. Remplir `p_origin_client_id` avec le tableau
+  de clés faisait **accepter l'appel sans rien supprimer** — un paramètre dont on ignore
+  le sens se laisse vide, il ne s'invente pas.
 - **La clé attendue.** `row.id` est un UUID technique alors que la clé logique ressemble à
-  `tt0903747_s1e5` — laquelle n'existe comme champ sur aucune ligne et doit être bâtie.
-  Chaque forme plausible est essayée, puis **vérifiée en relisant** : une RPC peut
-  accepter un appel sans rien supprimer, et un résumé annonçant 48 suppressions
-  imaginaires est pire qu'un résumé qui admet n'avoir rien fait. Une forme qui n'en
-  couvre qu'une partie (`video_id` est renseigné sur les épisodes, nul sur les films)
-  n'arrête pas la recherche : les lignes restantes repassent par la forme suivante, d'où
-  un `cle` qui peut en lister plusieurs.
+  `tt0903747_s1e5`, laquelle n'existe comme champ sur aucune ligne et doit être bâtie.
+  Chaque forme plausible est essayée puis **vérifiée en relisant** : une RPC peut accepter
+  un appel sans rien supprimer, et annoncer 48 suppressions imaginaires est pire que
+  d'admettre n'avoir rien fait. Une forme qui n'en couvre qu'une partie (`video_id` est
+  renseigné sur les épisodes, nul sur les films) n'arrête pas la recherche — les lignes
+  restantes repassent par la suivante, d'où un `cle` qui peut en lister plusieurs.
 
-Si aucune clé n'est acceptée, les positions restent correctement fusionnées et le résumé
-liste ce qui a été tenté. `GET /debug/nuvio/sample` donne alors les noms de champs réels
-d'une ligne et la signature des RPC de suppression.
+Si rien n'aboutit, les positions restent correctement fusionnées et le résumé liste ce qui
+a été tenté. `GET /debug/nuvio/sample` donne alors les noms de champs réels d'une ligne et
+la signature des RPC de suppression.
 
 ### Hub de synchronisation (les deux sens, en continu)
 
@@ -443,7 +457,17 @@ périodique.
 
 **Via Movix** — `PurStream` (liens directs), `Links` (liens communautaires Movix — les
 `.mp4` sont directement jouables), `Coflix`, `FrenchStream`, `FStream`, `Wiflix`,
-`Cpasmal`, `1jour1film`, `Voirdrama` (séries asiatiques).
+`Cpasmal`, `1jour1film`, `Voirdrama` (séries asiatiques), `KissKH` (dramas et films
+asiatiques, films **et** séries).
+
+`KissKH` se distingue sur deux points : l'URL renvoyée est **déjà proxifiée** par le site
+et pointe sur un master HLS — rien à extraire — et la réponse porte **ses propres
+sous-titres**, rattachés au flux plutôt que jetés. C'est souvent la seule piste française
+disponible sur ce catalogue, qu'OpenSubtitles couvre mal. Le libellé de langue suit ce
+qui est réellement livré : `VOSTFR` quand une piste française est présente, `VO` sinon
+(`KISSKH_LANG`) — annoncer du français sur un épisode qui n'en a pas fausserait le tri
+par `PREFERRED_LANGS`. Les pistes chiffrées (`cipher.mode` ≠ `none`) sont écartées,
+étant illisibles telles quelles.
 
 **Addons autonomes** — `Aether` (3 serveurs), `Obrigoz`. Voir [Addons](#addons-sources-autonomes).
 

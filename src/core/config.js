@@ -29,6 +29,16 @@ const config = {
   SPOOFED_ORIGIN: readEnv('SPOOFED_ORIGIN', 'https://movix.fun'),
   VIP_ACCESS_KEY: readEnv('VIP_ACCESS_KEY', ''),
 
+  // --- Forme des identifiants de contenu -----------------------------------
+  // Gouverne A LA FOIS les ids servis par l'addon (catalogues, metas, episodes) et les
+  // `content_id` ecrits dans Nuvio. Les deux DOIVENT s'accorder: Nuvio enregistre la
+  // progression sous l'id de la fiche qu'il lit, donc servir une forme et en pousser une
+  // autre cree deux entrees pour le meme titre.
+  //   imdb  tt0903747   aligne sur Cinemeta et les autres addons, au prix d'une
+  //                     resolution TMDB -> IMDb par titre (cache 24 h)
+  //   tmdb  tmdb:1396   aucun appel de plus, mais isole des addons indexes par IMDb
+  ID_FORMAT: readEnv('ID_FORMAT', 'imdb').trim().toLowerCase(),
+
   TMDB_API_KEY: readEnv('TMDB_API_KEY'),
   TMDB_LANGUAGE: readEnv('TMDB_LANGUAGE', 'fr-FR'),
   TMDB_REGION: readEnv('TMDB_REGION', 'FR'),
@@ -48,9 +58,8 @@ const config = {
   NUVIO_EMAIL: readEnv('NUVIO_EMAIL', ''),
   NUVIO_PASSWORD: readEnv('NUVIO_PASSWORD', ''),
   NUVIO_PROFILE_INDEX: Number(readEnv('NUVIO_PROFILE_INDEX', 0)) || null,
-  // Fusionner au demarrage d'un cycle les entrees Nuvio encore identifiees en IMDb vers
-  // la forme canonique `tmdb:` (cf. src/integrations/nuvioIds.js). Sans frais quand il
-  // n'y a rien a fusionner; `npm run nuvio:merge:dry` montre ce qui serait touche.
+  // Fusionner les entrees Nuvio qui ne sont pas dans la forme ID_FORMAT vers celle-ci.
+  // Sans frais quand il n'y a rien a fusionner; `npm run nuvio:merge:dry` le montre.
   NUVIO_MERGE_LEGACY_IDS: readBool('NUVIO_MERGE_LEGACY_IDS', true),
   // Push periodique automatique. 0 = desactive (push manuel via POST /nuvio/push).
   NUVIO_PUSH_INTERVAL_MS: Number(readEnv('NUVIO_PUSH_INTERVAL_MS', 0)),
@@ -199,6 +208,12 @@ const config = {
   AETHER_LANG: readEnv('AETHER_LANG', 'VO'),
   AETHER_GALLIC_LANG: readEnv('AETHER_GALLIC_LANG', 'VF'),
 
+  // --- KissKH (dramas et films asiatiques) ----------------------------------
+  // La piste audio est la version originale. Le libelle passe a VOSTFR quand la reponse
+  // porte effectivement une piste de sous-titres francaise, VO sinon.
+  KISSKH_LANG: readEnv('KISSKH_LANG', 'VO'),
+  KISSKH_LANG_VOSTFR: readEnv('KISSKH_LANG_VOSTFR', 'VOSTFR'),
+
   // --- Obrigoz (obrigoz.com) ------------------------------------------------
   OBRIGOZ_BASE_URL: readEnv('OBRIGOZ_BASE_URL', 'https://obrigoz.com'),
   // Segment de chemin volatil du site (https://obrigoz.com/<prefix>/home/obrigoz).
@@ -266,15 +281,18 @@ if (!STREAM_LIST_MODES.includes(config.STREAM_LIST)) {
   config.STREAM_LIST = 'compact';
 }
 
-// NUVIO_ID_PREFERENCE decidait de la forme du content_id ecrit dans Nuvio, mais seul le
-// push direct le lisait: le hub ecrivait toujours `tmdb:`. Les deux ecrivains ne
-// s'accordaient donc pas et la meme serie finissait en double dans Nuvio. La forme
-// canonique est desormais `tmdb:` partout -- le reglage n'a plus d'effet.
+const ID_FORMATS = ['imdb', 'tmdb'];
+if (!ID_FORMATS.includes(config.ID_FORMAT)) {
+  console.warn(`[config] ID_FORMAT="${config.ID_FORMAT}" inconnu (attendu: imdb ou tmdb) -- "imdb" applique`);
+  config.ID_FORMAT = 'imdb';
+}
+
+// NUVIO_ID_PREFERENCE ne pilotait que le push direct, pas le hub ni les ids servis:
+// trois endroits, deux formats, d'ou les doublons. ID_FORMAT gouverne les trois.
 if (process.env.NUVIO_ID_PREFERENCE !== undefined) {
   console.warn(
-    "[config] NUVIO_ID_PREFERENCE n'a plus d'effet -- les entrees Nuvio sont toutes ecrites en " +
-      '`tmdb:<id>` (deux formats produisaient des doublons). Les entrees IMDb deja enregistrees ' +
-      'sont fusionnees automatiquement; `npm run nuvio:merge:dry` montre lesquelles.',
+    `[config] NUVIO_ID_PREFERENCE est remplace par ID_FORMAT (=${config.ID_FORMAT}), qui vaut aussi ` +
+      "pour les ids servis par l'addon. Retire-le du .env; `npm run nuvio:merge:dry` montre ce qu'il reste a aligner.",
   );
 }
 

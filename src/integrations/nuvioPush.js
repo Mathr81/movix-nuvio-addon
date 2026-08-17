@@ -2,18 +2,17 @@ const config = require('../core/config');
 const cache = require('../core/cache');
 const movixSync = require('./movixSync');
 const nuvio = require('./nuvioCloud');
-const ids = require('./nuvioIds');
+const ids = require('./contentIds');
 const tmdbClient = require('./tmdb');
 
 const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500';
 const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280';
 
 /**
- * Le `content_id` vient de nuvioIds, partage avec le hub. Ce module fabriquait le sien
- * (un id IMDb quand NUVIO_ID_PREFERENCE=imdb) pendant que le hub ecrivait `tmdb:` --
- * d'ou les doublons dans Nuvio. Voir nuvioIds.js pour le detail.
+ * Le `content_id` vient de contentIds, partage avec le hub ET avec les ids que l'addon
+ * sert. Ce module fabriquait le sien, d'ou les doublons dans Nuvio.
  */
-const contentId = (tmdbId) => ids.contentIdFor(tmdbId);
+const contentId = (type, tmdbId) => ids.contentIdFor(type, tmdbId);
 
 function nuvioType(type) {
   return type === 'series' ? 'series' : 'movie';
@@ -66,7 +65,7 @@ async function libraryEntry(type, tmdbId, addedAt) {
   );
 
   return {
-    content_id: contentId(tmdbId),
+    content_id: await contentId(type, tmdbId),
     content_type: nuvioType(type),
     name: details.title || details.name,
     poster: details.poster_path ? `${TMDB_POSTER_BASE}${details.poster_path}` : null,
@@ -129,7 +128,7 @@ async function buildWatchedItems() {
     for (const item of items) {
       tasks.push(
         (async () => ({
-          content_id: contentId(item.id),
+          content_id: await contentId(type, item.id),
           content_type: nuvioType(type),
           title: item.title || item.name || (await titleFor(type, item.id)) || `TMDB ${item.id}`,
           watched_at: toEpochMs(item.watchedAt || item.addedAt),
@@ -145,7 +144,7 @@ async function buildWatchedItems() {
       (async () => {
         const showTitle = await titleFor('series', ep.showId);
         return {
-          content_id: contentId(ep.showId),
+          content_id: await contentId('series', ep.showId),
           content_type: 'series',
           title: `${showTitle || `TMDB ${ep.showId}`} S${pad2(ep.season)}E${pad2(ep.episode)}`,
           season: ep.season,
@@ -164,7 +163,7 @@ async function buildProgressEntries() {
 
   return settleAll(
     entries.map(async (e) => {
-      const base = contentId(e.id);
+      const base = await contentId(e.type, e.id);
       const duration = toMs(e.duration);
       // Rester strictement dans ]0, duree[: une position egale a la duree ferait
       // passer le titre pour termine et non pour "en cours".

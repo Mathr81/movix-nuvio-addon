@@ -11,11 +11,21 @@ const movixSync = require('./integrations/movixSync');
 const trakt = require('./integrations/traktCloud');
 const { personalRecommendations } = require('./catalog/recommend');
 const catalogs = require('./catalog/catalogs');
+const ids = require('./integrations/contentIds');
 
 const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500';
 const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280';
 
 const builder = new addonBuilder(manifest);
+
+/**
+ * Les ids servis suivent ID_FORMAT (cf. integrations/contentIds.js). En mode imdb, cela
+ * demande une resolution TMDB -> IMDb par titre: `toCatalogMetas` les mene de front pour
+ * une page entiere, et le cache 24 h fait que seul le premier affichage la paye.
+ */
+function toCatalogMetas(items, type) {
+  return Promise.all(items.map(async (item) => ({ ...toCatalogMeta(item, type), id: await ids.contentIdFor(type, item.id) })));
+}
 
 function toCatalogMeta(item, type) {
   return {
@@ -44,7 +54,7 @@ async function personalCatalog(kind, type, page) {
   // que le hub pousse les positions vers Nuvio Sync et Simkl, qui la gerent nativement,
   // cette annotation ne faisait plus que surcharger les libelles.
   const detailed = await tmdbClient.detailsMany(slice.map((e) => ({ id: e.id, type })));
-  return detailed.map((d) => toCatalogMeta(d, type));
+  return toCatalogMetas(detailed, type);
 }
 
 /**
@@ -62,13 +72,16 @@ async function traktRecommendations(type, page) {
   if (tmdbIds.length === 0) return [];
 
   const detailed = await tmdbClient.detailsMany(tmdbIds.map((tmdbId) => ({ id: tmdbId, type })));
-  return detailed.map((d) => toCatalogMeta(d, type));
+  return toCatalogMetas(detailed, type);
 }
 
 builder.defineCatalogHandler(async ({ type, id, extra }) => {
   const page = extra?.skip ? Math.floor(Number(extra.skip) / 20) + 1 : 1;
   const genre = extra?.genre;
-  const cacheKey = `catalog:${type}:${id}:${extra?.search || ''}:${genre || ''}:${page}`;
+  // ID_FORMAT fait partie de la cle: la rangee des recommandations Trakt est memoisee
+  // DEJA mise en forme, donc un changement de format doit invalider ce qui est en cache
+  // plutot que de continuer a servir des ids de l'ancienne forme.
+  const cacheKey = `catalog:${ids.format()}:${type}:${id}:${extra?.search || ''}:${genre || ''}:${page}`;
   const def = catalogs.find(id);
   const kind = def?.builtin;
 
@@ -85,7 +98,7 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
       const items = await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
         personalRecommendations(type),
       );
-      return { metas: items.map((item) => toCatalogMeta(item, type)) };
+      return { metas: await toCatalogMetas(items, type) };
     }
 
     // Les recommandations changent lentement (Trakt les recalcule au fil de l'historique)
@@ -120,7 +133,7 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
       return tmdbClient.popular(type, page);
     });
 
-    return { metas: items.map((item) => toCatalogMeta(item, type)) };
+    return { metas: await toCatalogMetas(items, type) };
   } catch (err) {
     // Une panne TMDB passagere ne doit pas faire echouer la rangee entiere cote Nuvio:
     // mieux vaut une ligne vide + un log explicite qu'une erreur opaque dans l'interface.
@@ -138,8 +151,9 @@ builder.defineMetaHandler(async ({ type, id }) => {
     tmdbClient.details(type, tmdbId),
   );
 
+  const contentId = await ids.contentIdFor(type, tmdbId);
   const meta = {
-    id: `tmdb:${tmdbId}`,
+    id: contentId,
     type,
     name: details.title || details.name,
     poster: details.poster_path ? `${TMDB_POSTER_BASE}${details.poster_path}` : undefined,
@@ -161,7 +175,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
       .filter(Boolean)
       .flatMap((s) =>
         (s.episodes || []).map((ep) => ({
-          id: `tmdb:${tmdbId}:${s.season_number}:${ep.episode_number}`,
+          id: ids.videoIdFor(contentId, s.season_number, ep.episode_number),
           title: ep.name,
           season: s.season_number,
           episode: ep.episode_number,

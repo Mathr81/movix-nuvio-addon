@@ -2,21 +2,21 @@ const config = require('../../core/config');
 const cache = require('../../core/cache');
 const tmdbClient = require('../../integrations/tmdb');
 const nuvio = require('../../integrations/nuvioCloud');
-const ids = require('../../integrations/nuvioIds');
+const ids = require('../../integrations/contentIds');
 const { toEpochMs, parseKey, describe } = require('../model');
 
 const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500';
 const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280';
 
-/** Forme canonique partagee avec le push direct -- voir integrations/nuvioIds.js. */
-const contentIdFor = (item) => ids.contentIdFor(item.id);
+/** Forme partagee avec le push direct et les ids servis -- voir integrations/contentIds.js. */
+const contentIdFor = (item) => ids.contentIdFor(item.type, item.id);
 
 async function libraryRow(item) {
   const details = await cache.wrap(`meta:${item.type}:${item.id}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
     tmdbClient.details(item.type, item.id),
   );
   return {
-    content_id: contentIdFor(item),
+    content_id: await contentIdFor(item),
     content_type: item.type === 'series' ? 'series' : 'movie',
     name: details.title || details.name,
     poster: details.poster_path ? `${TMDB_POSTER_BASE}${details.poster_path}` : null,
@@ -52,7 +52,7 @@ async function applyToNuvio(profileId, delta, removals = { library: [] }) {
     // ne pas renvoyer la ligne. Aucun endpoint de suppression n'est necessaire.
     for (const key of removals.library) {
       const { type, id } = parseKey(key);
-      merged.delete(contentIdFor({ type, id }));
+      merged.delete(await contentIdFor({ type, id }));
     }
     await nuvio.pushLibrary(profileId, [...merged.values()]);
     result.library = delta.library.length;
@@ -65,7 +65,7 @@ async function applyToNuvio(profileId, delta, removals = { library: [] }) {
         const meta = await describe(item.type, item.id);
         const suffix = item.season ? ` S${String(item.season).padStart(2, '0')}E${String(item.episode).padStart(2, '0')}` : '';
         return {
-          content_id: contentIdFor(item),
+          content_id: await contentIdFor(item),
           content_type: item.type === 'series' ? 'series' : 'movie',
           title: `${meta.title}${suffix}`,
           ...(item.season ? { season: item.season, episode: item.episode } : {}),
@@ -78,8 +78,8 @@ async function applyToNuvio(profileId, delta, removals = { library: [] }) {
   }
 
   if (delta.progress.length > 0) {
-    const entries = delta.progress.map((item) => {
-      const base = contentIdFor(item);
+    const entries = await Promise.all(delta.progress.map(async (item) => {
+      const base = await contentIdFor(item);
       const duration = Math.round(item.duration * 1000);
       const position = Math.min(Math.max(Math.round(item.position * 1000), 1), Math.max(1, duration - 1000));
       return {
@@ -91,7 +91,7 @@ async function applyToNuvio(profileId, delta, removals = { library: [] }) {
         last_watched: Date.now(),
         ...(item.season ? { season: item.season, episode: item.episode } : {}),
       };
-    });
+    }));
     await nuvio.pushWatchProgress(profileId, entries);
     result.progress = entries.length;
   }

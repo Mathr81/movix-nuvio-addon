@@ -1,5 +1,5 @@
 const nuvio = require('../../integrations/nuvioCloud');
-const ids = require('../../integrations/nuvioIds');
+const ids = require('../../integrations/contentIds');
 const { emptyModel, libKey, watchedKey, progressKey } = require('../model');
 
 function nuvioType(row) {
