@@ -152,6 +152,21 @@ function paramsFromHint(err, name) {
   return params.length > 0 ? params : null;
 }
 
+/**
+ * Lecture directe d'une table PostgREST.
+ *
+ * Les `sync_pull_*` ne renvoient que les colonnes que la fonction a choisi de projeter:
+ * `watch_progress` expose ainsi un `progress_key` que la lecture montre, mais rien ne dit
+ * si `watched_items` a son equivalent. Lire la table repond a la question au lieu de la
+ * deviner -- quand la RLS l'autorise.
+ */
+async function readRows(table, params = {}) {
+  const token = await accessToken();
+  const query = new URLSearchParams({ select: '*', limit: '1', ...params }).toString();
+  const { data } = await client.get(`/rest/v1/${table}?${query}`, { headers: authHeaders(token) });
+  return Array.isArray(data) ? data : [];
+}
+
 /** DELETE PostgREST filtre (`?id=eq.<valeur>`). Renvoie le nombre de lignes supprimees. */
 async function removeRows(table, filters) {
   const token = await accessToken();
@@ -243,6 +258,7 @@ module.exports = {
   listEndpoints,
   rpcParameters,
   paramsFromHint,
+  readRows,
   removeRows,
   pullProfiles,
   pullLibrary,

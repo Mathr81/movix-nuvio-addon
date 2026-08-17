@@ -96,18 +96,26 @@ const TABLE_HINTS = {
   watched: ['watched_items', 'user_watched_items', 'sync_watched_items'],
 };
 
-async function deleteStrategy(kind) {
+/**
+ * TOUTES les voies plausibles, pas seulement la premiere.
+ *
+ * Une RPC qui existe n'est pas une RPC qui supprime: `sync_delete_watched_items` accepte
+ * ses appels sans rien retirer tant qu'on ne lui donne pas la cle qu'elle attend, et rien
+ * n'indique laquelle. Le DELETE direct sur la table, lui, filtre sur des colonnes qu'on
+ * peut VOIR. On essaie donc les deux, et la relecture tranche.
+ */
+async function deleteStrategies(kind) {
   const { rpcs, tables } = await nuvio.listEndpoints();
+  const matches = new RegExp(kind === 'progress' ? 'progress' : 'watched', 'i');
+  const out = [];
 
-  const rpcName = rpcs.find(
-    (name) => /(delete|remove)/i.test(name) && new RegExp(kind === 'progress' ? 'progress' : 'watched', 'i').test(name),
-  );
-  if (rpcName) return { via: `rpc:${rpcName}`, rpcName };
-
-  const table = TABLE_HINTS[kind].find((candidate) => tables.includes(candidate));
-  if (table) return { via: `table:${table}`, table };
-
-  return null;
+  for (const name of rpcs) {
+    if (/(delete|remove)/i.test(name) && matches.test(name)) out.push({ via: `rpc:${name}`, rpcName: name });
+  }
+  for (const table of TABLE_HINTS[kind]) {
+    if (tables.includes(table)) out.push({ via: `table:${table}`, table });
+  }
+  return out;
 }
 
 /**
@@ -160,6 +168,11 @@ const wantsBatch = (params) => /s$/i.test(keyParamOf(params) || '');
 // PostgREST. Les formes batties (`tt0903747_s1e5`) ne le sont pas: elles n'ont de sens
 // que passees a la RPC, qui les interprete comme des cles logiques.
 const KEY_FORMS = [
+  // Colonnes de cle logique reellement observees: `watch_progress` porte un
+  // `progress_key` valant `tt33546863_s1e1`. Les autres tables ont peut-etre leur
+  // equivalent sans que la lecture ne le renvoie -- d'ou les formes batties plus bas.
+  { nom: 'progress_key', colonne: true, valueOf: (row) => row.progress_key },
+  { nom: 'watched_key', colonne: true, valueOf: (row) => row.watched_key },
   { nom: 'key', colonne: true, valueOf: (row) => row.key },
   { nom: 'entry_key', colonne: true, valueOf: (row) => row.entry_key },
   { nom: 'video_id', colonne: true, valueOf: (row) => row.video_id },
@@ -171,8 +184,18 @@ const KEY_FORMS = [
     nom: 'content_id:s:e',
     valueOf: (row) => (row.season ? `${row.content_id}:${row.season}:${row.episode}` : row.content_id),
   },
-  // Sans saison ni episode: retire toutes les entrees de ce titre sous son id IMDb.
-  // Sans danger ici, ces lignes n'ayant plus qu'un doublon canonique en `tmdb:`.
+  // `p_keys` peut aussi attendre des objets composites plutot que des chaines: une
+  // fonction qui supprime par (contenu, saison, episode) n'a pas besoin de cle plate.
+  {
+    nom: '{content_id,season,episode}',
+    objet: true,
+    valueOf: (row) =>
+      row.season
+        ? { content_id: row.content_id, season: Number(row.season), episode: Number(row.episode) }
+        : { content_id: row.content_id },
+  },
+  // Sans saison ni episode: retire toutes les entrees de ce titre sous l'id a fusionner.
+  // Sans danger ici, ces lignes ayant deja leur equivalent dans la forme configuree.
   { nom: 'content_id', colonne: true, valueOf: (row) => row.content_id },
   { nom: 'id', colonne: true, valueOf: (row) => row.id },
 ];
@@ -183,13 +206,24 @@ const KEY_FORMS = [
  */
 function keyForms(rows, viaTable) {
   return KEY_FORMS.filter(
-    (form) => (!viaTable || form.colonne) && rows.some((row) => form.valueOf(row) != null),
+    (form) => (!viaTable || (form.colonne && !form.objet)) && rows.some((row) => form.valueOf(row) != null),
   );
 }
 
 /** Cles produites par une forme, dedupliquees (plusieurs episodes -> un seul content_id). */
 function keysFor(rows, valueOf) {
-  return [...new Set(rows.map(valueOf).filter((k) => k !== undefined && k !== null))];
+  const vus = new Set();
+  const out = [];
+  for (const row of rows) {
+    const value = valueOf(row);
+    if (value === undefined || value === null) continue;
+    // Les formes composites rendent des objets: `Set` ne les dedupliquerait pas.
+    const empreinte = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    if (vus.has(empreinte)) continue;
+    vus.add(empreinte);
+    out.push(value);
+  }
+  return out;
 }
 
 /** Un seul essai de suppression, pour une forme de cle donnee. */
@@ -197,7 +231,11 @@ async function attemptDelete(strategy, profileId, keys, field) {
   if (keys.length === 0) return { tente: 0 };
 
   if (strategy.table) {
-    for (const key of keys) await nuvio.removeRows(strategy.table, { [field]: `eq.${key}` });
+    // `profile_id` en plus de la cle: la RLS borne deja au compte, mais un profil se
+    // trompe de voisin sans elle, et ces tables portent plusieurs profils.
+    for (const key of keys) {
+      await nuvio.removeRows(strategy.table, { [field]: `eq.${key}`, profile_id: `eq.${profileId}` });
+    }
     return { tente: keys.length };
   }
 
@@ -235,66 +273,71 @@ async function callRpc(rpcName, params, profileId, keys) {
 async function deleteRows(kind, profileId, rows, reload) {
   if (rows.length === 0) return { supprimees: 0 };
 
-  const strategy = await deleteStrategy(kind);
-  if (!strategy) {
+  const strategies = await deleteStrategies(kind);
+  if (strategies.length === 0) {
     return {
       supprimees: 0,
       restantes: rows.length,
       note:
-        "l'API ne publie ni RPC de suppression ni acces direct a la table: les entrees a fusionner " +
-        'ont ete fusionnees (position a jour sur la cle tmdb) mais restent visibles. ' +
-        'Supprime-les depuis Nuvio, ou relance apres avoir verifie /debug/nuvio/api.',
+        "l'API ne publie ni RPC de suppression ni acces direct a la table: les entrees sont " +
+        'fusionnees (la forme configuree est a jour) mais leurs doublons restent visibles. ' +
+        'Supprime-les depuis Nuvio, ou verifie /debug/nuvio/api.',
     };
   }
 
   const total = rows.length;
   const essais = [];
-  const cles = [];
+  const reussites = [];
   let signature;
   let restants = rows;
 
-  // Une forme peut n'en couvrir qu'une partie (`video_id` est nul sur les films): on
-  // enchaine sur les lignes ENCORE presentes, au lieu de s'arreter au premier succes.
-  const dejaTentees = new Set();
-
-  for (const { nom: field, valueOf } of keyForms(rows, !!strategy.table)) {
+  for (const strategy of strategies) {
     if (restants.length === 0) break;
+    // Une forme peut ne couvrir qu'une partie du lot (`video_id` est nul sur les films):
+    // on enchaine sur les lignes ENCORE presentes plutot que de s'arreter au premier
+    // succes partiel, puis on passe a la voie suivante s'il en reste.
+    const dejaTentees = new Set();
 
-    // Sur un film, `content_id_sXeY` et `content_id:s:e` retombent tous deux sur le
-    // content_id nu: sans ce garde-fou, la meme requete partirait trois fois.
-    const keys = keysFor(restants, valueOf);
-    const empreinte = JSON.stringify(keys);
-    if (keys.length === 0 || dejaTentees.has(empreinte)) continue;
-    dejaTentees.add(empreinte);
+    for (const { nom: field, valueOf } of keyForms(restants, !!strategy.table)) {
+      if (restants.length === 0) break;
 
-    let attempt;
-    try {
-      attempt = await attemptDelete(strategy, profileId, keys, field);
-    } catch (err) {
-      essais.push(`${field}: ${err.message.slice(0, 200)}`);
-      continue;
+      // Sur un film, `content_id_sXeY` et `content_id:s:e` retombent tous deux sur le
+      // content_id nu: sans ce garde-fou, la meme requete partirait plusieurs fois.
+      const keys = keysFor(restants, valueOf);
+      const empreinte = JSON.stringify(keys);
+      if (keys.length === 0 || dejaTentees.has(empreinte)) continue;
+      dejaTentees.add(empreinte);
+
+      let attempt;
+      try {
+        attempt = await attemptDelete(strategy, profileId, keys, field);
+      } catch (err) {
+        essais.push(`${strategy.via} / ${field}: ${err.message.slice(0, 160)}`);
+        continue;
+      }
+      if (!attempt.tente) continue;
+      if (attempt.params) signature = attempt.params;
+
+      const avant = restants.length;
+      restants = await reload();
+      const gagnees = avant - restants.length;
+      essais.push(`${strategy.via} / ${field}: ${gagnees}/${avant} supprimee(s)`);
+      if (gagnees > 0) reussites.push(`${strategy.via} / ${field}`);
     }
-    if (!attempt.tente) continue;
-    if (attempt.params) signature = attempt.params;
-
-    const avant = restants.length;
-    restants = await reload();
-    const gagnees = avant - restants.length;
-    essais.push(`${field}: ${gagnees}/${avant} supprimee(s)`);
-    if (gagnees > 0) cles.push(field);
   }
 
   const supprimees = total - restants.length;
-  const result = { supprimees, via: strategy.via };
-  if (cles.length > 0) result.cle = cles.join(' + ');
+  const result = { supprimees };
+  if (reussites.length > 0) result.par = reussites.join(' + ');
   if (signature) result.signature = signature;
   if (restants.length > 0) {
     result.restantes = restants.length;
     result.essais = essais;
+    result.voies = strategies.map((s) => s.via);
     result.note =
-      'la fusion a bien eu lieu (les entrees tmdb sont a jour), mais aucune forme de cle ' +
-      "n'a fait disparaitre ces lignes: leurs exemplaires IMDb restent visibles. " +
-      'Envoie la sortie de /debug/nuvio/sample pour identifier le champ attendu.';
+      'la fusion a bien eu lieu (la forme configuree est a jour), mais aucune voie n\'a fait ' +
+      'disparaitre ces lignes. Si aucune table n\'apparait dans `voies`, PostgREST n\'expose ' +
+      'que les RPC: leurs doublons doivent alors etre retires depuis Nuvio.';
   }
   return result;
 }

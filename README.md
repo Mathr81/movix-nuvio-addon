@@ -265,9 +265,18 @@ Trois choses ne sont jamais supposées, parce qu'elles diffèrent d'un compte à
   renseigné sur les épisodes, nul sur les films) n'arrête pas la recherche — les lignes
   restantes repassent par la suivante, d'où un `cle` qui peut en lister plusieurs.
 
+Et la suppression n'emprunte pas une seule voie : **toutes** les RPC candidates *puis* le
+DELETE direct sur la table sont essayés, chacun avec chaque forme de clé, jusqu'à ce que
+la relecture confirme la disparition. Une RPC qui existe n'est pas une RPC qui supprime —
+`sync_delete_watched_items` accepte ses appels sans rien retirer tant qu'on ne lui donne
+pas la clé qu'elle attend, alors qu'un DELETE filtre sur des colonnes qu'on peut *voir*.
+
 Si rien n'aboutit, les positions restent correctement fusionnées et le résumé liste ce qui
-a été tenté. `GET /debug/nuvio/sample` donne alors les noms de champs réels d'une ligne et
-la signature des RPC de suppression.
+a été tenté, plus les `voies` disponibles. `GET /debug/nuvio/sample` donne alors les noms
+de champs réels d'une ligne — telle que la lisent les `sync_pull_*` **et** telle qu'elle
+existe dans la table, ce qui n'est pas la même chose : `watch_progress` porte une colonne
+`progress_key` (`tt33546863_s1e1`) que la lecture expose, là où les éléments vus n'en
+montrent aucune.
 
 ### Hub de synchronisation (les deux sens, en continu)
 

@@ -127,10 +127,27 @@ app.get('/debug/nuvio/sample', async (_req, res) => {
       nuvioCloud.listEndpoints(),
     ]);
     const deleteRpcs = endpoints.rpcs.filter((n) => /(delete|remove)/i.test(n));
+
+    // Les tables telles que PostgREST les expose: une colonne de cle que `sync_pull_*`
+    // ne projette pas (l'equivalent de `progress_key` pour les elements vus) n'apparait
+    // que la. Un refus RLS est une reponse en soi, on la rapporte plutot que d'echouer.
+    const brut = {};
+    for (const table of ['watch_progress', 'watched_items', 'library_items']) {
+      if (!endpoints.tables.includes(table)) continue;
+      try {
+        const rows = await nuvioCloud.readRows(table, { profile_id: `eq.${profileId}` });
+        brut[table] = { champs: Object.keys(rows[0] || {}), exemple: rows[0] || null };
+      } catch (err) {
+        brut[table] = { erreur: err.message.slice(0, 200) };
+      }
+    }
+
     res.json({
       profileId,
       progress: { champs: Object.keys(progress[0] || {}), exemple: progress[0] || null },
       watched: { champs: Object.keys(watched[0] || {}), exemple: watched[0] || null },
+      tables: endpoints.tables,
+      tablesLues: brut,
       signatures: Object.fromEntries(
         await Promise.all(deleteRpcs.map(async (n) => [n, await nuvioCloud.rpcParameters(n)])),
       ),

@@ -377,6 +377,27 @@ function trace(req, target, outcome) {
 }
 
 /**
+ * Le lecteur est parti: il a cherche ailleurs dans le flux, change de piste, ou arrete.
+ *
+ * C'est le deroulement NORMAL d'une lecture, pas une panne -- et c'etait la principale
+ * source de bruit dans la console, avec un avertissement par seek alors que
+ * STREAM_PROXY_LOG etait a false. On coupe donc la connexion sortante sans rien dire,
+ * sauf quand le journal du proxy est justement demande.
+ */
+function isClientGone(err) {
+  const code = err?.code;
+  return (
+    code === 'ECONNRESET' ||
+    code === 'EPIPE' ||
+    code === 'ERR_STREAM_PREMATURE_CLOSE' ||
+    code === 'ECONNABORTED' ||
+    code === 'ERR_CANCELED' ||
+    err?.name === 'CanceledError' ||
+    /aborted|socket hang up/i.test(err?.message || '')
+  );
+}
+
+/**
  * Recupere une playlist et la reecrit, ou rend null si l'URL n'en designait pas une.
  *
  * Toujours un GET complet, sans relayer le Range du client: une playlist pese quelques
@@ -563,9 +584,7 @@ async function handle(req, res) {
       corrected = sniffMediaType(head);
       if (corrected) {
         res.set('Content-Type', corrected);
-        console.warn(
-          `[streamProxy] type MIME corrige "${upstreamType || '(absent)'}" -> ${corrected} sur ${target.slice(0, 80)}`,
-        );
+        trace(req, target, `type MIME corrige "${upstreamType || '(absent)'}" -> ${corrected}`);
       } else if (upstreamType) {
         console.warn(
           `[streamProxy] l'amont a repondu du ${upstreamType} la ou une video est attendue ` +
@@ -594,7 +613,8 @@ async function handle(req, res) {
     if (isHead) return res.end();
 
     upstream.data.on('error', (err) => {
-      console.warn(`[streamProxy] flux interrompu sur ${target.slice(0, 80)}: ${err.message}`);
+      if (!isClientGone(err)) console.warn(`[streamProxy] flux interrompu sur ${target.slice(0, 80)}: ${err.message}`);
+      else trace(req, target, `flux ferme par le lecteur (${err.code || err.message})`);
       res.destroy();
     });
     // Le lecteur ferme souvent la connexion en cours de route (seek, changement de piste):
@@ -607,6 +627,12 @@ async function handle(req, res) {
       ? upstream.data.pipe(skipFirstBytes(skip)).pipe(res)
       : upstream.data.pipe(res);
   } catch (err) {
+    // Un lecteur qui abandonne en cours de requete n'est pas un echec du proxy.
+    if (isClientGone(err)) {
+      trace(req, target, `abandonne par le lecteur (${err.code || err.message})`);
+      if (!res.headersSent) res.destroy();
+      return undefined;
+    }
     console.warn(`[streamProxy] echec sur ${String(target).slice(0, 100)}: ${err.message}`);
     if (!res.headersSent) res.status(502).type('text/plain').send(`proxy: ${err.message}`);
     return undefined;
