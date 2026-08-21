@@ -5,6 +5,7 @@ const config = require('../core/config');
 const log = require('../core/log');
 const kit = require('./kit');
 const tmdb = require('../integrations/tmdb');
+const streamProxy = require('../streaming/streamProxy');
 
 /**
  * Cinejoy (cinejoy.to) -- source dont le client de scellement est un module WebAssembly
@@ -19,15 +20,15 @@ const tmdb = require('../integrations/tmdb');
  *                                  aad = "lumen-gate-v2\0" | 02 01 | ephPub)  (81 o)
  *
  * Contrairement au CLI de RE (playground), le POST part en `fetch` natif : depuis un
- * serveur, l'empreinte TLS passe le filtrage de l'endpoint sans curl-impersonate. Aucune
- * dependance ni binaire externe.
+ * serveur, l'empreinte TLS passe le filtrage de l'endpoint sans curl-impersonate.
  *
- * La reponse porte l'URL d'un master HLS (pistes video + audio en renditions separees) :
- * on la rend telle quelle au lecteur, qui gere l'adaptatif ET le son. `probe` lit les
- * variantes/BANDWIDTH du master pour l'affichage.
+ * La reponse porte l'URL d'un master HLS. Ses variantes video sont MUETTES (l'audio est une
+ * rendition separee, `EXT-X-MEDIA:TYPE=AUDIO`). Pour offrir un vrai selecteur de qualite
+ * cote Nuvio, on rend UNE entree par palier : chacune est un mini-master reconstruit
+ * (la variante choisie + les pistes audio), servi par le proxy en playlist synthetique. Le
+ * lecteur garde ainsi le son a la qualite exacte demandee.
  *
- * Films ET series : seul le payload change (`/Lisbon/movie` vs `/Lisbon/series`, ce dernier
- * portant saison + episode).
+ * Films ET series : seul le payload change (`/Lisbon/movie` vs `/Lisbon/series`).
  */
 
 // --- Scellement (crush.wasm) ----------------------------------------------
@@ -93,6 +94,49 @@ async function resolveSealed(requestObj) {
   return JSON.parse(plain);
 }
 
+// --- Master HLS -> mini-masters par qualite -------------------------------
+/** Reecrit `URI="..."` en absolu par rapport a la base. */
+function absMediaUri(line, base) {
+  return line.replace(/URI="([^"]+)"/, (_, u) => `URI="${new URL(u, base).href}"`);
+}
+
+function parseMaster(text, base) {
+  const lines = text.split(/\r?\n/);
+  const header = lines.filter((l) => /^#EXTM3U|^#EXT-X-VERSION|^#EXT-X-INDEPENDENT-SEGMENTS/.test(l));
+  const audio = lines.filter((l) => /^#EXT-X-MEDIA:/.test(l) && /TYPE=AUDIO/.test(l)).map((l) => absMediaUri(l, base));
+  const variants = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^#EXT-X-STREAM-INF:/.test(lines[i])) continue;
+    const inf = lines[i];
+    const uri = (lines[i + 1] || '').trim();
+    if (!uri || uri.startsWith('#')) continue;
+    const res = inf.match(/RESOLUTION=(\d+)x(\d+)/) || [];
+    variants.push({
+      inf,
+      uri: new URL(uri, base).href,
+      width: Number(res[1]) || 0,
+      height: Number(res[2]) || 0,
+      bw: Number((inf.match(/BANDWIDTH=(\d+)/) || [])[1] || 0),
+    });
+  }
+  variants.sort((a, b) => b.height - a.height || b.bw - a.bw);
+  return {
+    header: header.length ? header : ['#EXTM3U', '#EXT-X-VERSION:7', '#EXT-X-INDEPENDENT-SEGMENTS'],
+    audio,
+    variants,
+  };
+}
+
+function qualityLabel(v) {
+  const name = v.height >= 2160 ? '4K' : v.height ? `${v.height}p` : '?';
+  return `${name}${/VIDEO-RANGE=PQ|HDR/i.test(v.inf) ? ' HDR' : ''}`;
+}
+
+/** Mini-master : entete + toutes les pistes audio + la seule variante video choisie. */
+function miniMaster(master, variant) {
+  return [...master.header, ...master.audio, variant.inf, variant.uri, ''].join('\n');
+}
+
 // --- Addon -----------------------------------------------------------------
 function buildRequest({ type, tmdbId, season, episode, imdb, year, title }) {
   const base = { tmdb: String(tmdbId), imdb: imdb || '', year: year || '', title: title || '' };
@@ -109,9 +153,20 @@ function buildRequest({ type, tmdbId, season, episode, imdb, year, title }) {
 
 function playlistsOf(resp) {
   const list = (resp?.data?.stream || []).filter((s) => s && s.playlist);
-  if (list.length) return list.map((s) => ({ url: s.playlist, id: s.id || s.type }));
-  if (resp?.playlist) return [{ url: resp.playlist, id: 'primary' }];
+  if (list.length) return list.map((s) => s.playlist);
+  if (resp?.playlist) return [resp.playlist];
   return [];
+}
+
+const proxyReady = () => config.STREAM_PROXY_ENABLED && !!config.PUBLIC_URL;
+
+async function fetchMaster(url) {
+  const res = await fetch(url, {
+    headers: { accept: '*/*', referer: `${config.CINEJOY_ORIGIN}/`, origin: config.CINEJOY_ORIGIN },
+    signal: AbortSignal.timeout(config.CINEJOY_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`master HTTP ${res.status}`);
+  return res.text();
 }
 
 async function getStreams({ tmdbId, type, season, episode }) {
@@ -128,24 +183,22 @@ async function getStreams({ tmdbId, type, season, episode }) {
     tmdb.getImdbId(type, tmdbId).catch(() => null),
   ]);
 
-  const request = buildRequest({ type, tmdbId, season, episode, imdb, year: meta.year, title: meta.title });
-
   let resp;
   try {
-    resp = await resolveSealed(request);
+    resp = await resolveSealed(buildRequest({ type, tmdbId, season, episode, imdb, year: meta.year, title: meta.title }));
   } catch (err) {
     log.fail('Cinejoy', label, err);
     return [];
   }
 
-  const playlists = playlistsOf(resp);
-  if (playlists.length === 0) {
+  const masters = playlistsOf(resp);
+  if (masters.length === 0) {
     log.ok('Cinejoy', label, `aucune playlist (status applicatif ${resp?.status ?? '?'})`);
     return [];
   }
 
-  // Les segments du CDN sortent en clair, mais on rejoue quand meme l'Origin/Referer du
-  // site via le proxy : certains CDN filtrent le hotlinking, et ca ne coute rien sinon.
+  // Les segments sortent en clair, mais on rejoue quand meme l'Origin/Referer du site : ca
+  // ne coute rien et couvre un eventuel filtrage anti-hotlinking du CDN.
   const headers = {
     accept: '*/*',
     'accept-language': kit.ACCEPT_LANGUAGE,
@@ -154,15 +207,42 @@ async function getStreams({ tmdbId, type, season, episode }) {
     'user-agent': kit.BROWSER_UA,
   };
 
-  const results = playlists.map((p) => ({
-    url: kit.proxied(p.url, { headers }),
-    direct: true,
-    sourceName: 'Cinejoy',
-    variant: playlists.length > 1 ? p.id : undefined,
-    lang: config.CINEJOY_LANG || undefined,
-  }));
+  // Sans proxy, on ne peut pas servir de mini-master : on rend le master brut (une entree,
+  // le lecteur gere l'adaptatif et le son). Un log l'explique car le selecteur de qualite
+  // par palier suppose le proxy actif.
+  if (!proxyReady()) {
+    log.ok('Cinejoy', label, 'proxy inactif -- master brut (pas de selecteur par palier)');
+    return masters.map((url) => ({ url, direct: true, sourceName: 'Cinejoy', lang: config.CINEJOY_LANG || undefined }));
+  }
 
-  log.ok('Cinejoy', label, `${results.length} master(s) HLS pour "${meta.title || '?'}"`);
+  const results = [];
+  for (const master of masters) {
+    let parsed;
+    try {
+      parsed = parseMaster(await fetchMaster(master), master);
+    } catch (err) {
+      // Master illisible : on retombe sur l'URL brute plutot que de perdre la source.
+      log.ok('Cinejoy', label, `master illisible (${err.message}) -- rendu brut`);
+      results.push({ url: master, direct: true, sourceName: 'Cinejoy', lang: config.CINEJOY_LANG || undefined });
+      continue;
+    }
+    for (const variant of parsed.variants) {
+      const quality = qualityLabel(variant);
+      results.push({
+        // Playlist synthetique : la variante choisie + l'audio, servie par le proxy.
+        url: streamProxy.proxyInlinePlaylist(miniMaster(parsed, variant), master, { headers }),
+        direct: true,
+        sourceName: 'Cinejoy',
+        // Chaque palier est une entree distincte a conserver : `variant` empeche l'elagage
+        // des redondants de n'en garder qu'une (il ne compare que des variantes egales).
+        variant: quality,
+        quality,
+        lang: config.CINEJOY_LANG || undefined,
+      });
+    }
+  }
+
+  log.ok('Cinejoy', label, `${results.length} palier(s) pour "${meta.title || '?'}"`);
   return results;
 }
 

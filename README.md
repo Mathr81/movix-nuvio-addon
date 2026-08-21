@@ -624,7 +624,11 @@ déclare les en-têtes que ses CDN exigent. C'est la voie d'ajout d'un site reve
 > fait ECDH P-256 → HKDF-SHA256 → AES-256-GCM, entièrement dans le wasm ; l'addon se
 > contente de le piloter (`seal_request`), POST le corps scellé en **`fetch` natif**
 > (pas de curl-impersonate côté serveur) et déchiffre la réponse. Elle porte un master
-> HLS (audio en rendition séparée) rendu tel quel au lecteur.
+> HLS dont les variantes vidéo sont muettes (audio en rendition séparée). Pour offrir un
+> vrai sélecteur de qualité, l'addon rend **une entrée par palier** : chacune est un
+> mini-master reconstruit (la variante + les pistes audio), servi par le proxy en
+> *playlist synthétique* (`proxyInlinePlaylist`) — le son est ainsi conservé à la qualité
+> exacte choisie. Sans proxy actif, l'addon retombe sur le master brut (une seule entrée).
 
 ```bash
 curl http://localhost:8787/debug/addons   # lesquels sont chargés, lesquels sont écartés et pourquoi

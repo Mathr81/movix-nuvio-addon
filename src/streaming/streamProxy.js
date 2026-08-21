@@ -100,6 +100,18 @@ function proxyUrl(targetUrl, spec) {
 }
 
 /**
+ * Variante "playlist synthetique": le corps m3u8 est fourni par l'addon (ex: un mini-master
+ * filtre sur une seule variante video + ses pistes audio), au lieu d'etre recupere en
+ * amont. Le proxy le reecrit comme n'importe quelle playlist -- chaque URI enfant (variante,
+ * audio, segments) repasse donc par lui. `baseUrl` sert a resoudre d'eventuelles URI
+ * relatives (nos mini-masters portent des URI absolues, mais on garde la base par surete).
+ */
+function proxyInlinePlaylist(body, baseUrl, spec) {
+  const payload = b64urlEncode(JSON.stringify({ ...normalizeSpec(spec), pl: body, base: baseUrl || '' }));
+  return `${publicBase()}${ROUTE}?p=${payload}&s=${sign(payload)}`;
+}
+
+/**
  * URL "a reference": la cible ET sa recette restent en memoire, seul un identifiant court
  * circule.
  *
@@ -481,6 +493,11 @@ function readRequest(req) {
 
   try {
     const payload = JSON.parse(b64urlDecode(p));
+    // Playlist synthetique (mini-master fourni par l'addon): pas d'URL amont a joindre.
+    if (typeof payload.pl === 'string') {
+      const { pl, base, ...spec } = payload;
+      return { inline: pl, base: base || '', spec };
+    }
     const { u: target, ...spec } = payload;
     return { target, spec };
   } catch {
@@ -493,8 +510,24 @@ async function handle(req, res) {
     return res.status(503).type('text/plain').send('proxy de flux desactive (STREAM_PROXY_ENABLED=false)');
   }
 
-  const { target, spec, error, message } = readRequest(req);
+  const { target, spec, inline, base, error, message } = readRequest(req);
   if (error) return res.status(error).type('text/plain').send(message);
+
+  // Playlist synthetique fournie par l'addon: on la reecrit (enfants proxifies) et on la
+  // sert telle quelle, sans requete amont.
+  if (inline !== undefined) {
+    const rewritten = rewritePlaylist(inline, base || publicBase(), spec);
+    const body = Buffer.from(rewritten, 'utf8');
+    trace(req, '(inline)', `mini-master reecrit (${body.length} o)`);
+    res
+      .status(200)
+      .set('Content-Type', 'application/vnd.apple.mpegurl')
+      .set('Content-Length', String(body.length))
+      .set('Accept-Ranges', 'none')
+      .set('Cache-Control', 'no-store');
+    return req.method === 'HEAD' ? res.end() : res.end(body);
+  }
+
   if (!/^https?:\/\//i.test(String(target))) {
     return res.status(400).type('text/plain').send('URL cible invalide');
   }
@@ -644,4 +677,4 @@ function mount(app) {
   app.head(ROUTE, handle);
 }
 
-module.exports = { ROUTE, mount, proxyUrl, isProxied, targetOf, headersOf, localize, publicBase };
+module.exports = { ROUTE, mount, proxyUrl, proxyInlinePlaylist, isProxied, targetOf, headersOf, localize, publicBase };
