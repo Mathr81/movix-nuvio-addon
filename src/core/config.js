@@ -221,6 +221,14 @@ const config = {
   OBRIGOZ_PATH_PREFIX: readEnv('OBRIGOZ_PATH_PREFIX', '2662df1'),
   OBRIGOZ_LANG: readEnv('OBRIGOZ_LANG', 'VF'),
 
+  // --- Cinejoy (cinejoy.to -- canal scelle lumen-gate-v2 pilote via crush.wasm) ---
+  // Aucune cle : la crypto est dans le wasm (src/addons/vendor/crush.wasm). Depuis un
+  // serveur, le POST passe en fetch natif, sans curl-impersonate.
+  CINEJOY_ENDPOINT: readEnv('CINEJOY_ENDPOINT', 'https://api.shegu.st/g'),
+  CINEJOY_ORIGIN: readEnv('CINEJOY_ORIGIN', 'https://cinejoy.to'),
+  CINEJOY_TIMEOUT_MS: Number(readEnv('CINEJOY_TIMEOUT_MS', '10000')),
+  CINEJOY_LANG: readEnv('CINEJOY_LANG', 'VO'),
+
   // Langues de sous-titres proposees (codes ISO 639-2/B, ex: fre,eng).
   SUBTITLE_LANGS: readList('SUBTITLE_LANGS', ['fre', 'eng']),
   SUBTITLES_ENABLED: readBool('SUBTITLES_ENABLED', true),

@@ -527,7 +527,7 @@ qui est réellement livré : `VOSTFR` quand une piste française est présente, 
 par `PREFERRED_LANGS`. Les pistes chiffrées (`cipher.mode` ≠ `none`) sont écartées,
 étant illisibles telles quelles.
 
-**Addons autonomes** — `Aether` (3 serveurs), `Obrigoz`. Voir [Addons](#addons-sources-autonomes).
+**Addons autonomes** — `Aether` (3 serveurs), `Obrigoz`, `Cinejoy`. Voir [Addons](#addons-sources-autonomes).
 
 Les embeds sont résolus en URLs directes pour **12 hosters** — soit tous
 ceux que le site sait extraire côté serveur : voe, uqload, vidzy, fsvid, vidmoly, sibnet,
@@ -617,6 +617,14 @@ déclare les en-têtes que ses CDN exigent. C'est la voie d'ajout d'un site reve
 |---|---|---|---|
 | `aether` | Films **et séries** | `aurora`, `lul`, `link` (VO), `gallic` (**VF**) | par id TMDB |
 | `obrigoz` | Films | — | par **titre** TMDB + année |
+| `cinejoy` | Films **et séries** | — | par id TMDB (+ imdb/année/titre) |
+
+> **Cinejoy** est un cas à part : son client de scellement est un module WebAssembly
+> (`src/addons/vendor/crush.wasm`, obtenu par rétro-ingénierie). Le canal *lumen-gate-v2*
+> fait ECDH P-256 → HKDF-SHA256 → AES-256-GCM, entièrement dans le wasm ; l'addon se
+> contente de le piloter (`seal_request`), POST le corps scellé en **`fetch` natif**
+> (pas de curl-impersonate côté serveur) et déchiffre la réponse. Elle porte un master
+> HLS (audio en rendition séparée) rendu tel quel au lecteur.
 
 ```bash
 curl http://localhost:8787/debug/addons   # lesquels sont chargés, lesquels sont écartés et pourquoi
