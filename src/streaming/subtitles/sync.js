@@ -4,7 +4,7 @@ const cache = require('../../core/cache');
 const align = require('./align');
 const speech = require('./speech');
 const audio = require('./audio');
-const { parseCues, retime } = require('./cues');
+const { parseCues, retime, sharedTimebase } = require('./cues');
 
 /**
  * Calage automatique d'une piste sur LE flux qu'on est en train de lire.
@@ -179,18 +179,16 @@ async function speechOf({ streamUrl, streamKey, refererUrl, durationHint }) {
   });
 }
 
-/**
- * Calage d'une piste sur un flux: `t_flux = scale · t_soustitre + offset`.
- *
- * @returns {Promise<{scale,offset,confidence,...}|{refused:true}>}
- */
-async function planFor({ streamUrl, streamKey, subtitleKey, vtt, refererUrl, durationHint }) {
-  if (!(await enabled())) return null;
+/** Cle de cache d'un calage. */
+function planKey(streamKey, subtitleKey) {
+  return `subsync:plan:${shortHash(streamKey)}:${shortHash(subtitleKey)}`;
+}
 
+/** Repliques exploitables d'une piste, ou null si elle est trop courte pour porter un calage. */
+function usableCues(vtt) {
   const cues = parseCues(vtt).map((c) => [c.start, c.end]);
   // Une piste de quelques repliques (chansons, pancartes -- ou fichier tronque, ce qui
-  // arrive chez les fournisseurs) ne porte pas de quoi correler quoi que ce soit. Le dire:
-  // sans ce message, une piste non calee ne se distingue pas d'un calage rate.
+  // arrive chez les fournisseurs) ne porte pas de quoi correler quoi que ce soit.
   if (cues.length < config.SUBTITLE_AUTOSYNC_MIN_CUES) {
     console.log(
       `[subsync] piste trop courte pour etre calee (${cues.length} repliques, minimum ` +
@@ -198,57 +196,165 @@ async function planFor({ streamUrl, streamKey, subtitleKey, vtt, refererUrl, dur
     );
     return null;
   }
+  return cues;
+}
 
-  const key = `subsync:plan:${shortHash(streamKey)}:${shortHash(subtitleKey)}`;
+/**
+ * Ce qui manque a un resultat pour etre applique, ou null s'il ne manque rien.
+ *
+ * Trois verrous, et il faut les passer tous les trois. La confiance resume la qualite des
+ * sommets; le nombre de fenetres dit combien d'endroits differents du film sont d'accord;
+ * l'etendue dit s'ils couvrent le film ou seulement son debut. Un faux calage peut avoir
+ * l'un de ces trois, jamais les trois.
+ */
+function missing(solved, minConfidence = config.SUBTITLE_AUTOSYNC_MIN_CONFIDENCE) {
+  if (!solved) return 'aucun accord entre les fenetres';
+  if (solved.windows < config.SUBTITLE_AUTOSYNC_MIN_WINDOWS) {
+    return `seules ${solved.windows}/${solved.windowsTotal} fenetres s'accordent (minimum ${config.SUBTITLE_AUTOSYNC_MIN_WINDOWS})`;
+  }
+  if (solved.reach < config.SUBTITLE_AUTOSYNC_MIN_REACH) {
+    return `accord limite a ${Math.round(solved.reach * 100)} % du film (minimum ${Math.round(config.SUBTITLE_AUTOSYNC_MIN_REACH * 100)} %) -- montage different?`;
+  }
+  if (solved.confidence < minConfidence) return `confiance ${solved.confidence.toFixed(2)} < ${minConfidence}`;
+  return null;
+}
+
+/** Instant du flux ou un plan envoie la replique de temps `t`. */
+function at(plan, t) {
+  return plan.scale * t + plan.offset;
+}
+
+/**
+ * Deux calages decrivent-ils la MEME correspondance, d'un bout a l'autre du film?
+ *
+ * Comparer les seuls decalages ne suffirait pas: deux plans peuvent partir du meme point et
+ * diverger de cinq minutes a la fin si leurs cadences different. Ce sont les deux bouts qui
+ * doivent coincider.
+ */
+function agree(a, b, duration) {
+  const tolerance = config.SUBTITLE_AUTOSYNC_PAIR_TOLERANCE;
+  return Math.abs(at(a, 0) - at(b, 0)) < tolerance && Math.abs(at(a, duration) - at(b, duration)) < tolerance;
+}
+
+function toPlan(solved) {
+  return {
+    scale: solved.scale,
+    offset: solved.offset,
+    confidence: Number(solved.confidence.toFixed(3)),
+    rms: Number(solved.rms.toFixed(3)),
+    windows: solved.windows,
+    windowsTotal: solved.windowsTotal,
+    reach: solved.reach,
+    measures: solved.measures,
+  };
+}
+
+/**
+ * Calage d'une piste sur un flux: `t_flux = scale · t_soustitre + offset`.
+ * @returns {Promise<object|null>} null si aucun calage n'est assez sur pour etre applique
+ */
+async function planFor({ streamUrl, streamKey, subtitleKey, vtt, refererUrl, durationHint }) {
+  if (!(await enabled())) return null;
+  const cues = usableCues(vtt);
+  if (!cues) return null;
+
   // Un refus est memorise moins longtemps qu'un succes (CACHE_EMPTY_TTL_MS, via `wrap`):
   // il vient souvent d'un CDN qui n'a pas repondu, pas d'une piste inadaptee pour toujours.
-  return cache.wrap(key, config.SUBTITLE_AUTOSYNC_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
-    const signal = await speechOf({
-      streamUrl,
-      streamKey,
-      refererUrl,
-      // La piste couvre a peu de chose pres la duree du film: c'est un repli honnete quand
-      // ni la playlist ni TMDB ne donnent la duree.
-      durationHint: durationHint || cues[cues.length - 1][1],
-    });
+  return cache.wrap(planKey(streamKey, subtitleKey), config.SUBTITLE_AUTOSYNC_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
+    const signal = await speechOf({ streamUrl, streamKey, refererUrl, durationHint: durationHint || cues[cues.length - 1][1] });
     if (!signal) return null;
 
-    const solved = align.solve(signal.speech, cues, signal.windows, {
-      maxShift: config.SUBTITLE_AUTOSYNC_MAX_SHIFT,
-    });
-
-    // Deux verrous, pas un: la confiance resume la qualite des sommets, le nombre de
-    // fenetres dit combien d'endroits differents du film sont d'accord. Un faux calage
-    // peut avoir l'un ou l'autre, jamais les deux.
-    const refus =
-      !solved
-        ? 'aucun accord entre les fenetres'
-        : solved.windows < config.SUBTITLE_AUTOSYNC_MIN_WINDOWS
-          ? `seules ${solved.windows}/${solved.windowsTotal} fenetres s'accordent (minimum ${config.SUBTITLE_AUTOSYNC_MIN_WINDOWS})`
-          : solved.reach < config.SUBTITLE_AUTOSYNC_MIN_REACH
-            ? `accord limite a ${Math.round(solved.reach * 100)} % du film (minimum ${Math.round(config.SUBTITLE_AUTOSYNC_MIN_REACH * 100)} %) -- montage different?`
-            : solved.confidence < config.SUBTITLE_AUTOSYNC_MIN_CONFIDENCE
-              ? `confiance ${solved.confidence.toFixed(2)} < ${config.SUBTITLE_AUTOSYNC_MIN_CONFIDENCE}`
-              : null;
-
+    const solved = align.solve(signal.speech, cues, signal.windows, { maxShift: config.SUBTITLE_AUTOSYNC_MAX_SHIFT });
+    const refus = missing(solved);
     if (refus) {
       console.log(`[subsync] calage refuse (${refus}) -- piste servie telle quelle`);
       return null;
     }
-
-    const plan = {
-      scale: solved.scale,
-      offset: solved.offset,
-      confidence: Number(solved.confidence.toFixed(3)),
-      rms: Number(solved.rms.toFixed(3)),
-      windows: solved.windows,
-      windowsTotal: solved.windowsTotal,
-      reach: solved.reach,
-      measures: solved.measures,
-    };
+    const plan = toPlan(solved);
     console.log(`[subsync] ${describe(plan)}`);
     return plan;
   });
+}
+
+/**
+ * Cale PLUSIEURS pistes du meme titre sur le meme flux, d'un seul releve audio.
+ *
+ * Deux raisons de les traiter ensemble plutot qu'une par une:
+ *  - le releve de parole, qui est tout le cout, est partage: la deuxieme piste ne coute
+ *    qu'une correlation;
+ *  - surtout, elles se CORROBORENT. Le francais et l'anglais d'un meme titre sont deux
+ *    fichiers differents, traduits par des gens differents, avec des decoupages differents.
+ *    Qu'ils tombent separement sur la meme correspondance a une demi-seconde pres, d'un bout
+ *    a l'autre du film, ne s'explique pas par la coincidence -- et cela permet d'accepter
+ *    des calages justes que la confiance seule, mesuree piste par piste, ferait rejeter.
+ *    Sur le banc d'essai, cet accord ne s'est jamais produit entre pistes d'un autre titre.
+ *
+ * @param {Array<{key:string, vtt:string}>} tracks
+ * @returns {Promise<Map<string, object|null>>} un calage (ou null) par cle de piste
+ */
+async function plansFor({ streamUrl, streamKey, refererUrl, durationHint, tracks }) {
+  const out = new Map();
+  if (!(await enabled()) || tracks.length === 0) return out;
+
+  const candidates = [];
+  for (const track of tracks) {
+    if (cache.get(planKey(streamKey, track.key)) !== undefined) {
+      out.set(track.key, cache.get(planKey(streamKey, track.key)));
+      continue;
+    }
+    const cues = usableCues(track.vtt);
+    if (cues) candidates.push({ ...track, cues });
+  }
+  if (candidates.length === 0) return out;
+
+  const signal = await speechOf({
+    streamUrl,
+    streamKey,
+    refererUrl,
+    durationHint: durationHint || Math.max(...candidates.map((c) => c.cues[c.cues.length - 1][1])),
+  });
+  if (!signal) return out;
+
+  const solved = candidates.map((c) => ({
+    ...c,
+    result: align.solve(signal.speech, c.cues, signal.windows, { maxShift: config.SUBTITLE_AUTOSYNC_MAX_SHIFT }),
+  }));
+
+  for (const entry of solved) {
+    const refus = missing(entry.result);
+    let plan = refus ? null : toPlan(entry.result);
+
+    // Repechage par corroboration: le verrou de confiance seul est abaisse, jamais ceux qui
+    // portent sur le nombre de fenetres et l'etendue couverte.
+    if (!plan && !missing(entry.result, config.SUBTITLE_AUTOSYNC_MIN_CONFIDENCE_PAIR)) {
+      const temoin = solved.find(
+        (other) =>
+          other !== entry &&
+          !missing(other.result, config.SUBTITLE_AUTOSYNC_MIN_CONFIDENCE_PAIR) &&
+          agree(entry.result, other.result, signal.duration) &&
+          // ...et que ce soit vraiment un DEUXIEME avis. Deux traductions du meme fichier de
+          // temps rendent la meme mesure au centieme pres: les faire se confirmer l'une
+          // l'autre revient a compter deux fois la meme chose. Verifie et mesure: c'est ce
+          // qui separait un calage douteux a -91 s d'un calage juste.
+          sharedTimebase(entry.cues, other.cues) <= config.SUBTITLE_AUTOSYNC_PAIR_MAX_SHARED,
+      );
+      if (temoin) {
+        plan = toPlan(entry.result);
+        console.log(`[subsync] calage confirme par une piste independante du meme titre (${describe(plan)})`);
+      }
+    }
+
+    if (plan && !refus) console.log(`[subsync] ${describe(plan)}`);
+    else if (!plan) console.log(`[subsync] calage refuse (${refus}) -- piste servie telle quelle`);
+
+    cache.set(
+      planKey(streamKey, entry.key),
+      plan,
+      plan ? config.SUBTITLE_AUTOSYNC_TTL_MS : config.CACHE_EMPTY_TTL_MS,
+    );
+    out.set(entry.key, plan);
+  }
+  return out;
 }
 
 /** Ce qu'un calage change, en francais. Sert aux logs et au diagnostic. */
@@ -273,4 +379,4 @@ function isMeaningful(plan) {
   return Math.abs(plan.offset) > 0.15 || plan.scale !== 1;
 }
 
-module.exports = { enabled, planFor, apply, describe, isMeaningful, placeWindows, snapToSegments, speechOf };
+module.exports = { enabled, planFor, plansFor, apply, describe, isMeaningful, placeWindows, snapToSegments, speechOf };

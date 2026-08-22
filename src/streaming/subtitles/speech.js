@@ -107,20 +107,33 @@ function percentile(sorted, p) {
 }
 
 /**
- * A combien de decibels sous les passages les plus forts de la fenetre on cesse de
- * considerer qu'il y a de la parole.
+ * A combien de decibels sous les passages les plus forts on cesse de considerer qu'il y a
+ * de la parole.
  *
  * Un seuil RELATIF au haut de la dynamique, et non a son milieu. La difference n'est pas
- * theorique: la premiere version placait le seuil a mi-hauteur entre le 5e et le 95e
- * percentile, ce qui, sur un film ou la musique ne s'arrete jamais, marquait 60 a 80 % de
- * la fenetre comme "parlee" -- un signal presque constant, dont on ne tire rien. Mesure sur
- * deux longs-metrages: le seuil relatif au sommet fait passer le calage de 4 fenetres sur 6
- * a 6 sur 6, et double la confiance.
+ * theorique: une premiere version placait le seuil a mi-hauteur entre le 5e et le 95e
+ * percentile, ce qui, sur un film ou la musique ne s'arrete jamais, marquait 60 a 80 % du
+ * temps comme "parle" -- un signal presque constant, dont on ne tire rien.
  *
- * 8 dB est le creux d'une plage large: entre -7 et -12 dB les resultats se tiennent, ce qui
+ * 8 dB est le creux d'une plage large: entre -7 et -9 dB les resultats se tiennent, ce qui
  * est rassurant -- le reglage n'est pas accroche a un titre particulier.
  */
 const SPEECH_BELOW_PEAK_DB = 8;
+
+/**
+ * Demi-largeur du voisinage sur lequel ce seuil est recalcule.
+ *
+ * C'est un seuil GLISSANT, et c'est ce qui a le plus rapporte de tout le reglage: une
+ * fenetre d'une minute et demie couvre souvent une scene calme ET une scene d'action, et un
+ * seuil unique ne convient alors ni a l'une ni a l'autre -- il noie la premiere ou vide la
+ * seconde. Sur un banc de vingt pistes reelles, passer au seuil glissant fait passer le
+ * nombre de pistes calees de 5 a 11, sans un seul faux calage de plus.
+ *
+ * Le percentile est calcule sur une grille d'une seconde puis repris tel quel entre deux
+ * points: un percentile glissant exact a 20 ms couterait cent fois plus pour le meme
+ * decoupage.
+ */
+const THRESHOLD_WINDOW_SECONDS = 15;
 
 // Silence toleree A L'INTERIEUR d'une prise de parole. Ce qui compte pour le calage, c'est
 // l'instant ou l'on COMMENCE a parler: mieux vaut un bloc un peu long qu'un bloc coupe en
@@ -134,23 +147,36 @@ const MERGE_GAP_SECONDS = 0.4;
  * recolle les blocs separes par un court silence, et on jette ceux de moins de 150 ms (un
  * choc, un claquement de porte).
  */
+function slidingThreshold(levels) {
+  const step = FRAME_MS / 1000;
+  const grid = Math.round(1 / step);
+  const half = Math.round(THRESHOLD_WINDOW_SECONDS / step);
+  const points = [];
+
+  for (let center = 0; center < levels.length; center += grid) {
+    const slice = levels.slice(Math.max(0, center - half), Math.min(levels.length, center + half)).sort((a, b) => a - b);
+    // 95e percentile plutot que le maximum: une detonation isolee ne doit pas definir a
+    // elle seule ce qu'est "fort" ici.
+    const high = percentile(slice, 95);
+    points.push(Math.max(percentile(slice, 5), high - SPEECH_BELOW_PEAK_DB));
+  }
+
+  return (index) => points[Math.min(points.length - 1, Math.round(index / grid))];
+}
+
 function toIntervals(levels, { start }) {
   if (levels.length < 20) return [];
   const sorted = [...levels].sort((a, b) => a - b);
-  const low = percentile(sorted, 5);
-  // 95e percentile plutot que le maximum: une detonation isolee ne doit pas definir a elle
-  // seule ce qu'est "fort" dans cette fenetre.
-  const high = percentile(sorted, 95);
   // Fenetre sans dynamique: uniformement bruyante ou uniformement muette. Il n'y a rien a
   // y decouper, et un seuil arbitraire n'y produirait que du bruit.
-  if (high - low < 6) return [];
-  const threshold = Math.max(low, high - SPEECH_BELOW_PEAK_DB);
+  if (percentile(sorted, 95) - percentile(sorted, 5) < 6) return [];
+  const threshold = slidingThreshold(levels);
 
   const step = FRAME_MS / 1000;
   const raw = [];
   let from = null;
   for (let i = 0; i < levels.length; i += 1) {
-    const loud = levels[i] > threshold;
+    const loud = levels[i] > threshold(i);
     if (loud && from === null) from = i * step;
     if (!loud && from !== null) {
       raw.push([from, i * step]);
@@ -173,13 +199,17 @@ function toIntervals(levels, { start }) {
  * Intervalles de parole d'une fenetre du flux, en temps ABSOLU du flux.
  *
  * @param {string} url      URL lisible par ffmpeg (deja passee par notre proxy si besoin)
- * @param {{start:number, duration:number, headers?:object, timeoutMs?:number}} options
+ * @param {{start:number, duration:number, headers?:object, timeoutMs?:number, withLevels?:boolean}} options
+ *        `withLevels` renvoie EN PLUS l'enveloppe brute (un niveau toutes les 20 ms). Elle
+ *        ne sert pas au calage, mais elle permet de rejouer le seuillage hors ligne sur un
+ *        audio deja telecharge -- c'est ce qui rend un banc d'essai possible sans repayer
+ *        le reseau a chaque essai de reglage.
  * @returns {Promise<{intervals:Array<[number,number]>}|{error:string, reason?:string}>}
  *   `reason: 'sans-audio'` distingue LA panne qui se rattrape: une variante HLS qui ne
  *   porte que de la video (le master annonce pourtant un codec audio, mais l'audio est
  *   ailleurs). L'appelant peut alors repartir du master au lieu d'abandonner le flux.
  */
-async function speechIn(url, { start, duration, headers, timeoutMs = 60000 } = {}) {
+async function speechIn(url, { start, duration, headers, timeoutMs = 60000, withLevels = false } = {}) {
   // Options PRIVEES du protocole http: les passer sur une entree qui n'en est pas une fait
   // echouer l'ouverture avec un laconique "Option not found", sans dire laquelle.
   const network = /^https?:\/\//i.test(String(url))
@@ -228,7 +258,7 @@ async function speechIn(url, { start, duration, headers, timeoutMs = 60000 } = {
     console.warn(`[subsync] audio illisible a ${Math.round(start)}s (${reason}): ${why.slice(0, 160)}`);
     return { error: why, reason };
   }
-  return { intervals: toIntervals(levels, { start }) };
+  return { intervals: toIntervals(levels, { start }), ...(withLevels ? { levels } : {}) };
 }
 
-module.exports = { available, speechIn, toIntervals, parseLevels, FRAME_MS, SPEECH_BELOW_PEAK_DB };
+module.exports = { available, speechIn, toIntervals, parseLevels, FRAME_MS, SPEECH_BELOW_PEAK_DB, THRESHOLD_WINDOW_SECONDS };

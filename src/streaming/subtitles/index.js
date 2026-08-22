@@ -295,26 +295,31 @@ const prefetching = new Set();
 
 async function prepareSync(stream, tracks) {
   if (!config.SUBTITLE_AUTOSYNC || !stream || tracks.length === 0) return;
-  const key = `${stream.id}:${tracks[0].url}`;
-  if (prefetching.has(key)) return;
-  prefetching.add(key);
+  if (prefetching.has(stream.id)) return;
+  prefetching.add(stream.id);
 
   try {
-    // Une seule piste suffit a payer le releve audio du flux, qui est le gros du travail;
-    // les autres pistes du meme flux ne couteront ensuite qu'une correlation.
-    const vtt = await fetchAsVtt(tracks[0].url);
-    await sync.planFor({
+    // TOUTES les pistes, pas seulement la premiere: le releve audio est le gros du travail
+    // et il leur est commun, chacune ne coute ensuite qu'une correlation. Et surtout, elles
+    // se corroborent (cf. sync.plansFor) -- ce qui n'est possible qu'en les calant ensemble.
+    const fetched = [];
+    for (const track of tracks) {
+      const vtt = await fetchAsVtt(track.url).catch(() => null);
+      if (vtt) fetched.push({ key: track.url, vtt });
+    }
+    if (fetched.length === 0) return;
+
+    await sync.plansFor({
       streamUrl: stream.url,
       streamKey: stream.key,
-      subtitleKey: tracks[0].url,
-      vtt,
       refererUrl: stream.refererUrl,
       durationHint: stream.durationHint,
+      tracks: fetched,
     });
   } catch (err) {
     console.warn(`[subsync] prechauffage abandonne: ${err.message}`);
   } finally {
-    prefetching.delete(key);
+    prefetching.delete(stream.id);
   }
 }
 

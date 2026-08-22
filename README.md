@@ -542,13 +542,16 @@ ouvre la bouche. Sur deux longs-métrages de test, passer aux débuts fait passe
 « aucun calage trouvé » à *six fenêtres sur six d'accord*, et ramène à zéro les faux calages
 sur des paires de films sans rapport.
 
-**Le seuil de parole est relatif au HAUT de la dynamique**, pas à son milieu (`p95 − 8 dB`).
-Un seuil absolu façon `silencedetect` ne marche pas : un film mixé fort n'a aucun silence,
-un film mixé bas n'a que ça. Mais un seuil à mi-hauteur ne marchait pas beaucoup mieux — sur
-un film où la musique ne s'arrête jamais, il marquait 60 à 80 % de la fenêtre comme
-« parlée », un signal presque constant dont on ne tire rien. Relatif au sommet, le même
-film passe de 4 fenêtres exploitables sur 6 à 6 sur 6, et la confiance double. La bande est
-en outre limitée à 200–3000 Hz : les basses d'une explosion ne comptent plus pour de la voix.
+**Le seuil de parole est relatif au HAUT de la dynamique, et il GLISSE** (`p95 − 8 dB`,
+recalculé sur ±15 s). Un seuil absolu façon `silencedetect` ne marche pas : un film mixé
+fort n'a aucun silence, un film mixé bas n'a que ça. Un seuil à mi-hauteur ne marchait pas
+beaucoup mieux — sur un film où la musique ne s'arrête jamais, il marquait 60 à 80 % du
+temps comme « parlé », un signal presque constant dont on ne tire rien. Et un seuil calculé
+une fois pour toute la fenêtre échoue encore autrement : une fenêtre d'une minute et demie
+couvre souvent une scène calme *et* une scène d'action, et le même seuil noie la première ou
+vide la seconde. En le recalculant en continu, **le nombre de pistes calées passe de 5 à 11
+sur le banc d'essai** (voir plus bas), sans un seul faux calage de plus. La bande est en
+outre limitée à 200–3000 Hz : les basses d'une explosion ne comptent plus pour de la voix.
 
 **La dérive n'est pas cherchée comme une pente libre.** Une conversion PAL multiplie
 *exactement* par 25 / (24000/1001) : seuls les rapports d'images/seconde réels sont essayés
@@ -565,6 +568,18 @@ sinon la variante **la moins bien encodée** — la bande son y est la même, c'
 diffusion. Compter ~30 Mo et une trentaine de secondes pour un long-métrage ; sur un flux
 HLS de 30 min mesuré de bout en bout, 3 Mo et 4 secondes.
 
+**Une deuxième piste peut confirmer la première.** Quand le français et l'anglais d'un même
+titre, calés séparément sur le même flux, tombent sur la *même* correspondance à une
+demi-seconde près d'un bout à l'autre du film, le verrou de confiance est abaissé pour les
+deux. Avec une réserve qui s'est révélée décisive à la mesure : les deux pistes doivent être
+**réellement indépendantes**. Beaucoup de traductions sont deux textes posés sur un seul
+fichier de minutage — elles rendent alors exactement la même mesure, au centième près, et
+les faire se confirmer revient à compter deux fois la même chose. L'addon compare donc les
+*débuts de réplique* des deux pistes : des pistes écrites séparément en partagent 0 à 26 %,
+des pistes issues du même minutage 79 à 92 %. Sans ce garde-fou, Dune 2 sortait « calé » à
+−91 s sur la foi de deux pistes jumelles, alors que sa fenêtre la plus franche disait tout
+autre chose.
+
 ##### Quand un calage est refusé
 
 Trois verrous, et il faut les passer tous les trois. En dessous, la piste est servie **telle
@@ -575,17 +590,43 @@ quelle** — c'est voulu : un calage approximatif est pire que pas de calage, il
 |---|---|---|
 | `SUBTITLE_AUTOSYNC_MIN_WINDOWS` | 3 | Deux fenêtres d'accord ne démontrent rien : sur une recherche de ±120 s il existe toujours des paires de faux sommets qui s'accordent par hasard |
 | `SUBTITLE_AUTOSYNC_MIN_REACH` | 0,6 | Un modèle vérifié sur les deux premiers tiers seulement — signature d'un **montage différent** (version longue, coupure), qu'aucune correction affine ne peut décrire |
-| `SUBTITLE_AUTOSYNC_MIN_CONFIDENCE` | 0,20 | Corrélations molles, sommets qui ne se détachent pas du fond |
+| `SUBTITLE_AUTOSYNC_MIN_CONFIDENCE` | 0,20 | Corrélations molles, sommets qui ne se détachent pas du fond (0,08 si une piste indépendante confirme) |
 
 Les seuils sont calibrés sur de l'audio de **film**, pas sur un signal de laboratoire : la
 musique et les ambiances y sont continues, une corrélation juste y vaut 0,3–0,5 là où un
-signal propre donne 0,8. Sur deux longs-métrages de référence, le calage juste sort à
-**0,41 avec 6 fenêtres sur 6** ; des sous-titres pris sur un autre film plafonnent à 0,16.
+signal propre donne 0,8.
 
-> Anecdote qui dit l'intérêt de la chose : les deux films testés, servis par la même source,
-> sont ressortis avec le **même décalage de +20 s** — un habillage en tête de flux que la
-> piste ne connaît pas. C'est exactement les cinq minutes de recalage manuel que ce
-> mécanisme supprime.
+##### Banc d'essai
+
+Mesuré sur **16 titres** (films récents et anciens, séries), soit 22 pistes de sous-titres,
+avec les vraies sources de l'addon. Le protocole ne suppose aucune vérité extérieure : on
+**décale la piste d'une quantité connue** et on vérifie que le calage la retrouve, on
+**injecte une conversion PAL** et on vérifie qu'il retrouve le rapport exact, et on
+confronte chaque flux aux sous-titres des 15 autres titres, qui doivent tous être refusés.
+
+| Mesure | Résultat |
+|---|---|
+| Pistes calées | **12 / 20** (2 pistes étaient tronquées par le fournisseur) |
+| Faux calages (piste d'un autre titre) | **0 / 180** |
+| Précision — décalage connu réinjecté | médiane **3 ms**, p90 14 ms, max 300 ms |
+| Précision — dérive PAL réinjectée | médiane **0 ms**, max 2 ms (cadence exacte à chaque fois) |
+| Validation croisée (chaque fenêtre prédite par les autres) | médiane **200 ms**, p90 1,4 s |
+| Coût par titre | ~87 Mo, ~55 s |
+
+Ce que le banc a mis au jour, et qui dit l'intérêt de la chose :
+
+- **Un habillage de +19 s en tête des flux d'une source** : Pulp Fiction ressort à +19,69 s
+  et Oppenheimer à +19,00 s sur les mêmes serveurs. Ce sont exactement les minutes de
+  recalage manuel que ce mécanisme supprime.
+- **De vraies pistes PAL**, détectées comme telles : la piste anglaise d'Avengers et la
+  française de Matrix sortent toutes deux à 1,0427. La preuve est jolie — une fois corrigée,
+  la dernière réplique anglaise d'Avengers (7815 s) retombe sur la même seconde que la
+  dernière réplique française (8149 s).
+- **Des pistes déjà justes**, reconnues comme telles : Breaking Bad S01E01 en anglais sort à
+  −0,02 s. Le calage ne touche alors à rien.
+- Les échecs restants ne viennent pas du calcul : 4 titres n'ont eu **aucun flux audio
+  lisible** (CDN muet ou variante sans piste audio) et 2 pistes étaient **tronquées à la
+  source** (37 répliques pour tout Interstellar).
 
 ##### Savoir quel flux caler
 

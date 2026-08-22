@@ -291,6 +291,19 @@ const config = {
   // les faux calages fabriques pour l'occasion (sous-titres d'un autre film) plafonnent a
   // 0,16 -- d'ou ce seuil, place entre les deux.
   SUBTITLE_AUTOSYNC_MIN_CONFIDENCE: Number(readEnv('SUBTITLE_AUTOSYNC_MIN_CONFIDENCE', 0.2)),
+  // Seuil abaisse quand DEUX pistes du meme titre (le francais et l'anglais, par exemple),
+  // calees separement sur le meme flux, tombent sur la MEME correspondance a une demi-
+  // seconde pres d'un bout a l'autre du film. Ce sont deux fichiers differents, traduits
+  // differemment: qu'ils se trompent tous les deux au meme endroit ne s'explique pas. Sur
+  // le banc d'essai, cet accord ne s'est jamais produit entre pistes d'un AUTRE titre.
+  SUBTITLE_AUTOSYNC_MIN_CONFIDENCE_PAIR: Number(readEnv('SUBTITLE_AUTOSYNC_MIN_CONFIDENCE_PAIR', 0.08)),
+  // Ecart tolere entre les deux correspondances pour parler d'accord, aux deux bouts du film.
+  SUBTITLE_AUTOSYNC_PAIR_TOLERANCE: Number(readEnv('SUBTITLE_AUTOSYNC_PAIR_TOLERANCE', 0.5)),
+  // Part maximale de repliques dont les deux pistes partagent le minutage pour qu'on les
+  // considere INDEPENDANTES. Au-dela, ce sont deux traductions du meme fichier de temps:
+  // elles donnent la meme mesure, et leur accord ne demontre rien. Mesure sur douze paires
+  // reelles: pistes ecrites separement 0-26 %, pistes issues du meme minutage 79-92 %.
+  SUBTITLE_AUTOSYNC_PAIR_MAX_SHARED: Number(readEnv('SUBTITLE_AUTOSYNC_PAIR_MAX_SHARED', 0.4)),
   // Pistes trop courtes pour porter une correlation (chansons, pancartes).
   SUBTITLE_AUTOSYNC_MIN_CUES: Number(readEnv('SUBTITLE_AUTOSYNC_MIN_CUES', 60)),
   // Un calage trouve reste valable tant que la source sert le meme release: on le garde
