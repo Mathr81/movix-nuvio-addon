@@ -11,10 +11,10 @@ module.exports = {
   id: 'personal.movix.addon',
   // Stremio/Nuvio mettent le manifest en cache: toute modification visible (nom, logo,
   // catalogues) doit s'accompagner d'un changement de version pour etre reprise.
-  version: '1.6.0',
+  version: '1.7.0',
   name: 'Movix (perso)',
   description:
-    'Catalogue, flux et sous-titres Movix agreges pour usage personnel -- non destine a etre partage ou publie.',
+    'Catalogue, flux et sous-titres (cales automatiquement sur le flux lu) Movix agreges pour usage personnel -- non destine a etre partage ou publie.',
   logo: config.LOGO_URL,
   resources: ['catalog', 'meta', 'stream', 'subtitles'],
   types: ['movie', 'series'],

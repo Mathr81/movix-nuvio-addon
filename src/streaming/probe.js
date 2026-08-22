@@ -118,7 +118,11 @@ function hosterProxyResolver(hoster) {
 function makeClient(headers) {
   return axios.create({
     timeout: config.PROBE_TIMEOUT_MS,
-    headers,
+    // Marque les requetes de la sonde. Quand un repli la fait passer par NOTRE proxy, celui-ci
+    // ne doit pas les confondre avec le debut d'une lecture: il declencherait le calage des
+    // sous-titres de chaque lien de la liste, pour des flux que personne ne regarde
+    // (cf. streaming/playback.js).
+    headers: { ...headers, 'X-Movix-Probe': '1' },
     httpsAgent: insecureAgent,
     validateStatus: () => true,
     maxRedirects: 5,

@@ -3,6 +3,8 @@ const zlib = require('zlib');
 const { promisify } = require('util');
 const config = require('../../core/config');
 const cache = require('../../core/cache');
+const playback = require('../playback');
+const sync = require('./sync');
 const { decodeSubtitle, toCleanVtt } = require('./vtt');
 
 const gunzip = promisify(zlib.gunzip);
@@ -92,8 +94,101 @@ async function fetchAsVtt(downloadUrl) {
  * meme par ici, pour le retrait des publicites et pour ne dependre que d'un seul chemin
  * eprouve (PUBLIC_URL, cache, en-tetes).
  */
-function subtitleUrl(publicBaseUrl, downloadUrl) {
-  return `${publicBaseUrl}/subtitle/${Buffer.from(downloadUrl, 'utf8').toString('base64url')}.vtt`;
+function subtitleUrl(publicBaseUrl, downloadUrl, bind) {
+  // Le lien porte aussi DE QUOI RETROUVER LE FLUX a caler (cf. playback.js): soit un
+  // identifiant de flux precis, soit une cle de contenu, auquel cas c'est le flux
+  // reellement servi par le proxy au moment de la lecture qui fera foi.
+  const payload = bind ? JSON.stringify([downloadUrl, bind.kind, bind.ref]) : downloadUrl;
+  return `${publicBaseUrl}/subtitle/${Buffer.from(payload, 'utf8').toString('base64url')}.vtt`;
+}
+
+/**
+ * Lit ce qu'une URL `/subtitle/<...>.vtt` transporte.
+ * L'ancienne forme (une URL nue) reste comprise: des liens sont deja dans des lecteurs.
+ */
+function readPayload(encoded) {
+  let decoded;
+  try {
+    decoded = Buffer.from(String(encoded).replace(/\.vtt$/i, ''), 'base64url').toString('utf8');
+  } catch {
+    return null;
+  }
+  if (!decoded.startsWith('[')) return { url: decoded };
+  try {
+    const [url, kind, ref] = JSON.parse(decoded);
+    return { url, kind, ref };
+  } catch {
+    return null;
+  }
+}
+
+/** Le flux a caler, d'apres ce que porte le lien. */
+function boundStream({ kind, ref }) {
+  if (kind === 's') return playback.recall(ref);
+  if (kind !== 'c' || !ref) return null;
+  const found = playback.current(ref, { fallbackToFirst: config.SUBTITLE_AUTOSYNC_GUESS_STREAM });
+  if (!found) {
+    // Cas typique: un lien qui ne passe pas par le proxy de flux, donc dont on n'a rien vu
+    // passer. Le dire est utile -- sans ce message, une piste non calee reste inexpliquee.
+    console.log(
+      `[subsync] aucun flux observe pour ${ref} -- piste servie telle quelle ` +
+        '(SUBTITLE_AUTOSYNC_BIND=stream pour rattacher les pistes a chaque flux)',
+    );
+    return null;
+  }
+  if (!found.certain) {
+    console.log(`[subsync] aucun flux observe pour ${ref}: calage tente sur le mieux classe (${found.record.label || 'flux'})`);
+  }
+  return found.record;
+}
+
+/**
+ * Attend un calage, mais pas indefiniment.
+ *
+ * Le calcul dure quelques dizaines de secondes la premiere fois. Un lecteur qui attend
+ * aussi longtemps une piste abandonne, ou pire, reste bloque: passe le delai on sert la
+ * piste brute. Le calcul, lui, CONTINUE -- il est memoise -- et la piste ressortira calee
+ * si on la reselectionne. C'est aussi ce que le prechargement rend rare (cf. streamBuilder).
+ */
+function withDeadline(promise, ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+}
+
+/**
+ * WebVTT propre ET cale sur le flux en cours, quand on sait lequel c'est.
+ * @returns {Promise<{vtt:string, plan:object|null, stream:object|null}>}
+ */
+async function servedVtt(payload) {
+  const vtt = await fetchAsVtt(payload.url);
+  const stream = payload.kind ? boundStream(payload) : null;
+  if (!stream) return { vtt, plan: null, stream: null };
+
+  const plan = await withDeadline(
+    sync.planFor({
+      streamUrl: stream.url,
+      streamKey: stream.key,
+      subtitleKey: payload.url,
+      vtt,
+      refererUrl: stream.refererUrl,
+      durationHint: stream.durationHint,
+    }),
+    config.SUBTITLE_AUTOSYNC_WAIT_MS,
+  );
+
+  return { vtt: sync.apply(vtt, plan), plan, stream };
 }
 
 /** Recherche chez un fournisseur, memoisee et tolerante a l'echec. */
@@ -108,10 +203,13 @@ async function searchWith(provider, { type, tmdbId, season, episode, langs }) {
 }
 
 /**
- * Construit la liste de sous-titres au format Stremio.
- * Chaque URL pointe vers notre propre route, qui convertit et nettoie a la volee.
+ * Pistes disponibles pour un titre, deja triees et bornees par langue.
+ *
+ * Separee de la mise en forme Stremio parce que les MEMES pistes doivent pouvoir etre
+ * servies sous plusieurs habillages: une fois pour la ressource `subtitles`, une fois
+ * rattachees a chaque flux (chacune portant alors l'identifiant de SON flux).
  */
-async function buildSubtitles({ type, tmdbId, season, episode, publicBaseUrl }) {
+async function collectTracks({ type, tmdbId, season, episode }) {
   if (!config.SUBTITLES_ENABLED) return [];
 
   const wanted = config.SUBTITLE_LANGS;
@@ -138,32 +236,101 @@ async function buildSubtitles({ type, tmdbId, season, episode, publicBaseUrl }) 
   // Le protocole prevoit plusieurs pistes par langue, differenciees par leur `id`
   // (docs/api/responses/subtitles.md). Une seule par defaut: elles s'affichent toutes sous
   // le meme nom de langue, et personne ne choisit entre deux "Français" identiques.
-  //
-  // Le champ `lang` est un CODE. La specification dit qu'un libelle libre est affiche tel
-  // quel, mais Nuvio, lui, normalise et rend "inconnu" tout ce qu'il ne reconnait pas --
-  // c'est ce qui arrivait quand on suffixait les pistes ("fre (2)"). D'ou le defaut a un
-  // code pur, et le libelle du fournisseur derriere un reglage.
   const perLang = Math.max(config.SUBTITLES_PER_LANG, 1);
-  const subtitles = [];
+  const tracks = [];
 
   for (const lang of wanted) {
     const entries = byLang.get(lang);
     if (!entries) continue;
     entries.sort((a, b) => b.score - a.score);
     entries.slice(0, perLang).forEach((entry, index) => {
-      subtitles.push({
+      tracks.push({
         id: `movix-${entry.provider.id}-${lang}${index > 0 ? `-${index + 1}` : ''}`,
-        lang: config.SUBTITLE_PROVIDER_LABEL ? `${lang} · ${entry.provider.name}` : lang,
-        url: subtitleUrl(publicBaseUrl, entry.url),
+        lang,
+        url: entry.url,
+        provider: entry.provider.name,
       });
     });
   }
 
   console.log(
-    `[subtitles] tmdbId=${tmdbId} ${subtitles.length} piste(s)` +
+    `[subtitles] tmdbId=${tmdbId} ${tracks.length} piste(s)` +
       (origine.length > 0 ? ` (${origine.join(', ')})` : ' (aucun fournisseur n\'a repondu)'),
   );
-  return subtitles;
+  return tracks;
 }
 
-module.exports = { buildSubtitles, fetchAsVtt, subtitleUrl, isAllowedHost };
+/**
+ * Pistes au format Stremio.
+ *
+ * Le champ `lang` est un CODE. La specification dit qu'un libelle libre est affiche tel
+ * quel, mais Nuvio, lui, normalise et rend "inconnu" tout ce qu'il ne reconnait pas --
+ * c'est ce qui arrivait quand on suffixait les pistes ("fre (2)"). D'ou le defaut a un
+ * code pur, et le libelle du fournisseur derriere un reglage.
+ */
+function toStremio(tracks, publicBaseUrl, bind) {
+  return tracks.map((track) => ({
+    id: track.id,
+    lang: config.SUBTITLE_PROVIDER_LABEL ? `${track.lang} · ${track.provider}` : track.lang,
+    url: subtitleUrl(publicBaseUrl, track.url, bind),
+  }));
+}
+
+/** Liste de sous-titres au format Stremio, pour la ressource `subtitles`. */
+async function buildSubtitles({ type, tmdbId, season, episode, publicBaseUrl, bind = null }) {
+  return toStremio(await collectTracks({ type, tmdbId, season, episode }), publicBaseUrl, bind);
+}
+
+/**
+ * Prepare le calage d'une piste sur un flux, en arriere-plan.
+ *
+ * Le calcul dure quelques dizaines de secondes: le faire au moment ou l'on ouvre le menu
+ * des sous-titres serait le faire trop tard. On le lance donc a deux moments ou l'on
+ * apprend quelque chose d'utile -- quand la liste des flux est rendue (le mieux classe est
+ * le plus probable) et surtout quand la LECTURE COMMENCE, ou l'on sait enfin lequel c'est.
+ *
+ * Silencieux et sans await: un echec de prechauffage ne doit peser sur rien.
+ */
+const prefetching = new Set();
+
+async function prepareSync(stream, tracks) {
+  if (!config.SUBTITLE_AUTOSYNC || !stream || tracks.length === 0) return;
+  const key = `${stream.id}:${tracks[0].url}`;
+  if (prefetching.has(key)) return;
+  prefetching.add(key);
+
+  try {
+    // Une seule piste suffit a payer le releve audio du flux, qui est le gros du travail;
+    // les autres pistes du meme flux ne couteront ensuite qu'une correlation.
+    const vtt = await fetchAsVtt(tracks[0].url);
+    await sync.planFor({
+      streamUrl: stream.url,
+      streamKey: stream.key,
+      subtitleKey: tracks[0].url,
+      vtt,
+      refererUrl: stream.refererUrl,
+      durationHint: stream.durationHint,
+    });
+  } catch (err) {
+    console.warn(`[subsync] prechauffage abandonne: ${err.message}`);
+  } finally {
+    prefetching.delete(key);
+  }
+}
+
+// Des que le proxy sert un flux, la lecture a commence: on cale ses sous-titres pendant que
+// le generique defile. C'est ce qui fait qu'a l'ouverture du menu, la piste est deja prete.
+playback.whenPlaybackStarts(async (stream) => {
+  if (!config.SUBTITLE_AUTOSYNC || !stream.content) return;
+  const [type, tmdbId, season, episode] = String(stream.content).split(':');
+  const tracks = await collectTracks({
+    type,
+    tmdbId,
+    season: season === '' ? undefined : Number(season),
+    episode: episode === '' ? undefined : Number(episode),
+  }).catch(() => []);
+  console.log(`[subsync] lecture demarree (${stream.label || 'flux'}) -- calage en preparation`);
+  await prepareSync(stream, tracks);
+});
+
+module.exports = { buildSubtitles, collectTracks, toStremio, prepareSync, fetchAsVtt, servedVtt, readPayload, subtitleUrl, isAllowedHost };

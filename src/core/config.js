@@ -248,6 +248,76 @@ const config = {
   // qui n'est pas un code ISO 639-2. A n'activer que si ton lecteur suit la specification.
   SUBTITLE_PROVIDER_LABEL: readBool('SUBTITLE_PROVIDER_LABEL', false),
 
+  // --- Calage automatique des sous-titres ----------------------------------
+  // Les flux viennent de sources diverses, les sous-titres d'un index qui ne les connait
+  // pas: rien ne garantit qu'ils decrivent le meme montage ni la meme cadence. L'addon
+  // ecoute quelques fenetres du flux avec ffmpeg, compare les instants de parole a ceux
+  // des repliques, et en deduit le decalage -- et la derive, quand la piste vient d'une
+  // conversion PAL (25 im/s au lieu de 23,976: cinq minutes d'ecart en fin de film, que
+  // le reglage de delai d'un lecteur ne rattrape pas).
+  //
+  // Sans ffmpeg installe, tout ceci se desactive tout seul et les pistes sont servies
+  // telles quelles: aucune autre partie de l'addon n'en depend.
+  SUBTITLE_AUTOSYNC: readBool('SUBTITLE_AUTOSYNC', true),
+  FFMPEG_PATH: readEnv('FFMPEG_PATH', 'ffmpeg'),
+  // Fenetres d'ecoute reparties dans le film, et leur duree. Il en faut aux DEUX bouts:
+  // c'est l'ecart entre elles qui revele une derive. Moins de 3 rend le calage possible
+  // mais peu sur; au-dela de 5 on paye du telechargement pour une precision deja atteinte.
+  SUBTITLE_AUTOSYNC_WINDOWS: Number(readEnv('SUBTITLE_AUTOSYNC_WINDOWS', 6)),
+  SUBTITLE_AUTOSYNC_WINDOW_SECONDS: Number(readEnv('SUBTITLE_AUTOSYNC_WINDOW_SECONDS', 90)),
+  // Nombre MINIMAL de fenetres qui doivent s'accorder pour qu'un calage soit applique.
+  // Deux ne demontrent rien: sur une recherche large, il existe toujours des paires de faux
+  // sommets qui tombent d'accord par hasard. Mesure sur des films reels: un calage juste
+  // rassemble 4 a 6 fenetres sur 6, un faux n'en rassemble jamais plus de deux.
+  SUBTITLE_AUTOSYNC_MIN_WINDOWS: Number(readEnv('SUBTITLE_AUTOSYNC_MIN_WINDOWS', 3)),
+  // Etendue minimale, en fraction du film, entre la premiere et la derniere fenetre qui
+  // s'accordent. Un calage verifie sur les deux premiers tiers seulement n'est pas "un peu
+  // moins sur": il est faux dans le tiers restant. C'est la signature d'un montage
+  // different (version longue, coupure), qu'aucune correction affine ne peut decrire.
+  SUBTITLE_AUTOSYNC_MIN_REACH: Number(readEnv('SUBTITLE_AUTOSYNC_MIN_REACH', 0.6)),
+  // Fenetres ecoutees en parallele. Chacune ouvre un ffmpeg et tire des segments: monter
+  // ce nombre accelere le calage et charge d'autant le CDN (et le disjoncteur des hosters).
+  SUBTITLE_AUTOSYNC_CONCURRENCY: Number(readEnv('SUBTITLE_AUTOSYNC_CONCURRENCY', 2)),
+  SUBTITLE_AUTOSYNC_WINDOW_TIMEOUT_MS: Number(readEnv('SUBTITLE_AUTOSYNC_WINDOW_TIMEOUT_MS', 60000)),
+  // Decalage maximal cherche. Au-dela, ce n'est plus un decalage: c'est une autre piste.
+  SUBTITLE_AUTOSYNC_MAX_SHIFT: Number(readEnv('SUBTITLE_AUTOSYNC_MAX_SHIFT', 120)),
+  // Seuil de confiance. EN DESSOUS, LA PISTE EST SERVIE TELLE QUELLE -- c'est voulu: un
+  // calage approximatif est pire que pas de calage, il est faux partout au lieu d'etre faux
+  // d'une quantite constante, que l'oeil corrige tout seul.
+  //
+  // Calibre sur de l'audio de FILM, pas sur un signal de laboratoire: la musique et les
+  // ambiances y sont continues, une correlation juste y vaut 0,3-0,5 la ou un signal propre
+  // donne 0,8. Sur deux longs-metrages de reference, un calage juste sort a 0,40-0,42, et
+  // les faux calages fabriques pour l'occasion (sous-titres d'un autre film) plafonnent a
+  // 0,16 -- d'ou ce seuil, place entre les deux.
+  SUBTITLE_AUTOSYNC_MIN_CONFIDENCE: Number(readEnv('SUBTITLE_AUTOSYNC_MIN_CONFIDENCE', 0.2)),
+  // Pistes trop courtes pour porter une correlation (chansons, pancartes).
+  SUBTITLE_AUTOSYNC_MIN_CUES: Number(readEnv('SUBTITLE_AUTOSYNC_MIN_CUES', 60)),
+  // Un calage trouve reste valable tant que la source sert le meme release: on le garde
+  // une semaine, pour que reprendre une serie demain ne le repaye pas.
+  SUBTITLE_AUTOSYNC_TTL_MS: Number(readEnv('SUBTITLE_AUTOSYNC_TTL_MS', 7 * 24 * 60 * 60 * 1000)),
+  // Delai que la route /subtitle accepte d'attendre quand le calage n'est pas encore pret.
+  // Au-dela elle sert la piste brute: un lecteur qui attend une minute abandonne.
+  SUBTITLE_AUTOSYNC_WAIT_MS: Number(readEnv('SUBTITLE_AUTOSYNC_WAIT_MS', 20000)),
+  // Lancer le calage en arriere-plan des l'affichage de la liste des flux, pour les N
+  // premiers. Quand on ouvre le menu des sous-titres, le travail est deja fait.
+  SUBTITLE_AUTOSYNC_PREFETCH: Number(readEnv('SUBTITLE_AUTOSYNC_PREFETCH', 1)),
+  // Comment l'addon identifie le flux a caler:
+  //   playback  observe: le proxy de flux vient de servir la playlist du flux choisi, donc
+  //             on sait lequel c'est. Sans risque, mais aveugle aux liens qui ne passent
+  //             pas par le proxy (extraction directe) -- ceux-la ne sont pas cales.
+  //   stream    les pistes sont rattachees a CHAQUE flux (`stream.subtitles`): identification
+  //             exacte, y compris hors proxy. Suppose que le lecteur lise ces pistes-la, et
+  //             elles peuvent apparaitre EN DOUBLE avec celles de la ressource `subtitles`.
+  //   both      les deux, pour les lecteurs qui ignorent l'une ou l'autre.
+  SUBTITLE_AUTOSYNC_BIND: readEnv('SUBTITLE_AUTOSYNC_BIND', 'playback').trim().toLowerCase(),
+  // Delai au-dela duquel un flux servi par le proxy n'est plus considere comme "en cours".
+  SUBTITLE_AUTOSYNC_PLAYBACK_WINDOW_MS: Number(readEnv('SUBTITLE_AUTOSYNC_PLAYBACK_WINDOW_MS', 30 * 60 * 1000)),
+  // Caler d'apres le flux le MIEUX CLASSE quand aucun n'a ete observe (lien hors proxy).
+  // Desactive par defaut: se tromper de release applique un decalage faux partout, ce qui
+  // est plus penible a rattraper que l'absence de calage.
+  SUBTITLE_AUTOSYNC_GUESS_STREAM: readBool('SUBTITLE_AUTOSYNC_GUESS_STREAM', false),
+
   // Motifs de detection supplementaires, au format "hebergeur:motif" (regex, insensible a
   // la casse). Voe renouvelle ses domaines de sortie environ tous les mois, avec des noms
   // qui ne contiennent pas "voe": un domaine plus recent que la liste integree passe pour

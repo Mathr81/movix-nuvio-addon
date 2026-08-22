@@ -2,7 +2,10 @@ const express = require('express');
 const { getRouter } = require('stremio-addon-sdk');
 const addonInterface = require('./src/addon');
 const config = require('./src/core/config');
-const { fetchAsVtt, isAllowedHost } = require('./src/streaming/subtitles');
+const subtitles = require('./src/streaming/subtitles');
+const { servedVtt, readPayload, isAllowedHost } = subtitles;
+const subsync = require('./src/streaming/subtitles/sync');
+const playback = require('./src/streaming/playback');
 const { resolveId } = require('./src/catalog/idResolver');
 const { collectRawLinks, resolveStreams, buildStreams } = require('./src/streaming/streamBuilder');
 const { breakerState: probeBreakerState } = require('./src/streaming/probe');
@@ -33,7 +36,8 @@ app.use((_req, res, next) => {
 // Les fournisseurs servent du .vtt (vdrk) ou un .gz contenant du .srt (OpenSubtitles);
 // Stremio/Nuvio n'attendent que du .vtt. On telecharge, convertit, retire les repliques
 // publicitaires et sert a la volee.
-async function serveSubtitle(src, res) {
+async function serveSubtitle(payload, res) {
+  const src = payload && payload.url;
   if (!src || !/^https?:\/\//i.test(src)) {
     console.warn(`[subtitle] source manquante ou invalide: ${JSON.stringify(String(src || '').slice(0, 120))}`);
     return res.status(400).type('text/plain').send('source de sous-titre manquante ou invalide');
@@ -55,7 +59,12 @@ async function serveSubtitle(src, res) {
   }
 
   try {
-    const vtt = await fetchAsVtt(src);
+    // C'est ICI que le calage a lieu, et pas au moment ou la liste est construite: quand le
+    // lecteur reclame le fichier, la lecture a deja commence, donc le flux a caler n'est
+    // plus une supposition (cf. src/streaming/playback.js).
+    const { vtt, plan } = await servedVtt(payload);
+    // En-tete de diagnostic: `curl -I` sur l'URL d'une piste dit ce qui lui a ete applique.
+    res.setHeader('X-Movix-Subsync', plan ? subsync.describe(plan).replace(/\s+/g, ' ') : 'aucun calage');
     return res.type('text/vtt').send(vtt);
   } catch (err) {
     console.error(`[subtitle] echec pour ${src.slice(0, 120)}: ${err.message}`);
@@ -66,19 +75,10 @@ async function serveSubtitle(src, res) {
 // Forme servie aux lecteurs: la source est encodee dans le CHEMIN et l'URL se termine
 // par ".vtt". Rien a mal interpreter en route, et l'extension rassure les lecteurs qui la
 // verifient -- contrairement au parametre de requete, qu'un intermediaire peut tronquer.
-app.get('/subtitle/:payload', (req, res) => {
-  const encoded = String(req.params.payload).replace(/\.vtt$/i, '');
-  let src;
-  try {
-    src = Buffer.from(encoded, 'base64url').toString('utf8');
-  } catch {
-    src = '';
-  }
-  return serveSubtitle(src, res);
-});
+app.get('/subtitle/:payload', (req, res) => serveSubtitle(readPayload(req.params.payload), res));
 
 // Ancienne forme (?src=), conservee pour les liens deja distribues a un client.
-app.get('/subtitle.vtt', (req, res) => serveSubtitle(req.query.src, res));
+app.get('/subtitle.vtt', (req, res) => serveSubtitle({ url: req.query.src }, res));
 
 // --- Proxy de flux --------------------------------------------------------
 // Rejoue les en-tetes (Origin/Referer/User-Agent...) exiges par les CDN des addons, que
@@ -281,6 +281,59 @@ app.get('/debug/streams/:type/:id', async (req, res) => {
   }
 });
 
+// Diagnostic du calage des sous-titres: quels flux sont connus pour ce titre, lequel est
+// (ou a ete) lu, et ce que le calage a trouve. `?compute=1` force le calcul au lieu de se
+// contenter de ce qui est deja en cache -- c'est la facon de le tester sans lancer Nuvio.
+app.get('/debug/subsync/:type/:id', async (req, res) => {
+  try {
+    const { type, id } = req.params;
+    const { tmdbId, season, episode } = await resolveId(type, id);
+    const content = `${type}:${tmdbId}:${season ?? ''}:${episode ?? ''}`;
+
+    // Construire la liste garantit que les flux sont enregistres: sans ouverture de fiche
+    // prealable, le registre serait vide et le diagnostic ne montrerait rien.
+    await buildStreams({ tmdbId, type, season, episode });
+    const [tracks, ffmpeg] = await Promise.all([
+      subtitles.collectTracks({ type, tmdbId, season, episode }),
+      subsync.enabled(),
+    ]);
+
+    const known = playback.forContent(content);
+    const playing = playback.current(content, { fallbackToFirst: true });
+    const compute = req.query.compute === '1' || req.query.compute === 'true';
+
+    let calage = null;
+    if (compute && playing && tracks.length > 0) {
+      const vtt = await subtitles.fetchAsVtt(tracks[0].url);
+      const plan = await subsync.planFor({
+        streamUrl: playing.record.url,
+        streamKey: playing.record.key,
+        subtitleKey: tracks[0].url,
+        vtt,
+        refererUrl: playing.record.refererUrl,
+        durationHint: playing.record.durationHint,
+      });
+      calage = { piste: tracks[0].lang, resume: subsync.describe(plan), plan };
+    }
+
+    res.json({
+      content,
+      actif: config.SUBTITLE_AUTOSYNC,
+      ffmpegDisponible: ffmpeg,
+      liaison: config.SUBTITLE_AUTOSYNC_BIND,
+      seuilConfiance: config.SUBTITLE_AUTOSYNC_MIN_CONFIDENCE,
+      fluxConnus: known.map((r) => ({ id: r.id, libelle: r.label, cle: r.key, dureeTmdb: r.durationHint })),
+      // `certain: false` = rien n'a ete observe par le proxy, c'est le mieux classe qui est
+      // propose. Le calage ne s'appuie dessus que si SUBTITLE_AUTOSYNC_GUESS_STREAM est actif.
+      fluxRetenu: playing ? { libelle: playing.record.label, certain: playing.certain } : null,
+      pistes: tracks.map((t) => ({ lang: t.lang, fournisseur: t.provider })),
+      calage,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Etat du registre d'addons: lesquels sont charges, lesquels sont ecartes et pourquoi.
 app.get('/debug/addons', (_req, res) => {
   res.json({
@@ -430,13 +483,14 @@ app.post('/simkl/push', async (req, res) => {
   }
 });
 
-app.get('/health', (_req, res) => {
+app.get('/health', async (_req, res) => {
   res.json({
     ok: true,
     mainApi: config.MAIN_API_BASE_URL || null,
     proxiesEmbed: config.PROXIES_EMBED_BASE_URL || null,
     vipKeyConfigured: !!config.VIP_ACCESS_KEY,
     subtitlesEnabled: config.SUBTITLES_ENABLED,
+    subtitleAutosync: config.SUBTITLE_AUTOSYNC && (await subsync.enabled()),
     publicUrl: config.PUBLIC_URL || null,
     streamProxy: {
       enabled: config.STREAM_PROXY_ENABLED,
@@ -457,6 +511,7 @@ app.listen(config.PORT, () => {
   console.log(`Manifest local : http://127.0.0.1:${config.PORT}/manifest.json`);
   if (config.PUBLIC_URL) console.log(`Manifest public : ${config.PUBLIC_URL}/manifest.json`);
   console.log(`Diagnostic     : /debug/movie/tmdb:157336  |  /debug/extract/movie/tmdb:157336  |  /debug/streams/...`);
+  console.log(`                 /debug/subsync/movie/tmdb:157336?compute=1 (calage des sous-titres)`);
   console.log(`                 /debug/sync  |  /debug/addons  |  /health`);
 
   if (config.NUVIO_PUSH_INTERVAL_MS > 0 && config.NUVIO_EMAIL) {
