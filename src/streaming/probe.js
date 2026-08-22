@@ -1,3 +1,4 @@
+const { execFile } = require('child_process');
 const axios = require('axios');
 const https = require('https');
 const config = require('../core/config');
@@ -13,6 +14,11 @@ const breaker = require('../core/breaker');
  *  - playlist de segments (ce que renvoient la plupart des hosters extraits): pas de
  *    BANDWIDTH, mais on peut peser un segment et le diviser par sa duree EXTINF.
  *  - fichier direct: taille / duree. Faute de duree connue, on affiche au moins la taille.
+ *
+ * La DEFINITION suit le meme escalier: declaree (RESOLUTION), sinon deduite du libelle de la
+ * variante ou de son chemin, sinon lue dans le flux par ffprobe. Sans ce dernier etage, une
+ * playlist de segments sans master au-dessus d'elle -- la forme que servent les flux KissKH --
+ * s'affiche avec son debit et aucune definition, faute que quiconque l'ait ecrite.
  *
  * Le point dur est l'acces. Les CDN des hosters refusent tout ce qui ne vient pas de leur
  * page de lecture. Le site ne les joint pas davantage depuis le navigateur: il passe par
@@ -132,7 +138,8 @@ function makeClient(headers) {
 function directAccess(url, refererUrl) {
   // Les liens des addons pointent deja sur notre proxy, qui pose lui-meme les en-tetes
   // attendus: la sonde n'a qu'a le suivre, en restant sur la boucle locale.
-  return { http: makeClient(headersFor(url, refererUrl)), resolve: (u) => streamProxy.localize(u), label: 'direct' };
+  const headers = headersFor(url, refererUrl);
+  return { http: makeClient(headers), resolve: (u) => streamProxy.localize(u), headers, label: 'direct' };
 }
 
 /**
@@ -149,15 +156,21 @@ function directAccess(url, refererUrl) {
  * applique, la mesure repasse par lui.
  */
 function upstreamAccess(url) {
-  const target = streamProxy.targetOf(url);
-  if (!target) return null;
+  // Playlist synthetique (mini-master d'un addon): elle n'a pas de cible amont, son corps
+  // EST le lien. On peut malgre tout court-circuiter le proxy: ses URI enfants pointent
+  // deja sur le CDN, et les en-tetes a rejouer voyagent avec elle.
+  const inline = streamProxy.inlineOf(url);
+  const target = inline ? null : streamProxy.targetOf(url);
+  if (!inline && !target) return null;
+
   const headers = streamProxy.headersOf(url) || {};
   return {
     http: makeClient({ 'User-Agent': DEFAULT_UA, ...headers }),
     // On est deja sur l'amont: les URI enfants s'y resolvent telles quelles.
     resolve: (u) => u,
-    entry: target,
-    label: 'amont',
+    ...(inline ? { inline } : { entry: target }),
+    headers,
+    label: inline ? 'amont (playlist fournie)' : 'amont',
   };
 }
 
@@ -229,6 +242,72 @@ async function byteLength(access, url, { allowFullGet = false } = {}) {
 }
 
 /**
+ * Definitions usuelles. Sert de garde-fou aux DEDUCTIONS de resolution: sans elle, un jeton
+ * signe ou un horodatage dans un chemin (".../1057/", ".../seg240.ts") passerait pour une
+ * definition. Un nombre n'est lu comme une hauteur que s'il en est une.
+ */
+const COMMON_HEIGHTS = [2160, 1440, 1080, 720, 576, 480, 360, 240, 144];
+
+/**
+ * Resolution d'une variante qui ne la DECLARE pas.
+ *
+ * `RESOLUTION` est facultatif dans la specification HLS et beaucoup de CDN l'omettent --
+ * c'est le cas des flux KissKH, qui s'affichaient donc sans definition alors que leur debit,
+ * lui, etait bien mesure. L'information existe pourtant: elle est ecrite dans le libelle de
+ * la variante (NAME="1080p") ou dans le chemin de son URI (.../1080p/index.m3u8).
+ *
+ * C'est une deduction, pas une mesure: on ne l'utilise qu'a defaut de RESOLUTION, et faute
+ * de deduction c'est ffprobe qui tranche (cf. `resolutionOf`).
+ */
+function guessResolution(attrs, uri) {
+  const text = `${/NAME="([^"]*)"/.exec(String(attrs || ''))?.[1] || ''} ${uri || ''}`;
+
+  // "1920x1080" ecrit tel quel: les deux dimensions d'un coup, aucune ambiguite.
+  const pair = /(\d{3,4})\s*[xX]\s*(\d{3,4})/.exec(text);
+  if (pair && COMMON_HEIGHTS.includes(Number(pair[2]))) {
+    return { width: Number(pair[1]), height: Number(pair[2]) };
+  }
+  if (/(^|[^a-z0-9])(4k|uhd)([^a-z0-9]|$)/i.test(text)) return { width: 0, height: 2160 };
+
+  // Forme suffixee ("720p"): explicite, on accepte toutes les definitions usuelles.
+  const suffixed = [...text.matchAll(/(?:^|[^\d])(\d{3,4})[pP](?:[^\d]|$)/g)]
+    .map((m) => Number(m[1]))
+    .filter((n) => COMMON_HEIGHTS.includes(n));
+  if (suffixed.length > 0) return { width: 0, height: Math.max(...suffixed) };
+
+  // Nombre nu (".../1080/"): plus fragile, donc limite aux hautes definitions -- un "240"
+  // ou un "360" isole est bien plus souvent un compteur qu'une hauteur d'image.
+  const bare = [...text.matchAll(/(?:^|[^\d])(\d{3,4})(?:[^\d]|$)/g)]
+    .map((m) => Number(m[1]))
+    .filter((n) => [2160, 1440, 1080, 720].includes(n));
+  return bare.length > 0 ? { width: 0, height: Math.max(...bare) } : { width: 0, height: 0 };
+}
+
+/**
+ * Piste audio SEPAREE que cette variante utilise, s'il y en a une.
+ *
+ * Certaines sources (Cinejoy) servent des variantes video MUETTES: le son est une rendition
+ * a part. Peser les segments de la variante ne mesure alors que l'image, et un 720p Cinejoy
+ * s'affichait 15% sous un 720p muxe de meme encodage -- un ecart qui fausse le classement
+ * entre sources. On mesure donc aussi la piste audio pour l'ajouter.
+ */
+function audioRenditionOf(text, attrs) {
+  const codecs = /CODECS="([^"]*)"/.exec(String(attrs || ''))?.[1] || '';
+  // La variante porte deja son son: rien a ajouter.
+  if (/mp4a|ac-3|ec-3|opus|vorbis|dts|flac/i.test(codecs)) return null;
+
+  const group = /AUDIO="([^"]*)"/.exec(String(attrs || ''))?.[1];
+  if (!group) return null;
+
+  const medias = text.split('\n').filter((l) => /^#EXT-X-MEDIA:/.test(l.trim()) && /TYPE=AUDIO/.test(l));
+  const mine = medias.filter((l) => l.includes(`GROUP-ID="${group}"`));
+  // A defaut de piste marquee par defaut, la premiere du groupe: elles ne different que par
+  // la langue, pas par le debit.
+  const chosen = mine.find((l) => /DEFAULT=YES/i.test(l)) || mine[0];
+  return chosen ? /URI="([^"]+)"/.exec(chosen)?.[1] || null : null;
+}
+
+/**
  * Variantes d'un master. `BANDWIDTH` est le debit de POINTE que le lecteur doit pouvoir
  * soutenir, pas le debit moyen du fichier: il depasse la moyenne reelle de 10 a 50%.
  * `AVERAGE-BANDWIDTH`, quand il est declare, est la vraie moyenne.
@@ -255,14 +334,18 @@ function parseMaster(text) {
     }
 
     const resolution = /RESOLUTION=(\d+)x(\d+)/.exec(attrs);
+    const guessed = resolution ? null : guessResolution(attrs, uri);
     variants.push({
       peak: Number(/(?:^|,)BANDWIDTH=(\d+)/.exec(attrs)?.[1]) || 0,
       average: Number(/(?:^|,)AVERAGE-BANDWIDTH=(\d+)/.exec(attrs)?.[1]) || 0,
       // La LARGEUR est remontee telle quelle: c'est elle qui situe un format large. Un film
       // en 2.40:1 est encode 1920x800 -- les 280 lignes "manquantes" sont des bandes noires
       // qui n'existent pas dans le fichier, pas une image de moindre definition.
-      width: resolution ? Number(resolution[1]) : 0,
-      height: resolution ? Number(resolution[2]) : 0,
+      // Faute de RESOLUTION, la deduction du libelle ou du chemin. Nulle si elle n'a rien
+      // trouve: c'est alors ffprobe qui tranchera.
+      width: resolution ? Number(resolution[1]) : guessed.width,
+      height: resolution ? Number(resolution[2]) : guessed.height,
+      audioUri: audioRenditionOf(text, attrs),
       uri,
     });
   }
@@ -354,41 +437,203 @@ async function probeMediaPlaylist(access, url, text) {
   const seconds = measured.reduce((total, s) => total + s.duration, 0);
   if (seconds <= 0) return {};
 
-  return { bitrate: Math.round((bytes * 8) / seconds), estimated: true, samples: measured.length };
+  return {
+    bitrate: Math.round((bytes * 8) / seconds),
+    estimated: true,
+    samples: measured.length,
+    // Playlist effectivement pesee: c'est elle que ffprobe ouvrira si personne n'a su dire
+    // la definition (cf. `resolutionOf`). La remonter evite de la retrouver deux fois.
+    read: url,
+  };
+}
+
+/**
+ * Debit d'une piste audio separee, en deux prelevements.
+ *
+ * Mise en cache a part: les quatre paliers d'un meme titre Cinejoy partagent exactement la
+ * meme rendition audio, et la mesurer quatre fois n'apprendrait rien.
+ */
+async function probeAudioRendition(access, url) {
+  return cache.wrap(`probe:audio:${url}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
+    const { status, data } = await access.http.get(access.resolve(url), { responseType: 'text' });
+    if (status >= 400 || typeof data !== 'string' || !data.includes('#EXTINF')) return 0;
+
+    const segments = collectSegments(data, url);
+    if (segments.length === 0) return 0;
+
+    const picked = pickSamples(segments, 2);
+    const sizes = await Promise.all(
+      picked.map((segment) => (segment.bytes ? segment.bytes : byteLength(access, segment.uri).catch(() => 0))),
+    );
+    const bytes = sizes.reduce((total, n) => total + n, 0);
+    const seconds = picked.reduce((total, s, i) => total + (sizes[i] > 0 ? s.duration : 0), 0);
+    return seconds > 0 ? Math.round((bytes * 8) / seconds) : 0;
+  });
 }
 
 /**
  * @param {number} depth garde-fou contre une chaine de masters qui se referenceraient
  *        mutuellement (vu sur certains CDN mal configures).
  */
-async function probeHls(access, url, depth = 0) {
-  const { status, data } = await access.http.get(access.resolve(url), { responseType: 'text' });
-  if (status >= 400 || typeof data !== 'string') return {};
+async function probeHls(access, url, depth = 0, body = null) {
+  // `body`: playlist deja connue -- c'est le cas d'un mini-master fabrique par un addon, dont
+  // le corps voyage DANS le lien. Aucune requete a faire pour le lire.
+  let data = body;
+  if (data === null) {
+    const response = await access.http.get(access.resolve(url), { responseType: 'text' });
+    if (response.status >= 400 || typeof response.data !== 'string') return {};
+    data = response.data;
+  }
 
   if (data.includes('#EXT-X-STREAM-INF')) {
     const best = parseMaster(data);
     if (!best) return {};
+    const shape = { height: best.height, width: best.width };
 
-    // Valeur declaree ET moyenne: rien de mieux a esperer, on la prend telle quelle.
-    if (best.average) return { bitrate: best.average, height: best.height, width: best.width };
+    // Valeur declaree ET moyenne: rien de mieux a esperer, on la prend telle quelle. La
+    // specification veut qu'elle inclue deja la piste audio associee.
+    if (best.average) return { bitrate: best.average, ...shape };
 
     // Sinon on descend mesurer la variante: une moyenne calculee sur ses segments est
     // comparable aux autres liens, la ou un debit de pointe ne l'est pas.
     if (best.uri && depth < 2) {
-      const measured = await probeHls(access, new URL(best.uri, url).toString(), depth + 1);
+      const variantUrl = new URL(best.uri, url).toString();
+      const measured = await probeHls(access, variantUrl, depth + 1);
       if (measured.bitrate) {
-        return { ...measured, height: best.height || measured.height, width: best.width || measured.width };
+        // Variante muette: ce qu'on vient de peser n'est que l'image. Sans le son, ce lien
+        // se compare a la baisse face a un flux muxe de meme encodage.
+        const audio = best.audioUri
+          ? await probeAudioRendition(access, new URL(best.audioUri, url).toString()).catch(() => 0)
+          : 0;
+        return {
+          ...measured,
+          bitrate: measured.bitrate + (audio || 0),
+          height: best.height || measured.height,
+          width: best.width || measured.width,
+        };
       }
     }
 
     // Rien n'a pu etre mesure: le pic reste une indication, signalee comme approximative.
-    return best.peak
-      ? { bitrate: best.peak, height: best.height, width: best.width, estimated: true }
-      : { height: best.height, width: best.width };
+    if (best.peak) return { bitrate: best.peak, ...shape, estimated: true };
+    // Ni debit ni definition: ce n'est pas un resultat, c'est un echec. Le rendre comme un
+    // objet non vide ferait passer cet acces pour concluant et priverait le lien de ses
+    // voies de repli.
+    return shape.height || shape.width ? shape : {};
   }
 
   if (data.includes('#EXTINF')) return probeMediaPlaylist(access, url, data);
   return {};
+}
+
+/**
+ * Le format que designe une image mesuree.
+ *
+ * ffprobe rend la taille REELLE de l'image, qui n'est pas celle du format annonce. Un film
+ * en 2.35:1 se rencontre sous deux encodages, et il faut les lire a l'envers l'un de l'autre:
+ *
+ *  - 1920x800: le scope est RECADRE, les 280 lignes absentes sont des bandes noires qui
+ *    n'existent pas dans le fichier. C'est la largeur qui nomme le format (1080p).
+ *  - 2542x1080: l'image garde ses 1080 lignes et deborde en largeur. C'est la hauteur qui
+ *    nomme le format -- lu sur la largeur, ce 1080p passerait pour du 1440p.
+ *
+ * On distingue les deux a la hauteur: standard, elle fait foi; inhabituelle, c'est un
+ * recadrage et la largeur reprend la main.
+ */
+function nominalShape(width, height) {
+  if (COMMON_HEIGHTS.some((h) => Math.abs(height - h) <= 8)) return { width: 0, height };
+  return { width, height };
+}
+
+let ffprobeAvailable = null;
+
+/**
+ * ffprobe est-il installe? Verifie une fois, puis memorise: sans cette garde, une image
+ * construite sans ffmpeg tenterait un spawn par lien sans definition, a chaque fiche.
+ */
+function ffprobeReady() {
+  if (ffprobeAvailable) return ffprobeAvailable;
+  ffprobeAvailable = new Promise((resolve) => {
+    execFile(config.FFPROBE_PATH || 'ffprobe', ['-version'], { timeout: 5000 }, (err) => resolve(!err));
+  });
+  return ffprobeAvailable;
+}
+
+/**
+ * Definition lue DANS le flux, par ffprobe -- dernier recours.
+ *
+ * Beaucoup de playlists de segments n'ont aucun master au-dessus d'elles: il n'y a alors
+ * ni RESOLUTION, ni NAME, ni rien a deduire d'un chemin. Le debit se mesure, la definition
+ * non -- c'est ce qui laissait les flux KissKH s'afficher avec leur seul debit.
+ *
+ * ffprobe ouvre la playlist (il sait lire du HLS, segments fMP4 et leur init compris), lit
+ * l'entete du premier segment et s'arrete: quelques centaines de kilo-octets, une fois, puis
+ * le resultat suit la mesure en cache. La sonde de definition ne rallonge donc que les liens
+ * dont la definition etait de toute facon inconnue.
+ */
+function resolutionOf(url, headers, timeoutMs) {
+  return new Promise((resolve) => {
+    // Options PRIVEES du protocole http: sur une entree qui n'en est pas une, elles font
+    // echouer l'ouverture (cf. subtitles/speech.js, meme piege).
+    const network = /^https?:\/\//i.test(String(url))
+      ? [
+          '-user_agent', DEFAULT_UA,
+          '-rw_timeout', String(Math.max(timeoutMs, 1000) * 1000),
+          ...(headers && Object.keys(headers).length > 0
+            ? ['-headers', `${Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\r\n')}\r\n`]
+            : []),
+        ]
+      : [];
+
+    const args = [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=width,height',
+      '-of', 'csv=p=0',
+      // Une playlist HLS renvoie vers d'autres protocoles: sans liste blanche explicite,
+      // ffprobe refuse de suivre ses propres segments.
+      '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+      ...network,
+      // Assez pour trouver la premiere image, pas de quoi telecharger le segment entier.
+      '-probesize', '2000000',
+      '-analyzeduration', '2000000',
+      '-i', url,
+    ];
+
+    execFile(config.FFPROBE_PATH || 'ffprobe', args, { timeout: timeoutMs }, (err, stdout) => {
+      if (err && !stdout) return resolve(null);
+      const [width, height] = String(stdout).trim().split('\n')[0].split(',').map(Number);
+      resolve(height > 0 ? nominalShape(width, height) : null);
+    });
+  });
+}
+
+/**
+ * Complete une mesure de ce qu'elle n'a pas su dire, et ecarte ce qu'elle a mal dit.
+ *
+ * Un debit inferieur au kilobit n'est pas un flux: c'est le signe qu'on a pese autre chose
+ * que le media (une playlist prise pour un fichier, une reponse d'erreur). Mieux vaut ne
+ * rien afficher qu'un "0 kb/s" qui a l'air d'une mesure.
+ */
+async function finish(access, result, url, { deadline, knownHeight } = {}) {
+  const { read, ...clean } = result;
+  if (clean.bitrate && clean.bitrate < 1000) {
+    delete clean.bitrate;
+    delete clean.estimated;
+  }
+  if (clean.height || knownHeight > 0 || !config.PROBE_RESOLUTION) return clean;
+
+  const budget = deadline ? deadline - Date.now() : config.PROBE_RESOLUTION_TIMEOUT_MS;
+  if (budget < 1000) return clean;
+  if (!(await ffprobeReady())) return clean;
+
+  const target = access.resolve(read || url);
+  const found = await resolutionOf(
+    target,
+    access.headers,
+    Math.min(budget, config.PROBE_RESOLUTION_TIMEOUT_MS),
+  ).catch(() => null);
+  return found ? { ...clean, ...found, resolutionProbed: true } : clean;
 }
 
 async function probeFile(access, url, durationSeconds) {
@@ -401,22 +646,31 @@ async function probeFile(access, url, durationSeconds) {
 }
 
 async function attempt(access, url, durationSeconds) {
+  // Playlist synthetique: elle est fournie avec le lien, il n'y a rien a aller chercher et
+  // rien a deduire de l'URL.
+  if (access.inline) return probeHls(access, access.inline.base || url, 0, access.inline.text);
+
   // Un lien d'addon est une URL de proxy: son extension ne dit plus rien du flux, c'est
-  // celle de la cible qu'elle transporte qui compte. Le motif n'est pas ancre en fin
-  // d'URL, car certaines cibles sont elles-memes des proxys HLS qui portent la vraie
-  // playlist en parametre (.../m3u8-proxy?url=...master.m3u8&...).
-  const isHls = /\.m3u8/i.test(streamProxy.targetOf(url) || url);
+  // celle de la cible qu'elle transporte qui compte. `sourceOf` et non `targetOf`, sans quoi
+  // un mini-master (qui n'a pas de cible, seulement une base) serait pris pour un fichier et
+  // pese... a la taille de son propre corps, soit 1 ko pour un film de 2 h 35.
+  //
+  // Le motif n'est pas ancre en fin d'URL, car certaines cibles sont elles-memes des proxys
+  // HLS qui portent la vraie playlist en parametre (.../m3u8-proxy?url=...master.m3u8&...).
+  const isHls = /\.m3u8/i.test(streamProxy.sourceOf(url) || url);
   return isHls ? probeHls(access, url) : probeFile(access, url, durationSeconds);
 }
 
 /**
  * @param {string} url URL du media a mesurer
- * @param {{durationSeconds?: number, refererUrl?: string}} options
+ * @param {{durationSeconds?: number, refererUrl?: string, knownHeight?: number}} options
  *        refererUrl = page d'embed d'origine (voe.sx/...), pas le CDN: c'est elle que le
  *        hoster attend en Referer, et l'origine du CDN ne suffit pas.
- * @returns {Promise<{bitrate?, height?, bytes?, estimated?}>}
+ *        knownHeight = definition deja connue par ailleurs (libelle du lien). Non nulle,
+ *        elle dispense d'ouvrir le flux pour la mesurer.
+ * @returns {Promise<{bitrate?, height?, width?, bytes?, estimated?, resolutionProbed?}>}
  */
-async function probe(url, { durationSeconds, refererUrl, hoster, deadline, refresh } = {}) {
+async function probe(url, { durationSeconds, refererUrl, hoster, deadline, refresh, knownHeight = 0 } = {}) {
   if (!config.PROBE_BITRATE || !url) return {};
 
   // Hors budget: on rend la main SANS passer par le cache. Mettre en cache un "aucune
@@ -449,10 +703,11 @@ async function probe(url, { durationSeconds, refererUrl, hoster, deadline, refre
       if (access.service && probeBreaker.isOpen(access.service)) continue;
 
       try {
-        const result = await attempt(access, access.entry || url, durationSeconds);
+        const entry = access.entry || url;
+        const result = await attempt(access, entry, durationSeconds);
         if (result && Object.keys(result).length > 0) {
           if (access.service) probeBreaker.noteRecovery(access.service);
-          return result;
+          return finish(access, result, entry, { deadline, knownHeight });
         }
       } catch (err) {
         // Une exception ici est un timeout ou une erreur reseau (les statuts HTTP, eux, ne
@@ -468,7 +723,9 @@ async function probe(url, { durationSeconds, refererUrl, hoster, deadline, refre
 }
 
 function formatBitrate(bitsPerSecond) {
-  if (!bitsPerSecond || bitsPerSecond <= 0) return null;
+  // Sous le kilobit, ce n'est pas un debit faible mais une mesure fausse -- et elle
+  // s'affichait "0 kb/s", ce qui a tout l'air d'un resultat.
+  if (!bitsPerSecond || bitsPerSecond < 1000) return null;
   const mbps = bitsPerSecond / 1e6;
   if (mbps >= 10) return `${Math.round(mbps)} Mb/s`;
   if (mbps >= 1) return `${mbps.toFixed(1)} Mb/s`;

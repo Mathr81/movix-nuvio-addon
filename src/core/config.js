@@ -140,6 +140,13 @@ const config = {
   // Mesures menees de front. Elles attendent surtout le reseau: plus large que l'extraction,
   // qui tape un service unique et n'a rien a gagner a etre bousculee.
   PROBE_CONCURRENCY: Number(readEnv('PROBE_CONCURRENCY', 10)),
+  // Definition lue dans le flux par ffprobe, en DERNIER recours: beaucoup de playlists
+  // n'annoncent aucune RESOLUTION (les flux KissKH, par exemple, s'affichaient donc avec
+  // leur debit mais sans definition). ffprobe ne lit que l'entete du premier segment.
+  // Ne se declenche que si ni la playlist ni le libelle du lien n'ont rien appris.
+  PROBE_RESOLUTION: readBool('PROBE_RESOLUTION', true),
+  PROBE_RESOLUTION_TIMEOUT_MS: Number(readEnv('PROBE_RESOLUTION_TIMEOUT_MS', 8000)),
+  FFPROBE_PATH: readEnv('FFPROBE_PATH', 'ffprobe'),
   // Reponse en deux temps: delai au-dela duquel la liste part avec les debits deja mesures,
   // les sondes restantes continuant seules pour l'ouverture suivante. C'est ce qui separe
   // "la fiche s'ouvre" de "la fiche s'ouvre completement renseignee". 0 = tout attendre.

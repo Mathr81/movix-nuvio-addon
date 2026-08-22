@@ -13,10 +13,13 @@ FROM node:22-alpine
 # 10 s avant de tuer le process, ce qui coupe une ecriture de cache en cours.
 #
 # `ffmpeg` sert au CALAGE AUTOMATIQUE des sous-titres: il ecoute quelques fenetres du flux
-# pour reperer ou l'on y parle (cf. src/streaming/subtitles/speech.js). Il pese une
-# centaine de Mo dans l'image -- si l'on prefere s'en passer, le retirer d'ici suffit:
-# l'addon detecte son absence au demarrage, desactive le calage et sert les pistes telles
-# quelles. Rien d'autre n'en depend.
+# pour reperer ou l'on y parle (cf. src/streaming/subtitles/speech.js). Son compagnon
+# `ffprobe` sert de dernier recours a la sonde: il lit la definition DANS le flux quand
+# aucune playlist ne l'annonce (cf. src/streaming/probe.js).
+#
+# Il pese une centaine de Mo dans l'image -- si l'on prefere s'en passer, le retirer d'ici
+# suffit: l'addon detecte son absence, desactive le calage et sert les pistes telles
+# quelles, et la sonde se contente des definitions declarees.
 RUN apk add --no-cache tini ffmpeg
 
 WORKDIR /app

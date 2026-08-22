@@ -272,6 +272,9 @@ app.get('/debug/streams/:type/:id', async (req, res) => {
         // "declare" = lu dans le master HLS (AVERAGE-BANDWIDTH), "mesure" = calcule sur des
         // segments peses, "aucun" = la sonde n'a rien pu obtenir.
         origineDebit: r.bitrate ? (r.bitrateEstimated ? 'mesure' : 'declare') : 'aucun',
+        // "flux" = lue par ffprobe dans le media faute d'etre annoncee, "playlist" = lue ou
+        // deduite de la playlist, "libelle" = seule la source l'annonce, "aucune" = inconnue.
+        origineResolution: r.resolutionSource || 'aucune',
         segmentsPeses: r.bitrateSamples || null,
         tailleOctets: r.bytes || null,
       })),

@@ -220,6 +220,12 @@ function describe(link, measured) {
     // Nombre de segments effectivement peses: c'est lui qui dit si un debit affiche est
     // solide ou tire d'un seul prelevement (cf. /debug/streams).
     bitrateSamples: measured.samples,
+    // D'ou vient la definition affichee: lue dans le flux par ffprobe faute d'etre annoncee
+    // ("flux"), lue ou deduite de la playlist ("playlist"), ou seulement annoncee par la
+    // source ("libelle"). Sert a diagnostiquer un palier douteux (cf. /debug/streams).
+    resolutionSource: measured.resolutionProbed
+      ? 'flux'
+      : (measured.height ? 'playlist' : (labelled ? 'libelle' : 'aucune')),
     langRank: langScore(link.lang, link.sourceName, link.quality, link.player),
   };
 }
@@ -330,6 +336,10 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false, ref
             hoster: r.hoster,
             deadline: probeDeadline,
             refresh,
+            // Le libelle du lien dit deja "1080p": inutile d'aller ouvrir le flux pour le
+            // reapprendre. La sonde de definition ne sert qu'aux liens dont PERSONNE ne
+            // connait la definition.
+            knownHeight: parseQuality(r.quality, r.player, r.sourceName, r.lang),
           }).catch(() => ({}));
       slots[index] = describe(r, measured);
     });

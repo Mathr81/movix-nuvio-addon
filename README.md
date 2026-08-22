@@ -1125,6 +1125,70 @@ puis **débit** — à résolution égale, c'est lui qui sépare un vrai 1080p d
 compressé. `PROBE_BITRATE=false` désactive la mesure si l'ouverture des fiches devient
 lente (elle coûte un aller-retour par lien, mis en cache ensuite).
 
+#### Deux cas qui donnaient une mesure fausse
+
+**Une piste son séparée n'était pas comptée.** Certaines sources (Cinejoy) servent des
+variantes vidéo **muettes** : le son est une rendition `EXT-X-MEDIA:TYPE=AUDIO` à part.
+Peser les segments de la variante ne mesure alors que l'image, et un 720p de ce genre
+s'affichait ~15 % sous un 720p muxé de même encodage — un écart qui fausse le classement
+*entre sources*. La piste audio par défaut est donc pesée elle aussi (deux prélèvements,
+mis en cache à part : les quatre paliers d'un même titre partagent la même rendition) et
+son débit s'ajoute. Uniquement quand la variante est réellement muette : un `CODECS` qui
+mentionne `mp4a`/`ac-3`/`opus` dit que le son est déjà là, et une valeur `AVERAGE-BANDWIDTH`
+déclarée l'inclut déjà par spécification.
+
+**Un mini-master était pesé à la taille de son propre corps.** Les entrées « une par
+palier » de Cinejoy sont des playlists **synthétiques** : leur corps voyage dans le lien
+signé, il n'y a pas d'URL amont derrière. La sonde reconnaissait un flux HLS à l'extension
+de sa cible ; faute de cible, ces liens passaient pour des fichiers directs et se voyaient
+mesurés… à la taille du mini-master, soit **1 ko pour un film de 2 h 35** — d'où un débit
+de 1 bit/s, affiché « 0 kb/s ». La playlist portée par le lien est maintenant reconnue et
+lue **sans aucune requête** (elle est déjà là), et ses URI enfants pointant sur le CDN, la
+mesure court-circuite le proxy comme pour n'importe quel lien amont. Quatre paliers
+mesurés en une milliseconde chacun.
+
+Par sécurité, un débit calculé sous le kilobit n'est plus affiché du tout : ce n'est pas un
+flux très léger, c'est le signe qu'on a pesé autre chose que le média. Mieux vaut aucune
+valeur qu'un « 0 kb/s » qui a l'air d'une mesure.
+
+### Définition affichée
+
+La **définition** suit le même escalier que le débit, du plus sûr au dernier recours :
+
+1. **`RESOLUTION` déclarée** dans le master. Exacte, et plus fiable qu'un libellé « HD »
+   venu de la source.
+2. **Déduite** du libellé de la variante (`NAME="1080p"`) ou du chemin de son URI
+   (`.../1080p/index.m3u8`, `.../hls_720.m3u8`). `RESOLUTION` est facultatif dans la
+   spécification HLS et beaucoup de CDN l'omettent, mais l'information est écrite ailleurs.
+   Un nombre n'est lu comme une hauteur que s'il **en est une** (2160, 1440, 1080, 720…) :
+   sans ce garde-fou, un jeton signé ou un horodatage dans le chemin (`.../1057/`) passerait
+   pour une définition. La forme nue (`.../1080/`) est en outre limitée aux hautes
+   définitions — un « 240 » isolé est bien plus souvent un compteur qu'une hauteur d'image.
+3. **Lue dans le flux par `ffprobe`**, faute de mieux. Une playlist de segments sans master
+   au-dessus d'elle — la forme que servent les flux **KissKH** — n'écrit sa définition nulle
+   part : elle s'affichait donc avec son débit mesuré et **aucune définition**. `ffprobe`
+   ouvre la playlist, lit l'en-tête du premier segment et s'arrête : quelques centaines de
+   kilo-octets, une seule fois, puis le résultat suit la mesure en cache. Environ 1 à 2,5 s
+   sur un CDN distant.
+
+Cette dernière marche ne se déclenche **que** si personne d'autre ne sait : ni la playlist,
+ni le libellé du lien (`knownHeight`). Un lien déjà annoncé « 1080p » par sa source ne fait
+pas ouvrir le flux pour le réapprendre. `PROBE_RESOLUTION=false` la désactive,
+`PROBE_RESOLUTION_TIMEOUT_MS` (8 s) la borne, `FFPROBE_PATH` la localise.
+
+> **Ce que `ffprobe` mesure n'est pas toujours le format annoncé.** Un film en 2.35:1 se
+> rencontre sous deux encodages qu'il faut lire à l'envers l'un de l'autre. En `1920x800`,
+> le scope est **recadré** : les 280 lignes absentes sont des bandes noires qui n'existent
+> pas dans le fichier, et c'est la largeur qui nomme le format (1080p). En `2542x1080`,
+> l'image garde ses 1080 lignes et déborde en largeur : c'est la hauteur qui nomme le
+> format — lu sur sa largeur, ce 1080p passerait pour du 1440p. On distingue les deux à la
+> hauteur : standard, elle fait foi ; inhabituelle, c'est un recadrage et la largeur reprend
+> la main.
+
+`/debug/streams` donne, par lien, `origineResolution` — `playlist` (déclarée ou déduite),
+`flux` (lue par `ffprobe`), `libelle` (seule la source l'annonce) ou `aucune` — à côté de
+l'`origineDebit` déjà présent.
+
 ### Ce qui rend l'ouverture d'une fiche lente
 
 Les sources sont interrogées en parallèle depuis le début ; ce qui s'allongeait, c'est ce

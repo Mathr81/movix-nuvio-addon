@@ -206,6 +206,26 @@ function sourceOf(url) {
   }
 }
 
+/**
+ * Corps d'une playlist SYNTHETIQUE portee par le lien (mini-master d'un addon).
+ *
+ * Le lien ne designe alors aucun amont a interroger: la playlist EST dans le lien. La
+ * connaitre evite un aller-retour par notre propre proxy, et surtout evite de prendre ce
+ * lien pour un fichier -- son URL n'a ni extension ni cible (cf. probe.js, ou un mini-master
+ * pese ainsi 1 ko et donnait un debit de 1 bit/s).
+ */
+function inlineOf(url) {
+  if (!isProxied(url)) return null;
+  try {
+    const payload = new URL(url).searchParams.get('p');
+    if (!payload) return null;
+    const { pl, base } = JSON.parse(b64urlDecode(payload));
+    return pl ? { text: pl, base: base || '' } : null;
+  } catch {
+    return null;
+  }
+}
+
 function localize(url) {
   if (!isProxied(url)) return url;
   const base = publicBase();
@@ -705,4 +725,4 @@ function mount(app) {
   app.head(ROUTE, handle);
 }
 
-module.exports = { ROUTE, mount, proxyUrl, proxyInlinePlaylist, isProxied, targetOf, sourceOf, headersOf, localize, publicBase };
+module.exports = { ROUTE, mount, proxyUrl, proxyInlinePlaylist, isProxied, targetOf, sourceOf, inlineOf, headersOf, localize, publicBase };
