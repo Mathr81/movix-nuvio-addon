@@ -281,6 +281,20 @@ const config = {
   SUBTITLE_AUTOSYNC_WINDOW_TIMEOUT_MS: Number(readEnv('SUBTITLE_AUTOSYNC_WINDOW_TIMEOUT_MS', 60000)),
   // Decalage maximal cherche. Au-dela, ce n'est plus un decalage: c'est une autre piste.
   SUBTITLE_AUTOSYNC_MAX_SHIFT: Number(readEnv('SUBTITLE_AUTOSYNC_MAX_SHIFT', 120)),
+  // Chercher aussi une DERIVE de cadence (conversion PAL), en plus du decalage constant.
+  // A laisser actif: cela ne coute que du calcul, et une derive non corrigee est le seul
+  // defaut qu'un reglage de delai ne rattrape pas. A couper si l'on ne rencontre jamais que
+  // des decalages constants et qu'on prefere ecarter tout risque de derive inventee.
+  SUBTITLE_AUTOSYNC_DRIFT: readBool('SUBTITLE_AUTOSYNC_DRIFT', true),
+  // De combien une derive doit l'emporter sur "aucune derive" pour etre retenue. Une derive
+  // est une affirmation forte -- elle deplace la fin du film de plusieurs minutes -- donc a
+  // qualite comparable le modele qui n'affirme rien gagne.
+  SUBTITLE_AUTOSYNC_DRIFT_MARGIN: Number(readEnv('SUBTITLE_AUTOSYNC_DRIFT_MARGIN', 0.25)),
+  // Combien de fois la dispersion des mesures une derive doit representer pour etre affirmee.
+  // Une derive de 0,1 % sur un episode de 45 min vaut 2,7 s en tout: si les fenetres se
+  // dispersent deja de 3 s, ce n'est pas une mesure mais du bruit ajuste. Une vraie
+  // conversion PAL deplace la fin du film de plusieurs minutes et passe sans difficulte.
+  SUBTITLE_AUTOSYNC_DRIFT_EVIDENCE: Number(readEnv('SUBTITLE_AUTOSYNC_DRIFT_EVIDENCE', 3)),
   // Seuil de confiance. EN DESSOUS, LA PISTE EST SERVIE TELLE QUELLE -- c'est voulu: un
   // calage approximatif est pire que pas de calage, il est faux partout au lieu d'etre faux
   // d'une quantite constante, que l'oeil corrige tout seul.

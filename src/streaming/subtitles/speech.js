@@ -1,4 +1,6 @@
 const { spawn } = require('child_process');
+const https = require('https');
+const axios = require('axios');
 const config = require('../../core/config');
 
 /**
@@ -54,9 +56,18 @@ function available() {
   return availability;
 }
 
-function run(args, { timeoutMs }) {
+function run(args, { timeoutMs, feed }) {
   return new Promise((resolve) => {
-    const child = spawn(FFMPEG(), args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(FFMPEG(), args, { stdio: [feed ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+    if (feed) {
+      // Un ffmpeg qui s'arrete avant d'avoir tout lu (assez de trames, erreur) ferme son
+      // entree: l'ecriture qui suit remonte EPIPE. C'est normal, pas une panne.
+      child.stdin.on('error', () => {});
+      feed(child.stdin).then(
+        () => child.stdin.end(),
+        () => child.stdin.end(),
+      );
+    }
     let stdout = '';
     let stderr = '';
     let killed = false;
@@ -261,4 +272,75 @@ async function speechIn(url, { start, duration, headers, timeoutMs = 60000, with
   return { intervals: toIntervals(levels, { start }), ...(withLevels ? { levels } : {}) };
 }
 
-module.exports = { available, speechIn, toIntervals, parseLevels, FRAME_MS, SPEECH_BELOW_PEAK_DB, THRESHOLD_WINDOW_SECONDS };
+// Meme constat que dans probe.js et audio.js: les CDN de hosters ont regulierement des
+// certificats invalides.
+const insecureAgent = new https.Agent({ rejectUnauthorized: false });
+
+/**
+ * Meme mesure, mais en allant chercher SOI-MEME les segments de la fenetre.
+ *
+ * Pourquoi ne pas laisser ffmpeg s'en charger avec `-ss`, comme le fait `speechIn`: parce
+ * qu'il ne SAIT pas toujours le faire. Sur une playlist en segments fragmentes (fMP4,
+ * `EXT-X-MAP`), il refuse de se positionner et relit tout depuis le debut -- mesure sur un
+ * flux reel: 84 secondes pour lire 20 secondes d'audio situees a la huitieme minute. Or
+ * nous connaissons deja les frontieres de segments, puisque nous avons lu la playlist.
+ *
+ * Les prendre nous-memes regle trois choses d'un coup: on ne telecharge que la fenetre, on
+ * sait EXACTEMENT a quel instant du flux elle commence (c'est le debut du premier segment
+ * choisi, plus d'incertitude de positionnement), et le resultat ne depend plus du format
+ * des segments.
+ *
+ * @param {Array<string>} urls  segments a lire, dans l'ordre; l'en-tete fMP4 en premier
+ * @param {{start:number, duration:number, headers?:object, timeoutMs?:number, maxBytes?:number}} options
+ *        `start` = instant du flux ou commence le PREMIER segment fourni.
+ */
+async function speechInSegments(urls, { start, duration, headers, timeoutMs = 60000, maxBytes = 64 * 1024 * 1024, withLevels = false } = {}) {
+  const args = [
+    '-hide_banner',
+    '-nostdin',
+    '-loglevel', 'error',
+    // Sur une entree en tuyau, ffmpeg n'a pas de fichier a sonder: on lui laisse de quoi
+    // reconnaitre le format avant de decider qu'il n'y arrive pas.
+    '-probesize', '10M',
+    '-analyzeduration', '10M',
+    '-i', 'pipe:0',
+    '-t', String(duration),
+    '-vn',
+    '-map', '0:a:0',
+    '-af', FILTERS,
+    '-f', 'null',
+    '-',
+  ];
+
+  let sent = 0;
+  const feed = async (stdin) => {
+    for (const url of urls) {
+      if (sent > maxBytes) break;
+      const { data } = await axios.get(url, {
+        headers,
+        responseType: 'arraybuffer',
+        timeout: 20000,
+        httpsAgent: insecureAgent,
+        maxRedirects: 5,
+      });
+      sent += data.byteLength;
+      if (!stdin.writable) break;
+      // Respecter la contre-pression: un segment fait des dizaines de Ko et ffmpeg les
+      // consomme au rythme du decodage.
+      await new Promise((resolve) => stdin.write(Buffer.from(data), () => resolve()));
+    }
+  };
+
+  const result = await run(args, { timeoutMs, feed }).catch((err) => ({ error: err.message }));
+  const levels = parseLevels(result.stdout || '');
+  if (levels.length < 20) {
+    const stderr = result.stderr || '';
+    const why = result.error || stderr.split('\n').filter(Boolean).pop() || 'aucune trame audio';
+    const reason = /matches no streams|does not contain any stream/i.test(stderr) ? 'sans-audio' : 'illisible';
+    console.warn(`[subsync] audio illisible a ${Math.round(start)}s (${reason}): ${why.slice(0, 160)}`);
+    return { error: why, reason };
+  }
+  return { intervals: toIntervals(levels, { start }), ...(withLevels ? { levels } : {}) };
+}
+
+module.exports = { available, speechIn, speechInSegments, toIntervals, parseLevels, FRAME_MS, SPEECH_BELOW_PEAK_DB, THRESHOLD_WINDOW_SECONDS };

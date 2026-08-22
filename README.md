@@ -553,6 +553,16 @@ vide la seconde. En le recalculant en continu, **le nombre de pistes calées pas
 sur le banc d'essai** (voir plus bas), sans un seul faux calage de plus. La bande est en
 outre limitée à 200–3000 Hz : les basses d'une explosion ne comptent plus pour de la voix.
 
+**Le modèle qui n'affirme rien gagne les cas douteux.** Une dérive est une affirmation
+forte — elle déplace la fin du film de plusieurs minutes. À qualité comparable, une pente de
+0,1 % s'ajuste toujours un peu mieux qu'une droite plate sans rien décrire de réel : sur un
+épisode de 45 minutes elle vaut 2,7 s en tout, alors que les fenêtres se dispersaient déjà de
+3 s. Une dérive n'est donc retenue que si elle bat nettement le modèle sans dérive **et**
+qu'elle dépasse trois fois la dispersion des mesures. Les vraies conversions PAL, qui
+déplacent la fin du film de cinq minutes, passent ce critère sans difficulté ; les pentes
+inventées, non. Si vous ne rencontrez jamais que des décalages constants,
+`SUBTITLE_AUTOSYNC_DRIFT=false` supprime la question.
+
 **La dérive n'est pas cherchée comme une pente libre.** Une conversion PAL multiplie
 *exactement* par 25 / (24000/1001) : seuls les rapports d'images/seconde réels sont essayés
 (`1`, `25/23,976`, `25/24`, `24/23,976`, et leurs inverses). Chacun l'est à fond — répliques
@@ -565,8 +575,16 @@ et l'emportaient sur quatre fenêtres justes.
 **Ce que ça coûte.** Presque rien, parce que l'addon ne télécharge jamais la vidéo entière :
 il prend la piste audio séparée du master (`EXT-X-MEDIA:TYPE=AUDIO`) quand il y en a une, et
 sinon la variante **la moins bien encodée** — la bande son y est la même, c'est la même
-diffusion. Compter ~30 Mo et une trentaine de secondes pour un long-métrage ; sur un flux
-HLS de 30 min mesuré de bout en bout, 3 Mo et 4 secondes.
+diffusion.
+
+Et il va chercher **les segments de la fenêtre lui-même**, au lieu de demander à ffmpeg de
+s'y positionner. Ce n'est pas de la coquetterie : sur une playlist en segments fragmentés
+(fMP4, `EXT-X-MAP`), ffmpeg refuse de chercher et relit tout depuis le début — mesuré sur un
+flux réel, *84 secondes pour lire 20 secondes d'audio situées à la huitième minute*. Comme
+la playlist a déjà été lue, les frontières de segments sont connues : les prendre soi-même
+ne télécharge que la fenêtre, donne l'instant exact où elle commence, et ne dépend plus du
+format des segments. Sur une source à piste audio séparée, le relevé complet d'un film de
+2 h 35 tombe ainsi à **9 secondes**.
 
 **Une deuxième piste peut confirmer la première.** Quand le français et l'anglais d'un même
 titre, calés séparément sur le même flux, tombent sur la *même* correspondance à une
@@ -591,6 +609,7 @@ quelle** — c'est voulu : un calage approximatif est pire que pas de calage, il
 | `SUBTITLE_AUTOSYNC_MIN_WINDOWS` | 3 | Deux fenêtres d'accord ne démontrent rien : sur une recherche de ±120 s il existe toujours des paires de faux sommets qui s'accordent par hasard |
 | `SUBTITLE_AUTOSYNC_MIN_REACH` | 0,6 | Un modèle vérifié sur les deux premiers tiers seulement — signature d'un **montage différent** (version longue, coupure), qu'aucune correction affine ne peut décrire |
 | `SUBTITLE_AUTOSYNC_MIN_CONFIDENCE` | 0,20 | Corrélations molles, sommets qui ne se détachent pas du fond (0,08 si une piste indépendante confirme) |
+| `SUBTITLE_AUTOSYNC_DRIFT_EVIDENCE` | 3 | Une dérive plus petite que trois fois la dispersion des mesures : du bruit ajusté, pas une cadence |
 
 Les seuils sont calibrés sur de l'audio de **film**, pas sur un signal de laboratoire : la
 musique et les ambiances y sont continues, une corrélation juste y vaut 0,3–0,5 là où un
@@ -606,12 +625,12 @@ confronte chaque flux aux sous-titres des 15 autres titres, qui doivent tous êt
 
 | Mesure | Résultat |
 |---|---|
-| Pistes calées | **12 / 20** (2 pistes étaient tronquées par le fournisseur) |
+| Pistes calées | **11 / 20** (2 pistes étaient tronquées par le fournisseur) |
 | Faux calages (piste d'un autre titre) | **0 / 180** |
-| Précision — décalage connu réinjecté | médiane **3 ms**, p90 14 ms, max 300 ms |
+| Précision — décalage connu réinjecté | médiane **1 ms**, p90 11 ms, max 17 ms |
 | Précision — dérive PAL réinjectée | médiane **0 ms**, max 2 ms (cadence exacte à chaque fois) |
-| Validation croisée (chaque fenêtre prédite par les autres) | médiane **200 ms**, p90 1,4 s |
-| Coût par titre | ~87 Mo, ~55 s |
+| Validation croisée (chaque fenêtre prédite par les autres) | médiane **196 ms**, p90 1,7 s |
+| Coût par titre | ~87 Mo sur une variante vidéo, **~10 Mo et 10 s** sur une piste audio séparée |
 
 Ce que le banc a mis au jour, et qui dit l'intérêt de la chose :
 
@@ -627,6 +646,14 @@ Ce que le banc a mis au jour, et qui dit l'intérêt de la chose :
 - Les échecs restants ne viennent pas du calcul : 4 titres n'ont eu **aucun flux audio
   lisible** (CDN muet ou variante sans piste audio) et 2 pistes étaient **tronquées à la
   source** (37 répliques pour tout Interstellar).
+
+> **Selon la source, le calage ne coûte pas la même chose.** Une source qui diffuse sa bande
+> son en rendition séparée (Cinejoy) est le cas idéal : la vidéo n'est jamais touchée,
+> comptez une dizaine de mégaoctets et autant de secondes. Une source qui ne propose que des
+> variantes muxées coûte la variante la moins définie, soit quelques dizaines de mégaoctets.
+> Et une source qui livre **ses propres** sous-titres avec le flux (PurStream, KissKH) n'a
+> besoin de rien : ces pistes viennent du même fichier que l'image, elles sont calées par
+> construction, et l'addon les fait passer avant les siennes pour une même langue.
 
 ##### Savoir quel flux caler
 

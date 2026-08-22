@@ -90,6 +90,25 @@ function snapToSegments(windows, starts) {
   });
 }
 
+/**
+ * Segments qui couvrent une fenetre, l'en-tete fMP4 en tete quand il y en a un.
+ *
+ * Les prendre nous-memes plutot que de demander a ffmpeg de se positionner: il ne sait pas
+ * toujours le faire (cf. speech.js), et cela nous donne l'instant EXACT ou la fenetre
+ * commence -- celui du premier segment.
+ */
+function segmentsOf(source, window) {
+  if (!Array.isArray(source.segments) || source.segments.length === 0) return null;
+  const picked = source.segments.filter(
+    (seg) => seg.start + seg.duration > window.t0 && seg.start < window.t0 + window.duration,
+  );
+  if (picked.length === 0) return null;
+  return {
+    start: picked[0].start,
+    urls: [...(source.init ? [source.init] : []), ...picked.map((seg) => seg.uri)],
+  };
+}
+
 async function mapLimit(items, limit, fn) {
   const results = new Array(items.length);
   let cursor = 0;
@@ -139,24 +158,32 @@ async function speechOf({ streamUrl, streamKey, refererUrl, durationHint }) {
     );
 
     const started = Date.now();
-    const listen = (url) =>
-      mapLimit(windows, Math.max(1, config.SUBTITLE_AUTOSYNC_CONCURRENCY), (w) =>
-        speech.speechIn(url, {
-          start: w.t0,
-          duration: w.duration,
-          headers: source.headers,
-          timeoutMs: config.SUBTITLE_AUTOSYNC_WINDOW_TIMEOUT_MS,
-        }),
-      );
+    const listen = (url, useSegments) =>
+      mapLimit(windows, Math.max(1, config.SUBTITLE_AUTOSYNC_CONCURRENCY), (w) => {
+        const picked = useSegments ? segmentsOf(source, w) : null;
+        return picked
+          ? speech.speechInSegments(picked.urls, {
+              start: picked.start,
+              duration: w.duration,
+              headers: source.headers,
+              timeoutMs: config.SUBTITLE_AUTOSYNC_WINDOW_TIMEOUT_MS,
+            })
+          : speech.speechIn(url, {
+              start: w.t0,
+              duration: w.duration,
+              headers: source.headers,
+              timeoutMs: config.SUBTITLE_AUTOSYNC_WINDOW_TIMEOUT_MS,
+            });
+      });
 
-    let parts = await listen(source.url);
+    let parts = await listen(source.url, true);
 
     // La variante choisie ne portait que de la video. Certains masters annoncent pourtant un
     // codec audio sur chaque variante -- ils mentent, et il n'y a aucun moyen de le savoir
     // avant d'essayer. Le master, lui, sait assembler l'image et le son.
     if (parts.every((p) => p.reason === 'sans-audio') && source.fallbackUrl) {
       console.log('[subsync] cette variante n\'a pas de piste audio -- reprise depuis le master');
-      parts = await listen(source.fallbackUrl);
+      parts = await listen(source.fallbackUrl, false);
     }
 
     const usable = windows.filter((_, i) => parts[i].intervals && parts[i].intervals.length > 0);
@@ -177,6 +204,16 @@ async function speechOf({ streamUrl, streamKey, refererUrl, durationHint }) {
     );
     return { windows: usable, speech: intervals, duration, kind: source.kind };
   });
+}
+
+/** Reglages de resolution, tires de la configuration. */
+function solveOptions() {
+  return {
+    maxShift: config.SUBTITLE_AUTOSYNC_MAX_SHIFT,
+    driftMargin: config.SUBTITLE_AUTOSYNC_DRIFT_MARGIN,
+    driftEvidence: config.SUBTITLE_AUTOSYNC_DRIFT_EVIDENCE,
+    ...(config.SUBTITLE_AUTOSYNC_DRIFT ? {} : { scales: [1] }),
+  };
 }
 
 /** Cle de cache d'un calage. */
@@ -264,7 +301,7 @@ async function planFor({ streamUrl, streamKey, subtitleKey, vtt, refererUrl, dur
     const signal = await speechOf({ streamUrl, streamKey, refererUrl, durationHint: durationHint || cues[cues.length - 1][1] });
     if (!signal) return null;
 
-    const solved = align.solve(signal.speech, cues, signal.windows, { maxShift: config.SUBTITLE_AUTOSYNC_MAX_SHIFT });
+    const solved = align.solve(signal.speech, cues, signal.windows, solveOptions());
     const refus = missing(solved);
     if (refus) {
       console.log(`[subsync] calage refuse (${refus}) -- piste servie telle quelle`);
@@ -317,7 +354,7 @@ async function plansFor({ streamUrl, streamKey, refererUrl, durationHint, tracks
 
   const solved = candidates.map((c) => ({
     ...c,
-    result: align.solve(signal.speech, c.cues, signal.windows, { maxShift: config.SUBTITLE_AUTOSYNC_MAX_SHIFT }),
+    result: align.solve(signal.speech, c.cues, signal.windows, solveOptions()),
   }));
 
   for (const entry of solved) {

@@ -268,6 +268,22 @@ function weightOf(m) {
 function solve(speech, cues, windows, options = {}) {
   const {
     maxShift = 120,
+    // Cadences essayees. Restreindre a [1] revient a ne chercher qu'un decalage constant:
+    // c'est le cas de tres loin le plus frequent, et le seul que certaines collections
+    // rencontrent jamais.
+    scales = KNOWN_SCALES,
+    // De combien une cadence doit l'emporter sur "aucune derive" pour etre retenue. Une
+    // derive est une affirmation FORTE -- elle deplace la fin du film de plusieurs minutes.
+    // A qualite comparable, le modele qui n'affirme rien doit gagner: sur des mesures un peu
+    // dispersees, une pente de 0,1 % s'ajuste toujours un peu mieux qu'une droite plate,
+    // sans rien decrire de reel.
+    driftMargin = 0.25,
+    // Combien de fois la dispersion des mesures une derive doit-elle representer pour etre
+    // affirmee. Une derive de 0,1 % sur un episode de 45 min vaut 2,7 s en tout: si les
+    // fenetres se dispersent deja de 3 s, cette pente n'est pas une mesure, c'est du bruit
+    // ajuste. Une vraie conversion PAL, elle, deplace la fin du film de plusieurs MINUTES:
+    // elle passe ce critere sans difficulte.
+    driftEvidence = 3,
     // Marge du premier passage: elle absorbe l'erreur de l'ancre, mais laisse passer
     // ensemble les rapports voisins (25/24 et 25/23,976 ne different que de 0,1 %).
     coarseTolerance = 10,
@@ -281,9 +297,9 @@ function solve(speech, cues, windows, options = {}) {
   const gate = { minScore, minMargin };
   if (windows.length === 0 || cues.length < 20) return null;
 
-  let winner = null;
+  const candidates = [];
 
-  for (const scale of KNOWN_SCALES) {
+  for (const scale of scales) {
     const scaled = rescale(cues, scale);
     const curves = windows.map((w) => scan(speech, scaled, { ...w, min: -maxShift, max: maxShift }));
 
@@ -325,10 +341,21 @@ function solve(speech, cues, windows, options = {}) {
     const dispersion = measures.length >= 2 ? rms : 2;
     const total = strength / (1 + dispersion / 2);
 
-    if (!winner || total > winner.total) winner = { scale, offset, rms, measures, total };
+    candidates.push({ scale, offset, rms, measures, total });
   }
 
-  if (!winner) return null;
+  if (candidates.length === 0) return null;
+  let winner = candidates.reduce((best, c) => (c.total > best.total ? c : best));
+
+  // Le modele sans derive reprend la main dans deux cas: s'il n'est pas nettement battu, et
+  // si la derive annoncee est trop petite pour se distinguer du bruit de mesure.
+  const plain = candidates.find((c) => c.scale === 1);
+  if (plain && winner.scale !== 1) {
+    const span = Math.max(...winner.measures.map((m) => m.time)) - Math.min(...winner.measures.map((m) => m.time));
+    const effet = Math.abs(winner.scale - 1) * span;
+    if (winner.total < plain.total * (1 + driftMargin) || effet < driftEvidence * winner.rms) winner = plain;
+  }
+
   const { scale, offset, rms, measures } = winner;
 
   // Confiance -- calibree sur de l'audio de FILM, pas sur un signal de laboratoire. Sur un

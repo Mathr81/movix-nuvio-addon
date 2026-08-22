@@ -98,16 +98,35 @@ function parseAudioRendition(text, baseUrl) {
  * (demarrer au segment, ou se placer exactement) donnent le meme resultat. Le probleme
  * disparait au lieu d'etre compense.
  */
-function segmentStarts(text) {
-  const starts = [];
+function segmentStarts(text, baseUrl) {
+  const segments = [];
   let total = 0;
-  for (const line of text.split('\n')) {
-    const match = /^#EXTINF:([\d.]+)/.exec(line.trim());
-    if (!match) continue;
-    starts.push(total);
-    total += Number(match[1]) || 0;
+  let duration = 0;
+  // Segments fragmentes (fMP4): le fragment seul ne se decode pas, il lui faut l'en-tete
+  // declare par EXT-X-MAP. C'est le cas de plus en plus courant, et celui ou ffmpeg refuse
+  // de chercher dans la playlist -- d'ou l'interet d'aller prendre les segments nous-memes.
+  let init = null;
+
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('#EXT-X-MAP:')) {
+      const uri = /URI="([^"]+)"/i.exec(line)?.[1];
+      if (uri && baseUrl) init = new URL(uri, baseUrl).toString();
+      continue;
+    }
+    const match = /^#EXTINF:([\d.]+)/.exec(line);
+    if (match) {
+      duration = Number(match[1]) || 0;
+      continue;
+    }
+    if (!line || line.startsWith('#')) continue;
+    if (duration > 0) {
+      segments.push({ start: total, duration, uri: baseUrl ? new URL(line, baseUrl).toString() : line });
+      total += duration;
+      duration = 0;
+    }
   }
-  return { starts, duration: total };
+  return { starts: segments.map((s) => s.start), segments, duration: total, init };
 }
 
 /** Duree annoncee par une playlist de segments (somme des EXTINF). */
@@ -123,8 +142,14 @@ function playlistDuration(text) {
  * @returns {Promise<{url:string, headers:object, duration:number, kind:string, bitrate:number}|null>}
  */
 async function locate(streamUrl, { refererUrl, timeoutMs = 12000 } = {}) {
-  const target = streamProxy.targetOf(streamUrl);
-  const proxied = !!target;
+  // `sourceOf` et non `targetOf`: un mini-master fabrique par un addon (Cinejoy) n'a pas
+  // d'URL amont -- son corps est fourni -- mais il a une base, qui designe le master
+  // d'origine. Sans cette distinction, ces flux-la etaient joints EN DIRECT (le CDN refuse,
+  // faute des en-tetes que seul le proxy rejoue) et, l'URL de proxy ne finissant pas en
+  // .m3u8, pris pour de simples fichiers: ni rendition audio separee, ni frontieres de
+  // segments. C'est-a-dire tout ce qui rend le calage economique et precis.
+  const target = streamProxy.sourceOf(streamUrl);
+  const proxied = streamProxy.isProxied(streamUrl);
   // A travers notre proxy: il pose les en-tetes attendus, ffmpeg n'a rien a savoir du CDN.
   const headers = proxied ? {} : directHeaders(streamUrl, refererUrl);
   const entry = proxied ? streamProxy.localize(streamUrl) : streamUrl;
@@ -140,8 +165,8 @@ async function locate(streamUrl, { refererUrl, timeoutMs = 12000 } = {}) {
   if (!text) return null;
 
   if (text.includes('#EXTINF')) {
-    const { starts, duration } = segmentStarts(text);
-    return { url: entry, headers, duration, starts, kind: 'playlist', bitrate: 0 };
+    const { starts, segments, duration, init } = segmentStarts(text, entry);
+    return { url: entry, headers, duration, starts, segments, init, kind: 'playlist', bitrate: 0 };
   }
   if (!text.includes('#EXT-X-STREAM-INF')) return null;
 
@@ -168,12 +193,16 @@ async function locate(streamUrl, { refererUrl, timeoutMs = 12000 } = {}) {
     };
   }
 
-  const { starts, duration } = segmentStarts(child);
+  const { starts, segments, duration, init } = segmentStarts(child, localize(chosen));
   return {
     url: localize(chosen),
     headers,
     duration,
     starts,
+    // Les URI enfants d'une playlist rendue par notre proxy sont deja des URL de proxy
+    // absolues: elles se ramenent a la boucle locale.
+    segments: segments.map((seg) => ({ ...seg, uri: localize(seg.uri) })),
+    init: init ? localize(init) : null,
     // Repli quand la variante choisie s'avere ne porter QUE de la video: certains masters
     // annoncent un codec audio par variante alors que l'audio est dans une rendition a
     // part -- que ce master-la ne declare pas non plus. Le master, lui, sait assembler les
