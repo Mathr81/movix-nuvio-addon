@@ -1,24 +1,37 @@
 const { mainApi } = require('../integrations/movixClient');
+const resolved = require('./resolved');
 const log = require('../core/log');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Les players Wiflix ont la forme {name, url, episode, type} ou `type` porte la version
-// (vf/vostfr) et `name` le domaine du hoster (wiflix.js:389-394, 432-437).
-function extractPlayers(data, episode) {
-  const players = Array.isArray(data.players) ? data.players : [];
-  return players
-    .filter((p) => p.url)
-    // La route TV renvoie TOUTE la saison: sans ce filtre, l'episode 1 remonterait
-    // les liens de tous les episodes.
-    .filter((p) => episode === undefined || p.episode === undefined || Number(p.episode) === Number(episode))
-    .map((p) => ({ url: p.url, player: p.name, lang: p.type, sourceName: 'Wiflix' }));
+/**
+ * Wiflix -- deux formes, une par type de contenu (Mainapi/routes/wiflix.js).
+ *
+ *   film  : `players`     = { vf: [...], vostfr: [...] }   (scrape sur cinestream.info)
+ *   serie : `episodes[N]` = { vf: [...], vostfr: [...] }   (scrape sur flemmix)
+ *
+ * Les deux sont des MAPS par langue, pas des tableaux. L'ancienne lecture
+ * (`Array.isArray(data.players)`) ne rendait donc plus rien du tout: les films tombaient
+ * sur un objet, et les series lisaient une cle qui n'existe plus depuis que la route
+ * regroupe ses lecteurs par episode.
+ *
+ * Chaque lecteur: { name: <domaine de l'hebergeur>, url, episode, type: 'VF'|'VOSTFR' }.
+ */
+function flattenByLang(map) {
+  const out = [];
+  for (const [lang, players] of Object.entries(map || {})) {
+    if (!Array.isArray(players)) continue;
+    for (const p of players) {
+      if (p && p.url) out.push({ url: p.url, player: p.name, lang: p.type || lang, sourceName: 'Wiflix' });
+    }
+  }
+  return out;
 }
 
-// Wiflix scrape en tache de fond et repond 202 {pending:true} pendant la premiere recherche
-// (Mainapi/routes/wiflix.js:666-675) -- on patiente un peu avant de laisser tomber cette source.
+// Wiflix scrape en tache de fond et repond 202 {pending:true} pendant la premiere
+// recherche -- on patiente un peu avant de laisser tomber cette source.
 async function pollUntilReady(path, params) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const { data, status } = await mainApi.get(path, { params, validateStatus: () => true });
@@ -34,20 +47,26 @@ async function pollUntilReady(path, params) {
 
 async function getStreams({ tmdbId, type, season, episode }) {
   try {
-    let data;
-    if (type === 'movie') {
-      data = await pollUntilReady(`/api/wiflix/movie/${tmdbId}`);
-    } else {
-      data = await pollUntilReady(`/api/wiflix/tv/${tmdbId}/${season}`);
-    }
+    const data =
+      type === 'movie'
+        ? await pollUntilReady(`/api/wiflix/movie/${tmdbId}`, resolved.params())
+        : await pollUntilReady(`/api/wiflix/tv/${tmdbId}/${season}`, resolved.params({ episode }));
+
     if (!data) {
       log.ok('Wiflix', tmdbId, 'pas de reponse exploitable (toujours pending ou statut inattendu)');
       return [];
     }
-    const total = Array.isArray(data.players) ? data.players.length : 0;
-    const results = extractPlayers(data, type === 'movie' ? undefined : episode);
-    log.ok('Wiflix', tmdbId, `${results.length}/${total} lien(s) retenus (success=${data.success})`);
-    return results;
+    if (data.success === false) {
+      log.ok('Wiflix', tmdbId, `success=false: ${data.error || 'raison inconnue'}`);
+      return [];
+    }
+
+    const map = type === 'movie' ? data.players : data.episodes?.[String(episode)];
+    const { items, resolved: count } = resolved.applyAll(flattenByLang(map), resolved.collect(data));
+
+    const scope = type === 'movie' ? '' : `S${season}E${episode}: `;
+    log.ok('Wiflix', tmdbId, `${scope}${resolved.summary(items.length, count)}`);
+    return items;
   } catch (err) {
     log.fail('Wiflix', tmdbId, err);
     return [];

@@ -9,7 +9,9 @@ const playback = require('./src/streaming/playback');
 const { resolveId } = require('./src/catalog/idResolver');
 const { collectRawLinks, resolveStreams, buildStreams } = require('./src/streaming/streamBuilder');
 const { breakerState: probeBreakerState } = require('./src/streaming/probe');
-const { detectHoster, extractDirectUrl, normalizeEmbedUrl, breakerState } = require('./src/streaming/hosterExtract');
+const { detectHoster, extractDirectUrl, breakerState, LOCAL_EXTRACTORS } = require('./src/streaming/hosterExtract');
+const resolvedSources = require('./src/sources/resolved');
+const livetv = require('./src/livetv');
 const { mainApi } = require('./src/integrations/movixClient');
 const streamProxy = require('./src/streaming/streamProxy');
 const addons = require('./src/addons');
@@ -188,9 +190,14 @@ app.get('/debug/:type/:id', async (req, res) => {
 });
 
 // Diagnostic de l'extraction: ce que chaque embed est devenu, et pourquoi.
-// Montre l'URL reellement envoyee au service (apres normalisation du domaine) et le
-// message d'erreur qu'il a rendu -- "Invalid URL" designe un domaine refuse, pas un
-// extracteur manquant, et ces deux causes sont indiscernables dans la liste de streams.
+//
+// Depuis que Movix resout ses m3u8 lui-meme (`?resolve=1`), la question utile n'est plus
+// "l'extracteur a-t-il marche" mais "qui devait extraire ce lien". Trois issues:
+//   resolu       le serveur Movix l'a rendu directement (il n'apparait pas ici, il n'est
+//                deja plus un embed)
+//   local        l'addon l'a extrait seul (voe, darkibox, oneupload)
+//   server-only  extractible, mais par Movix seulement -- il manque une cle VIP valide
+//                ou l'extraction amont a echoue
 app.get('/debug/extract/:type/:id', async (req, res) => {
   try {
     const { type, id } = req.params;
@@ -209,11 +216,10 @@ app.get('/debug/extract/:type/:id', async (req, res) => {
           source: item.sourceName,
           hoster,
           url: item.url,
-          urlEnvoyee: normalizeEmbedUrl(hoster, item.url),
+          extracteur: LOCAL_EXTRACTORS.has(hoster) ? 'local' : 'Movix (resolve=1)',
           ok: outcome.ok,
           resultat: outcome.ok ? outcome.url : undefined,
           issue: outcome.ok ? undefined : `${outcome.reason}${outcome.status ? ` (${outcome.status})` : ''}`,
-          erreurService: outcome.error,
         };
       }),
     );
@@ -490,8 +496,10 @@ app.get('/health', async (_req, res) => {
   res.json({
     ok: true,
     mainApi: config.MAIN_API_BASE_URL || null,
-    proxiesEmbed: config.PROXIES_EMBED_BASE_URL || null,
     vipKeyConfigured: !!config.VIP_ACCESS_KEY,
+    // Sans VIP, Movix ne resout plus aucun flux: c'est le premier point a verifier quand
+    // la liste de streams est vide.
+    serverResolve: resolvedSources.enabled(),
     subtitlesEnabled: config.SUBTITLES_ENABLED,
     subtitleAutosync: config.SUBTITLE_AUTOSYNC && (await subsync.enabled()),
     publicUrl: config.PUBLIC_URL || null,
@@ -504,6 +512,64 @@ app.get('/health', async (_req, res) => {
     traktAuthenticated: trakt.isAuthenticated(),
     simklAuthenticated: simkl.isAuthenticated(),
   });
+});
+
+// --- TV en direct ---------------------------------------------------------
+// Ces ressources sont servies AVANT le routeur du SDK, et volontairement hors de lui:
+// `addonBuilder` fige son manifest au demarrage, alors que la liste des catalogues Live TV
+// est fournie par Movix et change en cours de route (les rangees "rencontres" suivent les
+// matchs en cours). Un manifest construit a chaque requete est la seule facon de la
+// refleter sans redemarrer l'addon.
+//
+// Le SDK garde tout le reste (films, series, sous-titres): ces routes-la ne repondent que
+// pour le type `tv`, et passent la main sinon.
+function stremioExtra(raw) {
+  // Stremio encode ses parametres optionnels dans le CHEMIN: `skip=100&genre=Sport`.
+  const out = {};
+  for (const pair of decodeURIComponent(raw || '').split('&')) {
+    const [key, value] = pair.split('=');
+    if (key && value !== undefined) out[key] = value;
+  }
+  return out;
+}
+
+app.get('/manifest.json', async (_req, res) => {
+  const liveCatalogs = await livetv.catalogs();
+  if (liveCatalogs.length === 0) return res.json(addonInterface.manifest);
+
+  res.json({
+    ...addonInterface.manifest,
+    types: [...addonInterface.manifest.types, 'tv'],
+    idPrefixes: [...(addonInterface.manifest.idPrefixes || []), livetv.ID_PREFIX],
+    catalogs: [...addonInterface.manifest.catalogs, ...liveCatalogs],
+  });
+});
+
+app.get('/catalog/tv/:catalogId.json', async (req, res, next) => {
+  if (!livetv.enabled()) return next();
+  const metas = await livetv.catalog(req.params.catalogId);
+  res.json({ metas, cacheMaxAge: 60 });
+});
+
+app.get('/catalog/tv/:catalogId/:extra.json', async (req, res, next) => {
+  if (!livetv.enabled()) return next();
+  const { skip } = stremioExtra(req.params.extra);
+  const metas = await livetv.catalog(req.params.catalogId, { skip: Number(skip) || 0 });
+  res.json({ metas, cacheMaxAge: 60 });
+});
+
+app.get('/meta/tv/:id.json', async (req, res, next) => {
+  if (!livetv.enabled() || !livetv.isLiveTvId(req.params.id)) return next();
+  const meta = await livetv.meta(req.params.id);
+  res.json({ meta: meta || null });
+});
+
+app.get('/stream/tv/:id.json', async (req, res, next) => {
+  if (!livetv.enabled() || !livetv.isLiveTvId(req.params.id)) return next();
+  const streams = await livetv.streams(req.params.id);
+  // Pas de cache cote lecteur: une URL de direct tourne, et une reprise sur une URL
+  // perimee echoue en silence.
+  res.json({ streams, cacheMaxAge: 0 });
 });
 
 // Routes Stremio standard (manifest, catalog, meta, stream, subtitles).

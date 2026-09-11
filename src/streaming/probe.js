@@ -92,30 +92,17 @@ function throughProxy(url) {
 }
 
 /**
- * Routes de proxy dediees, une par hebergeur, exposees par proxiesembed
- * (server.py:1491-1499). Chacune applique l'Origin/Referer/User-Agent et le Host que
- * SON CDN attend -- c'est par la que le site lit ces flux, jamais en direct.
+ * Les routes de proxy dediees de proxiesembed (`/voe-proxy`, `/fsvid-proxy`...) ne sont
+ * PLUS joignables a la main: elles exigent une signature HMAC `exp`+`sig` calculee avec
+ * `MEDIA_SIGNING_SECRET`, un secret que seuls Mainapi et proxiesembed partagent
+ * (API/proxiesembed/media_signing.py). Une URL fabriquee ici recevrait un
+ * `403 SIGNATURE_REQUIRED`.
  *
- * C'est la difference decisive avec un proxy generique: les en-tetes ne sont pas devines
- * depuis l'URL, ils sont ceux de la page de lecture officielle du service.
+ * Ce n'est pas une perte: quand Movix resout une m3u8 pour nous (`?resolve=1`), il rend
+ * DEJA une URL de ce proxy, signee. La sonde la suit comme n'importe quelle autre URL --
+ * et c'est proxiesembed qui rejoue les Origin/Referer que le CDN attend. Il n'y a donc
+ * plus rien a construire de notre cote.
  */
-const HOSTER_PROXY_ROUTE = {
-  voe: 'voe-proxy',
-  fsvid: 'fsvid-proxy',
-  vidzy: 'vidzy-proxy',
-  vidmoly: 'vidmoly-proxy',
-  sibnet: 'sibnet-proxy',
-  uqload: 'uqload-proxy',
-  doodstream: 'doodstream-proxy',
-  seekstreaming: 'seekstreaming-proxy',
-};
-
-function hosterProxyResolver(hoster) {
-  const route = HOSTER_PROXY_ROUTE[String(hoster || '').toLowerCase()];
-  if (!route || !config.PROXIES_EMBED_BASE_URL) return null;
-  const base = config.PROXIES_EMBED_BASE_URL.replace(/\/+$/, '');
-  return (url) => `${base}/${route}?url=${encodeURIComponent(url)}`;
-}
 
 /**
  * Un "acces": comment joindre une URL. En direct on ajoute le referer attendu; via le
@@ -177,16 +164,6 @@ function upstreamAccess(url) {
 function proxyAccess() {
   // Le proxy pose lui-meme les en-tetes: y ajouter les notres n'aurait aucun effet.
   return { http: makeClient({ 'User-Agent': DEFAULT_UA }), resolve: throughProxy, label: 'proxy', service: 'proxy' };
-}
-
-function hosterProxyAccess(hoster) {
-  const resolve = hosterProxyResolver(hoster);
-  if (!resolve) return null;
-  // `service`: cette voie est un service PARTAGE par tous les liens de l'hebergeur. Quand
-  // il ne repond plus, il ne repond plus pour aucun -- d'ou le disjoncteur. Les acces
-  // "amont" et "direct", eux, visent chacun un CDN different: generaliser n'aurait aucun
-  // sens.
-  return { http: makeClient({ 'User-Agent': DEFAULT_UA }), resolve, label: `${hoster}-proxy`, service: `${hoster}-proxy` };
 }
 
 // Garde-fou du dernier recours: on accepte de telecharger un segment pour le peser, jamais
@@ -670,7 +647,7 @@ async function attempt(access, url, durationSeconds) {
  *        elle dispense d'ouvrir le flux pour la mesurer.
  * @returns {Promise<{bitrate?, height?, width?, bytes?, estimated?, resolutionProbed?}>}
  */
-async function probe(url, { durationSeconds, refererUrl, hoster, deadline, refresh, knownHeight = 0 } = {}) {
+async function probe(url, { durationSeconds, refererUrl, deadline, refresh, knownHeight = 0 } = {}) {
   if (!config.PROBE_BITRATE || !url) return {};
 
   // Hors budget: on rend la main SANS passer par le cache. Mettre en cache un "aucune
@@ -686,11 +663,10 @@ async function probe(url, { durationSeconds, refererUrl, hoster, deadline, refre
   }
 
   return cache.wrap(`probe:${url}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
-    // Ordre volontaire: l'amont d'abord quand on le connait (aucun detour reseau), puis la
-    // route dediee de l'hebergeur, puis le proxy -- du moins cher au plus cher.
+    // Ordre volontaire: l'amont d'abord quand on le connait (aucun detour reseau), puis
+    // l'acces direct -- du moins cher au plus cher.
     const accesses = [
       upstreamAccess(url),
-      hosterProxyAccess(hoster),
       directAccess(url, refererUrl),
     ].filter(Boolean);
     if (config.PROBE_PROXY_BASE_URL) accesses.push(proxyAccess());

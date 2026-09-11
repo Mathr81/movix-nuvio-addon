@@ -1,7 +1,18 @@
 const { mainApi } = require('../integrations/movixClient');
 const log = require('../core/log');
 
-// PurStream est la seule source qui renvoie deja des URLs directes (pas d'embed a extraire).
+/**
+ * PurStream -- la seule source Movix qui a toujours rendu des URLs directes, sans embed a
+ * extraire. Elle n'a donc pas besoin de `resolve=1`.
+ *
+ * Deux choses ont change cote Movix, toutes deux transparentes ici:
+ *  - l'hote de l'API amont est resolu dynamiquement (`purstream.wiki/api/status`), l'ancien
+ *    `api.purstream.cc` etant mort;
+ *  - pour un VIP, l'URL rendue passe par `/cinep-proxy` et porte une SIGNATURE `exp`+`sig`
+ *    valable 12 h. On la relaie telle quelle -- la reconstruire ou en retirer les
+ *    parametres la rendrait invalide. La duree de vie du cache de streams
+ *    (STREAM_TTL_MS, 30 min par defaut) reste tres en deca de ces 12 h.
+ */
 async function getStreams({ tmdbId, type, season, episode }) {
   try {
     let data;

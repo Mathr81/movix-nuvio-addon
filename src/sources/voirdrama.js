@@ -1,4 +1,5 @@
 const { mainApi } = require('../integrations/movixClient');
+const resolved = require('./resolved');
 const log = require('../core/log');
 
 // Voirdrama (dramas asiatiques), series uniquement: /api/drama/tv/:tmdbid?season=&episode=
@@ -9,14 +10,17 @@ async function getStreams({ tmdbId, type, season, episode }) {
   if (type !== 'series') return [];
 
   try {
-    const { data } = await mainApi.get(`/api/drama/tv/${tmdbId}`, { params: { season, episode } });
+    const { data } = await mainApi.get(`/api/drama/tv/${tmdbId}`, {
+      params: resolved.params({ season, episode }),
+    });
 
-    const results = (Array.isArray(data?.data) ? data.data : [])
+    const collected = (Array.isArray(data?.data) ? data.data : [])
       .filter((s) => s.link)
       .map((s) => ({ url: s.link, player: s.name, sourceName: 'Voirdrama' }));
 
-    log.ok('Voirdrama', tmdbId, `${results.length} lien(s) pour S${season}E${episode}`);
-    return results;
+    const { items, resolved: count } = resolved.applyAll(collected, resolved.collect(data));
+    log.ok('Voirdrama', tmdbId, `S${season}E${episode}: ${resolved.summary(items.length, count)}`);
+    return items;
   } catch (err) {
     if (err.response?.status === 404) {
       log.ok('Voirdrama', tmdbId, 'non trouve sur Voirdrama');

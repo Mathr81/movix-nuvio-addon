@@ -95,7 +95,8 @@ src/
 ├── streaming/           Résolution et diffusion des flux vidéo
 │   ├── streamBuilder.js    Agrège sources + addons, construit les objets stream
 │   ├── streamProxy.js       Proxy HTTP qui rejoue les en-têtes attendus par les CDN
-│   ├── hosterExtract.js      Détection d'hébergeur, extraction d'URL directe
+│   ├── hosterExtract.js      Détection d'hébergeur + extractions faites SEUL (voe,
+│   │                          darkibox, oneupload) ; le reste est résolu par Movix
 │   ├── hosterVoe.js           Résolution spécifique aux domaines tournants Voe
 │   ├── probe.js               Sonde le débit/la taille réels d'un flux
 │   ├── playback.js             Quel flux est en cours de lecture (le protocole ne le dit pas)
@@ -121,7 +122,11 @@ src/
 │   ├── contentIds.js          Forme des identifiants, servis ET poussés (source unique)
 │   └── nuvioMerge.js           Fusion des entrées vers la forme configurée
 │
-├── sources/             Scrapers de sites tiers (passent par movixClient)
+├── sources/             Sources servies par Movix (passent par movixClient)
+│   └── resolved.js       Résolution serveur des m3u8 (`?resolve=1`) : paramètres à
+│                          envoyer, et lecture des m3u8 rendues
+│
+├── livetv/              TV en direct : relais du triplet manifest/catalog/stream Movix
 └── addons/              Sources autonomes (indépendantes de Mainapi), voir plus bas
 ```
 
@@ -131,7 +136,8 @@ src/
 |-----------|--------|
 | `catalog` | Catalogues personnels (sync compte), recommandations, Tendances / Populaires / Mieux notés / Nouveautés, filtrables par genre, avec recherche |
 | `meta` | Fiches complètes, épisodes par saison, casting, genres |
-| `stream` | Agrégation des sources Movix + addons autonomes, extraction serveur des embeds |
+| `stream` | Agrégation des sources Movix + addons autonomes ; les m3u8 sont résolues par Movix (`?resolve=1`, clé VIP) et complétées par les extracteurs locaux |
+| `catalog`/`meta`/`stream` en `tv` | [TV en direct](#tv-en-direct) relayée depuis Movix (Vavoo, M3U locale, IPTV VIP) |
 | `subtitles` | vdrk puis OpenSubtitles en repli, nettoyés et servis en WebVTT (KissKH fournit les siens, rattachés au flux) |
 
 ### Catalogues personnalisables
@@ -713,14 +719,76 @@ par `PREFERRED_LANGS`. Les pistes chiffrées (`cipher.mode` ≠ `none`) sont éc
 
 **Addons autonomes** — `Aether` (3 serveurs), `Obrigoz`, `Cinejoy`. Voir [Addons](#addons-sources-autonomes).
 
-Les embeds sont résolus en URLs directes pour **12 hosters** — soit tous
-ceux que le site sait extraire côté serveur : voe, uqload, vidzy, fsvid, vidmoly, sibnet,
-doodstream, seekstreaming (via `proxiesembed`), supervideo, dropload (via Mainapi),
-darkibox et oneupload (scraping HTML direct).
+#### Qui résout les flux (⚠️ tout a changé)
 
-`smoothpre` et `minochinos` figurent dans le registre du site mais n'ont **aucun**
-extracteur (ni serveur, ni extension) — ce sont uniquement des motifs de détection pour
-l'ordre de priorité. Rien à porter.
+Movix a **fermé ses surfaces d'extraction publiques**. Concrètement :
+
+- `/api/extract-<hébergeur>` et `/api/voe/m3u8` sur `proxiesembed` exigent l'en-tête
+  `x-internal-key`, un secret partagé entre Mainapi et `proxiesembed` seuls. Un appel sans
+  lui reçoit `403 INTERNAL_KEY_REQUIRED` ;
+- `/api/extract-supervideo` et `/api/extract-dropload` sur Mainapi **n'existent plus** ;
+- les routes de proxy (`/proxy`, `/voe-proxy`, `/fsvid-proxy`…) n'acceptent plus qu'une URL
+  **signée en HMAC** (`exp` + `sig`, secret `MEDIA_SIGNING_SECRET`) ;
+- il n'existe volontairement **aucun remplaçant** prenant une URL en paramètre — c'est
+  précisément la cible contrôlable par le client que la refonte supprime.
+
+C'est ce qui avait cassé l'addon : toutes les sources ramenaient des liens d'embed que plus
+personne ne pouvait résoudre.
+
+La résolution se fait désormais **dans les routes catalogue elles-mêmes** :
+
+```
+GET /api/<source>/…?resolve=1      + en-tête x-access-key (clé VIP)
+```
+
+et chaque lecteur extractible de la réponse porte en plus un champ `m3u8Url`. Les
+catalogues dont les lecteurs ne sont pas des objets — chaînes brutes, listes mixtes des
+liens communautaires — rendent à la place une table parallèle `m3u8ByPlayer`
+(lien → m3u8). Tout cela est lu par `src/sources/resolved.js`.
+
+Trois conséquences qui gouvernent le reste :
+
+1. **La clé VIP est devenue indispensable.** Sans `VIP_ACCESS_KEY`, Movix ne résout rien et
+   l'addon ne peut extraire que `voe`, `darkibox` et `oneupload`, qu'il sait lire seul.
+   `/health` répond `serverResolve: true/false` — c'est le premier point à vérifier quand
+   une liste de streams est vide.
+2. **Un épisode à la fois.** La résolution ne porte que sur ce qu'on demande : pour une
+   série il faut joindre `episode=<n>`, sinon la réponse reste en liens d'embed **même avec
+   `resolve=1`**. C'est délibéré côté Movix (ne pas extraire une saison entière pour une
+   seule lecture), et c'est le piège principal de cette API.
+3. **La m3u8 rendue est déjà proxifiée et signée**
+   (`…/fsvid-proxy?url=…&exp=…&sig=…`). Elle est jouable telle quelle : c'est
+   `proxiesembed` qui rejoue les `Origin`/`Referer` que le CDN de l'hébergeur exige. Rien à
+   reproxifier de notre côté, et la signature vaut 12 h — très au-delà de `STREAM_TTL_MS`.
+   Il ne faut ni la reconstruire ni en retirer les paramètres.
+
+`src/streaming/hosterExtract.js` a donc changé de rôle : il ne fait plus que les extractions
+que l'addon assure **seul**, sans rien demander à Movix. Un hébergeur que seul Movix sait
+lire ressort avec la raison `server-only` — distincte de `no-extractor` (personne ne sait le
+lire), sans quoi une clé VIP absente ressemble à un catalogue vide.
+
+#### Formes de réponse, une par source
+
+Plusieurs routes ont changé de forme, et l'addon lisait encore l'ancienne — ces sources ne
+rendaient plus rien, indépendamment de l'extraction :
+
+| Source | Film | Série |
+|---|---|---|
+| `FStream` | `players` (map par langue) | `episodes[N].languages` |
+| `Wiflix` | `players` (map `{vf, vostfr}`) | `episodes[N]` = `{vf, vostfr}` |
+| `1jour1film` | `players` (map `{vf, vostfr}`) | `episodes[N]` = `{vf, vostfr}` |
+| `Cpasmal` | `links` (map par langue) | idem (épisode dans le **chemin**) |
+| `Coflix` | `player_links` (champ `decoded_url`) | `current_episode.player_links` |
+| `FrenchStream` | `player_links` | `series[].seasons[].episodes[].versions` |
+| `Voirdrama` | — | `data` (tableau plat, champ `link`) |
+| `Links` | `data.links` + `m3u8ByPlayer` | idem |
+
+Deux cas où Movix ne résout rien, par conception :
+
+- **FrenchStream en série** — sa réponse porte toutes les saisons d'un coup, et Movix refuse
+  d'extraire une série entière pour une lecture. Ces épisodes ne sont jouables que si un
+  extracteur **local** les reconnaît.
+- **Les liens communautaires d'une série sans `season`+`episode`** — même raison.
 
 #### Domaines tournants (le cas Voe)
 
@@ -731,7 +799,14 @@ Deux stratégies de détection, selon le nom de l'hébergeur :
 - **domaines délibérément anonymes** — il faut une liste explicite. **Voe** en est le cas
   d'école : il renouvelle ses domaines de sortie environ tous les mois, avec des noms qui
   ne contiennent pas « voe » (`ralphysuccessfull.com`, `prepareddare.com`,
-  `timmaybealready.com`…). Les 11 alias connus du site sont portés.
+  `timmaybealready.com`…).
+
+La liste intégrée est désormais **celle de l'amont**, reprise telle quelle de
+`Mainapi/utils/embedExtraction.js` : une centaine d'alias Voe au lieu de onze, plus les
+domaines récents de `doodstream` (`playmogo`, `all3do`, `d-s.io`…), `lulustream`, `veev`,
+`vidara` et `ansembed` (Vidmoly sous un autre nom). Elle sert à la détection et à
+l'étiquetage ; `veev` est testé **avant** `doodstream`, dont le motif `dood` attraperait
+sinon `doods.to` qu'ils partagent.
 
 Cette liste **vieillit par construction** : un domaine mis en service après elle passe pour
 « sans extracteur » alors qu'il est parfaitement extractible. `HOSTER_PATTERNS_EXTRA` en
@@ -745,51 +820,63 @@ HOSTER_PATTERNS_EXTRA=voe:bysebuho,voe:playmogo
 les candidats. Un nom inventé ou un hébergeur inconnu est signalé au démarrage plutôt
 qu'ignoré.
 
-**Reconnaître ne suffit pas.** Sur ces mêmes domaines récents, `proxiesembed` répond
-`404 Content not found` : il a bien chargé la page, mais n'y a pas trouvé le bloc JSON
-qu'il attendait. Le lien est alors détecté, envoyé, refusé — et perdu. Un **extracteur Voe
-local** (`src/streaming/hosterVoe.js`) prend le relais dans ce cas : il suit les rebonds de la page
-(`window.location`, `meta refresh`, lien `/e/…` — aucun n'est un vrai `3xx`, donc aucun
-client HTTP ne les suit seul), lit le bloc obfusqué et le déchiffre.
+#### L'extracteur Voe local
+
+Voe reste le seul hébergeur « de site » que l'addon sait extraire **de bout en bout**
+(`src/streaming/hosterVoe.js`) : il suit les rebonds de la page (`window.location`,
+`meta refresh`, lien `/e/…` — aucun n'est un vrai `3xx`, donc aucun client HTTP ne les suit
+seul), lit le bloc obfusqué et le déchiffre.
 
 Le déchiffrement n'est pas de la cryptographie : c'est un empilement de transformations
 réversibles — `rot13` → retrait de sept symboles de bruit → base64 → décalage de 3 →
-inversion → base64 → JSON (porté de `server.py:3100-3116`). Une seule erreur d'ordre rend
-du binaire plutôt qu'une erreur, d'où le test qui **fabrique** une chaîne par le chemin
-inverse et vérifie que la source est retrouvée à l'identique.
+inversion → base64 → JSON. Une seule erreur d'ordre rend du binaire plutôt qu'une erreur,
+d'où le test qui **fabrique** une chaîne par le chemin inverse et vérifie que la source est
+retrouvée à l'identique.
 
 Le flux obtenu vient du CDN de Voe, qui n'accepte que le `Referer` de son lecteur : il
 repart donc **par le proxy de flux**, comme un lien d'addon. Sans cela l'URL serait exacte
 et pourtant injouable.
 
-#### Domaines canoniques
+> La normalisation vers un « domaine canonique » (`fsvid.lol`, `vidzy.org`, `uqload.is`) a
+> été retirée : elle n'existait que parce que `proxiesembed` validait le domaine avant
+> d'extraire, et l'addon ne l'appelle plus. C'est maintenant Movix qui s'en charge, sur des
+> liens qu'il a lui-même scrapés.
 
-`proxiesembed` **valide le domaine** de l'URL d'embed avant d'extraire quoi que ce soit, et
-répond `400 Invalid URL` pour tout autre miroir :
+### TV en direct
 
-| Hébergeur | Domaines acceptés | Champ de réponse |
+Movix expose depuis la refonte un triplet **manifest / catalog / stream** qui parle déjà le
+protocole Stremio (`/api/livetv/…`). L'addon le relaie (`src/livetv/`), ce qui ajoute le
+type `tv` au manifest et une rangée par catalogue annoncé.
+
+Toutes les chaînes ne sont pas jouables par un lecteur vidéo, et c'est la seule décision
+que l'addon prend à la place du site :
+
+| Préfixe | Source | Jouable |
 |---|---|---|
-| `fsvid` | `fsvid.lol` | `m3u8Url` |
-| `vidzy` | `vidzy.org`, `vidzy.cc` | `m3u8Url` |
-| `uqload` | `uqload.is/.bz/.cx/.com/.net/.org/.to/.io/.co` | `url` |
-| `voe` | *(aucune — URL passée en base64)* | `source` |
+| `vavoo_` | HLS brut, gratuit, sans clé | ✅ |
+| `tvmio-` | playlist M3U locale du serveur | ✅ |
+| `iptv_` | Xtream, **réservé aux VIP** (403 sans clé) | ✅ |
+| `northlive_` | lecteur en **iframe** | ❌ page web, pas un flux |
+| `match_` | rencontres sportives FCTV | ❌ flux natif verrouillé par IP, résolu côté client par l'extension du site |
 
-Or les sources donnent régulièrement un **miroir**. C'est pourquoi seul `fsvid` sortait :
-FStream sert justement ses liens fsvid sur le domaine canonique, et les autres non. L'hôte
-est donc ramené sur ce domaine avant l'appel — comme le fait le site pour `uqload`
-(`extractM3u8.ts:456`) ; l'identifiant de la vidéo, lui, est le même d'un miroir à l'autre.
-
-Le site masquait le problème en passant **d'abord par son extension navigateur** pour ces
-hébergeurs (`tryExtensionFirst`), `proxiesembed` n'étant que son repli. Un serveur n'a pas
-cette échappatoire.
+Les deux derniers ne sont proposés qu'avec `SHOW_UNPLAYABLE_EMBEDS=true`, en « ouvrir dans
+le navigateur ».
 
 ```bash
-curl http://localhost:8787/debug/extract/movie/tmdb:157336
+LIVETV_ENABLED=true
+# Vide = tous les catalogues annoncés, ce qui fait beaucoup de rangées (une par pays Vavoo,
+# une par sport en cours). Restreindre est presque toujours souhaitable :
+LIVETV_CATALOGS=vavoo_france,vavoo_france-sport
 ```
 
-donne, par embed : l'hébergeur détecté, **l'URL réellement envoyée** après normalisation, et
-le message d'erreur du service. `Invalid URL` désigne un domaine refusé et non un extracteur
-manquant — deux causes indiscernables dans la liste de streams.
+Les ids voyagent préfixés `movixtv:` (chaînes) et `movixtv-` (catalogues) pour ne pas entrer
+en collision avec les ids TMDB/IMDb du reste de l'addon.
+
+**Pourquoi ces routes sont servies hors du SDK** — `addonBuilder` fige son manifest au
+démarrage, alors que la liste des catalogues Live TV vient de Movix et change en cours de
+route (les rangées « rencontres » suivent les matchs du moment). `server.js` sert donc
+`/manifest.json`, `/catalog/tv/…`, `/meta/tv/…` et `/stream/tv/…` lui-même, **avant** le
+routeur du SDK, qui garde tout le reste (films, séries, sous-titres).
 
 ### Addons (sources autonomes)
 
@@ -1100,25 +1187,22 @@ dans Nuvio ne permet plus de distinguer.
 Les hosters exigent presque tous un `Referer` de leur propre domaine, sinon `HEAD` et
 `GET` répondent 403 — c'est pourquoi seul PurStream (master HLS servi sans contrôle)
 était mesuré au départ. **Le site ne les joint pas davantage depuis le navigateur** : il
-passe par son proxy (`buildProxyUrl`, `src/config/runtime.ts:19`), qui pose les
-`Origin`/`Referer` attendus par domaine (`API/miscs/bypass403.py:120`).
+passe par `proxiesembed`, qui expose une route de proxy **par hébergeur** (`/voe-proxy`,
+`/uqload-proxy`, `/fsvid-proxy`…) appliquant l'`Origin`, le `Referer`, l'`User-Agent` et le
+`Host` que *son* CDN attend. Ce ne sont pas des en-têtes devinés depuis l'URL : ce sont ceux
+de la page de lecture officielle du service.
 
-**Le site ne lit jamais ces flux en direct** : `proxiesembed` expose une route de proxy
-**par hébergeur** (`/voe-proxy`, `/uqload-proxy`, `/fsvid-proxy`… — `server.py:1491`), et
-chacune applique l'`Origin`, le `Referer`, l'`User-Agent` et le `Host` que *son* CDN
-attend. Ce ne sont pas des en-têtes devinés depuis l'URL : ce sont ceux de la page de
-lecture officielle du service.
-
-La sonde emprunte donc le même chemin, dans cet ordre :
+**Ces routes ne sont plus appelables à la main** : elles exigent une signature HMAC
+calculée avec `MEDIA_SIGNING_SECRET`, que seuls Mainapi et `proxiesembed` partagent. Ce
+n'est pas une perte — quand Movix résout une m3u8 pour nous, il rend **déjà** une URL de ce
+proxy, signée. La sonde la suit comme n'importe quelle autre. Il n'y a donc plus rien à
+construire, et la cascade s'est simplifiée d'autant :
 
 1. **l'amont directement**, quand le lien est un lien de proxy (voir ci-dessous) ;
-2. la route dédiée de l'hébergeur, via `PROXIES_EMBED_BASE_URL` (déjà configuré pour
-   l'extraction) — la seule dont on sait qu'elle fonctionne ;
-3. en direct, avec le referer de la page d'embed ;
-4. `PROBE_PROXY_BASE_URL` s'il est renseigné (facultatif).
-
-Couverts par une route dédiée : voe, fsvid, vidzy, vidmoly, sibnet, uqload, doodstream,
-seekstreaming. Les autres (supervideo, dropload, darkibox, oneupload) passent en direct.
+2. en direct, avec le referer de la page d'embed ;
+3. `PROBE_PROXY_BASE_URL` s'il est renseigné (facultatif — et ni le `/proxy` de Movix ni
+   l'ancien micro-service `bypass403`, supprimé de l'amont, ne conviennent : il faut un
+   `/proxy/<url>` à soi).
 
 Les streams sont triés : langue préférée d'abord (français par défaut), puis résolution,
 puis **débit** — à résolution égale, c'est lui qui sépare un vrai 1080p d'un upscale
@@ -1300,7 +1384,8 @@ sur un cache vide.
 Quand Nuvio affiche « aucun stream », deux endpoints donnent l'état réel :
 
 ```bash
-curl http://localhost:8787/health                      # config chargée, clé VIP présente ?
+curl http://localhost:8787/health                      # config chargée, clé VIP présente,
+                                                       #   et surtout `serverResolve`
 curl http://localhost:8787/debug/movie/tmdb:157336     # ce que chaque source a renvoyé
 curl http://localhost:8787/debug/addons                # addons chargés / écartés, état du proxy
 curl http://localhost:8787/debug/extract/movie/tmdb:157336   # sort de chaque embed, et pourquoi
@@ -1318,26 +1403,50 @@ curl http://localhost:8787/debug/nuvio/api             # tables et RPC réelleme
 ```
 
 `/debug` liste chaque lien brut avec sa source et l'extracteur détecté — un lien marqué
-`AUCUN EXTRACTEUR` est un embed que Stremio/Nuvio ne peuvent pas lire nativement.
+`AUCUN EXTRACTEUR` est un embed que personne ne sait lire nativement.
 
-La console détaille aussi, par source, le nombre de liens et la raison d'un échec
-(status HTTP, corps de réponse, champ URL manquant).
+`/debug/extract/...` dit, pour chaque embed, **qui devait l'extraire** (`local` ou
+`Movix (resolve=1)`) et ce qu'il est devenu. La distinction est le premier réflexe de
+diagnostic depuis la refonte :
+
+| Issue | Ce que ça veut dire |
+|---|---|
+| `server-only` | Hébergeur parfaitement extractible, mais **par Movix seulement**. Le lien n'est pas mort : il manque une clé VIP valide, ou la résolution amont a échoué. |
+| `no-extractor` | Hébergeur que personne ne sait lire (ni Movix, ni l'addon). |
+| `cooldown` | Hébergeur momentanément écarté par le disjoncteur après plusieurs pannes. |
+
+La console détaille aussi, par source, le nombre de liens, **combien ont été résolus par le
+serveur**, et la raison d'un échec (status HTTP, champ URL manquant).
 
 ## Limites connues
 
 - **Pas de DRM** : le sous-système `drmproxy` (Netflix, Canal+, etc.) est volontairement
   exclu — contourner un DRM commercial reste illégal, y compris en usage privé.
-- **Certains embeds restent inexploitables** : `vidara.to`, `lecteurvideo.com`,
-  `p2pstream.vip` n'ont pas d'extracteur côté Movix (le site les lit via l'extension
-  navigateur, qui n'a pas d'équivalent serveur). `SHOW_UNPLAYABLE_EMBEDS=true` les
-  expose en « ouvrir dans le navigateur » plutôt que de les masquer.
+- **Sans clé VIP, presque rien n'est jouable.** Movix n'expose plus aucune route
+  d'extraction publique : les m3u8 ne sont résolues que par les routes catalogue, contre
+  `resolve=1` **et** une clé VIP valide. L'addon ne sait extraire seul que `voe`,
+  `darkibox` et `oneupload`. `/health` → `serverResolve` dit où on en est.
+- **Certains embeds restent inexploitables** : `lecteurvideo.com`, `p2pstream.vip` n'ont
+  d'extracteur ni côté Movix ni ici (le site les lit via son extension navigateur, qui n'a
+  pas d'équivalent serveur). `SHOW_UNPLAYABLE_EMBEDS=true` les expose en « ouvrir dans le
+  navigateur » plutôt que de les masquer.
+- **SwiftFlow n'est pas intégré.** Ses lecteurs de catalogue sont des iframes de son propre
+  player (rien à extraire), et son mode MP4 direct (SwiftFlux) rend l'URL du fichier
+  **contre un jeton Turnstile** — un captcha navigateur, que rien côté serveur ne peut
+  produire. La source n'a donc pas de chemin utilisable depuis un addon.
+- **Anime-Sama n'est pas intégré.** Sa route ne se cherche que **par titre**
+  (`/anime/search/:query`), et ses saisons sont indexées par position — elles ne
+  correspondent pas aux saisons TMDB (« Film », « OAV » comptent comme des saisons). Le
+  risque de servir un autre épisode que celui demandé est trop élevé pour un catalogue
+  indexé par id TMDB.
 - **Les lecteurs iframe du site ne sont pas portables** : Frembed
   (`frembed.click/api/film.php`), Videasy, VidSrc, Rivestream sont des pages web
   embarquées, pas des flux vidéo. Le site les affiche dans un iframe ; Stremio et
   Nuvio attendent une URL vidéo directe et ne peuvent donc pas les lire. C'est la
   principale raison d'un écart de nombre de liens avec le site.
-- **Darkino / Nightflix est retiré côté site** (`WatchMovie.tsx:313`), il n'y a donc
-  rien à intégrer de ce côté.
+- **Darkino / Nightflix est retiré côté site**, il n'y a donc rien à intégrer de ce côté.
+- **Toutes les chaînes de TV en direct ne sont pas jouables** : NorthLive et les rencontres
+  sportives sont servis en iframe. Voir [TV en direct](#tv-en-direct).
 - **Sous-titres** : nécessite `PUBLIC_URL` correctement renseignée, sinon l'appareil de
   lecture ne saura pas joindre la route de conversion. L'URL servie encode la source dans
   le **chemin** (`/subtitle/<base64url>.vtt`) et non plus en paramètre de requête : rien à

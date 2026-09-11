@@ -1,5 +1,6 @@
 const { mainApi } = require('../integrations/movixClient');
 const tmdbClient = require('../integrations/tmdb');
+const resolved = require('./resolved');
 const log = require('../core/log');
 
 // FrenchStream ("Omega" cote site), monte sur /api/imdb/:type/:id (Mainapi/routes/tmdb.js:553).
@@ -8,6 +9,12 @@ const log = require('../core/log');
 // systematiquement {message:'Contenu non disponible'}.
 //
 // Film: {iframe_src, player_links}. Serie: series[].seasons[].episodes[].versions.<lang>.players[].
+//
+// La resolution serveur des m3u8 (`resolve=1`) ne couvre QUE les films: la reponse serie
+// porte toutes les saisons d'un coup, et Movix refuse d'extraire une serie entiere pour
+// une seule lecture (cf. le commentaire de respondWithFrenchStreamSources, tmdb.js).
+// Les episodes ressortent donc en liens d'embed, jouables seulement si l'un des
+// extracteurs LOCAUX de l'addon (voe, darkibox, oneupload) les reconnait.
 
 function collectMoviePlayers(data) {
   const results = (data.player_links || [])
@@ -68,16 +75,26 @@ async function getStreams({ tmdbId, type, season, episode }) {
     }
 
     const mediaType = type === 'series' ? 'tv' : 'movie';
-    const { data } = await mainApi.get(`/api/imdb/${mediaType}/${imdbId}`);
+    const { data } = await mainApi.get(`/api/imdb/${mediaType}/${imdbId}`, {
+      params: mediaType === 'movie' ? resolved.params() : {},
+    });
 
     if (data.message === 'Contenu non disponible') {
       log.ok('FrenchStream', tmdbId, `indisponible sur FrenchStream (imdb=${imdbId})`);
       return [];
     }
 
-    const results = mediaType === 'movie' ? collectMoviePlayers(data) : collectEpisodePlayers(data, season, episode);
-    log.ok('FrenchStream', tmdbId, `${results.length} lien(s) (imdb=${imdbId}, cles: ${Object.keys(data).join(',')})`);
-    return results;
+    const collected =
+      mediaType === 'movie' ? collectMoviePlayers(data) : collectEpisodePlayers(data, season, episode);
+
+    if (mediaType !== 'movie') {
+      log.ok('FrenchStream', tmdbId, `${collected.length} lien(s) embed pour S${season}E${episode} (imdb=${imdbId}, pas de resolution serveur sur les series)`);
+      return collected;
+    }
+
+    const { items, resolved: count } = resolved.applyAll(collected, resolved.collect(data));
+    log.ok('FrenchStream', tmdbId, `${resolved.summary(items.length, count)} (imdb=${imdbId})`);
+    return items;
   } catch (err) {
     log.fail('FrenchStream', tmdbId, err);
     return [];

@@ -1,6 +1,7 @@
 const movixSources = require('../sources');
 const addons = require('../addons');
 const { extractDirectUrl } = require('./hosterExtract');
+const resolvedSources = require('../sources/resolved');
 const config = require('../core/config');
 const cache = require('../core/cache');
 const tmdbClient = require('../integrations/tmdb');
@@ -270,22 +271,39 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false, ref
     const direct = raw.filter((r) => r.direct && r.url);
     const embeds = raw.filter((r) => !r.direct && r.url);
 
+    // Ce qui reste a extraire ici est ce que le serveur Movix n'a PAS resolu: les liens
+    // qu'il a resolus arrivent deja en `direct` (cf. src/sources/resolved.js), avec une
+    // m3u8 proxifiee et signee par ses soins.
     const unplayable = [];
+    const serverOnly = [];
     const extracted = await mapLimit(embeds, MAX_CONCURRENT_EXTRACTIONS, async (item) => {
       const result = await extractDirectUrl(item.url, item.player);
       // On conserve la page d'embed: c'est elle que le CDN attend en Referer, pas sa
       // propre origine. Sans ca, la mesure de debit repart en 403.
       if (result.ok) return { ...item, url: result.url, hoster: result.hoster, embedUrl: item.url };
       if (result.reason === 'no-extractor') unplayable.push(item);
+      // Hebergeur extractible, mais par Movix seulement: le lien n'est pas mort, c'est la
+      // resolution serveur qui n'a rien rendu (pas de cle VIP, VIP expiree, extraction en
+      // echec cote Movix). Le distinguer evite de lire une liste vide comme "plus aucune
+      // source" alors qu'il ne manque qu'une cle.
+      if (result.reason === 'server-only') serverOnly.push({ ...item, hoster: result.hoster });
       return null;
     });
 
+    if (serverOnly.length > 0) {
+      const detail = resolvedSources.enabled()
+        ? 'le serveur Movix ne les a pas resolus (extraction amont en echec, ou cle VIP refusee)'
+        : 'MOVIX_RESOLVE desactive ou VIP_ACCESS_KEY absent -- ces hebergeurs ne sont extractibles que par Movix';
+      console.warn(`[streamBuilder] ${serverOnly.length} lien(s) non resolu(s): ${detail}`);
+    }
+
     const resolved = [...direct, ...extracted.filter(Boolean)];
 
-    // Les embeds sans extracteur ne sont pas lisibles nativement; on peut quand meme les
-    // proposer en "ouvrir dans le navigateur" (Stremio/Nuvio gerent externalUrl).
+    // Ni les embeds sans extracteur ni ceux que seul Movix sait lire ne sont lisibles
+    // nativement; on peut quand meme les proposer en "ouvrir dans le navigateur"
+    // (Stremio/Nuvio gerent externalUrl) plutot que de les jeter.
     if (config.SHOW_UNPLAYABLE_EMBEDS) {
-      for (const item of unplayable) {
+      for (const item of [...unplayable, ...serverOnly]) {
         resolved.push({ ...item, externalUrl: item.url });
       }
     }
@@ -333,7 +351,6 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false, ref
         : await probe(r.url, {
             durationSeconds,
             refererUrl: r.embedUrl,
-            hoster: r.hoster,
             deadline: probeDeadline,
             refresh,
             // Le libelle du lien dit deja "1080p": inutile d'aller ouvrir le flux pour le

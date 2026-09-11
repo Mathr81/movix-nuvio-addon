@@ -1,31 +1,58 @@
 const { mainApi } = require('../integrations/movixClient');
+const resolved = require('./resolved');
 const log = require('../core/log');
 
-// 1jour1film (Mainapi/routes/j1f.js:349-375) -- forme exacte des players non entierement
-// documentee, on tente les cles habituelles (url/link, player/name) de facon defensive.
-function extractPlayers(data) {
-  const raw = data.players || data.links || [];
-  const flat = Array.isArray(raw) ? raw : Object.values(raw).flat();
-  return flat
-    .filter((p) => p.url || p.link)
-    .map((p) => ({ url: p.url || p.link, player: p.player || p.name, quality: p.quality, lang: p.lang, sourceName: '1jour1film' }));
+/**
+ * 1jour1film (Mainapi/routes/j1f.js).
+ *
+ *   film  : `players`     = { vf: [...], vostfr: [...] }
+ *   serie : `episodes[N]` = { vf: [...], vostfr: [...], label }
+ *
+ * Lecteur: { name: <domaine>, url, type: 'iframe'|'mp4', label, source }.
+ * `type: 'mp4'` designe un fichier directement jouable -- il n'y a rien a extraire, et
+ * le passer a l'extraction le ferait rejeter comme "hebergeur inconnu".
+ */
+function flattenByLang(map) {
+  const out = [];
+  for (const [lang, players] of Object.entries(map || {})) {
+    if (!Array.isArray(players)) continue;
+    for (const p of players) {
+      if (!p || !p.url) continue;
+      out.push({
+        url: p.url,
+        player: p.name,
+        lang,
+        quality: p.label || undefined,
+        direct: p.type === 'mp4',
+        sourceName: '1jour1film',
+      });
+    }
+  }
+  return out;
 }
 
 async function getStreams({ tmdbId, type, season, episode }) {
   try {
-    let data;
-    if (type === 'movie') {
-      ({ data } = await mainApi.get(`/api/j1f/movie/${tmdbId}`));
-    } else {
-      ({ data } = await mainApi.get(`/api/j1f/tv/${tmdbId}/season/${season}`, { params: { episode } }));
+    const { data } =
+      type === 'movie'
+        ? await mainApi.get(`/api/j1f/movie/${tmdbId}`, { params: resolved.params() })
+        : await mainApi.get(`/api/j1f/tv/${tmdbId}/season/${season}`, { params: resolved.params({ episode }) });
+
+    if (data.pending) {
+      log.ok('1jour1film', tmdbId, 'scraping en cours cote Movix -- rien pour ce passage');
+      return [];
     }
     if (data.success === false) {
       log.ok('1jour1film', tmdbId, `success=false: ${data.error || 'raison inconnue'}`);
       return [];
     }
-    const results = extractPlayers(data);
-    log.ok('1jour1film', tmdbId, `${results.length} lien(s) (cles reponse: ${Object.keys(data).join(',')})`);
-    return results;
+
+    const map = type === 'movie' ? data.players : data.episodes?.[String(episode)];
+    const { items, resolved: count } = resolved.applyAll(flattenByLang(map), resolved.collect(data));
+
+    const scope = type === 'movie' ? '' : `S${season}E${episode}: `;
+    log.ok('1jour1film', tmdbId, `${scope}${resolved.summary(items.length, count)}`);
+    return items;
   } catch (err) {
     log.fail('1jour1film', tmdbId, err);
     return [];

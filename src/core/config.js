@@ -25,9 +25,21 @@ const config = {
   PUBLIC_URL: readEnv('PUBLIC_URL', ''),
 
   MAIN_API_BASE_URL: readEnv('MAIN_API_BASE_URL'),
-  PROXIES_EMBED_BASE_URL: readEnv('PROXIES_EMBED_BASE_URL'),
   SPOOFED_ORIGIN: readEnv('SPOOFED_ORIGIN', 'https://movix.fun'),
   VIP_ACCESS_KEY: readEnv('VIP_ACCESS_KEY', ''),
+
+  // --- Resolution serveur des flux (`?resolve=1`) ---------------------------
+  // C'est DESORMAIS LA SEULE facon d'obtenir une URL de flux pour la plupart des
+  // hebergeurs. Movix a ferme ses endpoints d'extraction publics: `/api/extract-*` sur
+  // proxiesembed exige une cle interne que seul son backend detient, et il n'existe plus
+  // aucune route "extrais-moi cette URL". A la place, les routes catalogue resolvent
+  // elles-memes quand on leur passe `resolve=1` ET une cle VIP valide, et rendent des
+  // m3u8 deja proxifiees et signees, jouables telles quelles.
+  //
+  // Sans VIP_ACCESS_KEY, l'addon ne peut extraire que voe, darkibox et oneupload, qu'il
+  // sait lire seul. Ce reglage n'existe que pour desactiver la demande (diagnostic,
+  // comparaison): il n'y a aucune raison de le couper en usage normal.
+  MOVIX_RESOLVE: readBool('MOVIX_RESOLVE', true),
 
   // --- Forme des identifiants de contenu -----------------------------------
   // Gouverne A LA FOIS les ids servis par l'addon (catalogues, metas, episodes) et les
@@ -112,6 +124,17 @@ const config = {
   // Rangee de recommandations calculees localement depuis l'historique Movix (sans compte tiers).
   LOCAL_RECOMMENDATIONS: readBool('LOCAL_RECOMMENDATIONS', true),
 
+  // --- TV en direct --------------------------------------------------------
+  // Movix expose depuis peu un triplet manifest/catalog/stream deja au format Stremio
+  // (`/api/livetv/...`), alimente par Vavoo (HLS gratuit), une playlist M3U locale, du
+  // Xtream reserve aux VIP, et des lecteurs en iframe (NorthLive, rencontres sportives)
+  // qu'aucun lecteur video ne sait ouvrir. L'addon relaie les premiers et ecarte les
+  // seconds. Ajoute le type `tv` au manifest: le desactiver le retire entierement.
+  LIVETV_ENABLED: readBool('LIVETV_ENABLED', true),
+  // Catalogues retenus, tels que Movix les nomme (`vavoo_france`, `northlive_sport`...).
+  // Vide = tous ceux qu'il annonce -- ce qui fait beaucoup de rangees, une par pays.
+  LIVETV_CATALOGS: readList('LIVETV_CATALOGS', null),
+
   // --- Catalogues ---
   // Rangees integrees affichees, dans l'ordre. Vide = l'ordre par defaut.
   // Pour renommer une rangee ou en creer de nouvelles, utiliser catalogs.json.
@@ -128,9 +151,10 @@ const config = {
   // profil VBR simule: 26% d'erreur moyenne et 93% au 90e centile a 1 prelevement, contre
   // 13% et 21% a 5). Au-dela de 5-6 le gain devient marginal.
   PROBE_SEGMENT_SAMPLES: Number(readEnv('PROBE_SEGMENT_SAMPLES', 5)),
-  // Proxy utilise en repli quand un CDN de hoster refuse l'acces direct. Meme valeur que
-  // VITE_PROXY_BASE_URL cote site (ou l'URL du service bypass403): tous deux exposent
-  // /proxy/<url> et posent les Origin/Referer attendus par domaine.
+  // Proxy utilise en repli quand un CDN de hoster refuse l'acces direct a la SONDE.
+  // Attention: le `/proxy` de Movix n'est plus utilisable ici (il exige une signature
+  // HMAC), et le micro-service bypass403 a ete supprime de l'amont. Ne reste donc qu'un
+  // proxy generique a soi, exposant /proxy/<url>. Vide = pas de repli.
   PROBE_PROXY_BASE_URL: readEnv('PROBE_PROXY_BASE_URL', ''),
   // Budget global de la phase de mesure, pour UNE ouverture de fiche. Une sonde lente n'est
   // pas genante en soi: ce qui l'est, c'est qu'elle retarde la liste entiere. Passe ce
@@ -381,8 +405,15 @@ const config = {
 config.LOGO_URL = readEnv('LOGO_URL', `${config.SPOOFED_ORIGIN.replace(/\/+$/, '')}/favicon.ico`);
 
 if (!config.MAIN_API_BASE_URL) console.warn('[config] MAIN_API_BASE_URL manquant -- voir .env.example');
-if (!config.PROXIES_EMBED_BASE_URL) console.warn('[config] PROXIES_EMBED_BASE_URL manquant -- voir .env.example');
-if (!config.VIP_ACCESS_KEY) console.warn('[config] VIP_ACCESS_KEY manquant -- les extractions VIP-gated echoueront');
+if (!config.VIP_ACCESS_KEY) {
+  console.warn(
+    '[config] VIP_ACCESS_KEY manquant -- Movix ne resoudra AUCUN flux. Seuls voe, darkibox ' +
+      "et oneupload restent extractibles (l'addon les lit lui-meme); toutes les autres sources " +
+      'ne rendront que des liens injouables.',
+  );
+} else if (!config.MOVIX_RESOLVE) {
+  console.warn('[config] MOVIX_RESOLVE=false -- la resolution serveur est desactivee malgre une cle VIP presente');
+}
 if (!config.TMDB_API_KEY) console.warn('[config] TMDB_API_KEY manquant -- catalogue/meta ne fonctionneront pas');
 if (config.SUBTITLES_ENABLED && !config.PUBLIC_URL) {
   console.warn(
@@ -429,6 +460,17 @@ if (process.env.NUVIO_ID_PREFERENCE !== undefined) {
   console.warn(
     `[config] NUVIO_ID_PREFERENCE est remplace par ID_FORMAT (=${config.ID_FORMAT}), qui vaut aussi ` +
       "pour les ids servis par l'addon. Retire-le du .env; `npm run nuvio:merge:dry` montre ce qu'il reste a aligner.",
+  );
+}
+
+// PROXIES_EMBED_BASE_URL ne sert plus a rien: les routes d'extraction de proxiesembed
+// exigent une cle interne reservee au backend Movix, et ses routes de proxy n'acceptent
+// plus qu'une URL signee en HMAC. L'addon ne l'appelle donc plus jamais en direct -- il
+// ne fait que SUIVRE les URLs signees que Mainapi lui rend.
+if (process.env.PROXIES_EMBED_BASE_URL !== undefined) {
+  console.warn(
+    "[config] PROXIES_EMBED_BASE_URL n'est plus utilise -- proxiesembed n'accepte plus " +
+      "d'appel direct (cle interne + signature HMAC). Retire-le du .env.",
   );
 }
 
