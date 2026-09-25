@@ -41,7 +41,16 @@ const WRITE_LOCK_RETRY_MS = 5000;
 const MAX_ATTEMPTS = 4;
 const LONG_PAUSE_MS = 6 * 60 * 60 * 1000;
 
-const client = axios.create({ baseURL: config.SIMKL_BASE_URL, timeout: 30000 });
+function proxyAgent() {
+  if (!config.SIMKL_PROXY_URL) return {};
+  // Charge a la demande: sans proxy configure, la dependance n'est meme pas lue.
+  const { SocksProxyAgent } = require('socks-proxy-agent');
+  const agent = new SocksProxyAgent(config.SIMKL_PROXY_URL);
+  // `proxy: false` pour qu'axios n'applique pas en plus un HTTP(S)_PROXY d'environnement.
+  return { httpAgent: agent, httpsAgent: agent, proxy: false };
+}
+
+const client = axios.create({ baseURL: config.SIMKL_BASE_URL, timeout: 30000, ...proxyAgent() });
 
 let token = null;
 
@@ -91,6 +100,8 @@ function status() {
   const paused = Date.now() < pausedUntil;
   return {
     authenticated: isAuthenticated(),
+    // Uniquement le schema et l'hote: une URL de proxy peut porter des identifiants.
+    viaProxy: config.SIMKL_PROXY_URL ? config.SIMKL_PROXY_URL.replace(/\/\/[^@/]*@/, '//') : null,
     paused,
     pausedUntil: paused ? new Date(pausedUntil).toISOString() : null,
     reason: paused ? pauseReason : null,

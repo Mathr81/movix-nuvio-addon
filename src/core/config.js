@@ -111,6 +111,11 @@ const config = {
   // --- Simkl (tracker sans limite d'app connectee, integre nativement par Nuvio) ---
   SIMKL_BASE_URL: readEnv('SIMKL_BASE_URL', 'https://api.simkl.com'),
   SIMKL_CLIENT_ID: readEnv('SIMKL_CLIENT_ID', ''),
+  // Sortie des appels Simkl (et d'eux seuls) par un proxy, typiquement le SOCKS5 du
+  // conteneur nas-tunnel: `socks5h://nas-tunnel:1080`. Le `h` fait resoudre le DNS par le
+  // proxy. Utile quand Simkl bloque l'IP du serveur; aucun repli en direct si le proxy
+  // tombe, sans quoi on retaperait sur le blocage.
+  SIMKL_PROXY_URL: readEnv('SIMKL_PROXY_URL', ''),
   // Le jeton Simkl n'expire pas: pas de client secret ni de refresh a gerer.
   SIMKL_TOKEN_FILE: readEnv('SIMKL_TOKEN_FILE', ''),
   SIMKL_PUSH_INTERVAL_MS: Number(readEnv('SIMKL_PUSH_INTERVAL_MS', 0)),

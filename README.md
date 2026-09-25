@@ -434,6 +434,18 @@ un **retrait** côté Simkl — un titre fraîchement écrit ne peut pas « disp
 que Simkl a déjà (lues via `/sync/playback`) ou approchent de sa limite de rétention, et
 au plus `SIMKL_SCROBBLE_MAX_PER_CYCLE` (5) par cycle.
 
+**Sortie par un proxy.** `SIMKL_PROXY_URL` fait passer les appels Simkl — et eux seuls —
+par un proxy SOCKS5, typiquement le conteneur `nas-tunnel` (IP résidentielle) :
+
+```bash
+SIMKL_PROXY_URL=socks5h://nas-tunnel:1080   # « h » : le DNS est résolu par le proxy
+```
+
+Le conteneur rejoint pour cela le réseau externe `tunnel-net` (déjà déclaré dans
+`docker-compose.yml`). Aucun repli en direct si le proxy tombe : ce serait retaper sur le
+blocage. C'est ce qui a remis Simkl en service quand il a bloqué l'IP du VPS (septembre
+2026) — le blocage visait l'IP seule, le `client_id` et le jeton étaient intacts.
+
 **Refus et pauses.** Chaque refus est traité selon sa cause (voir `simklCloud.js`). Un
 quota épuisé, un `412` ou un `403 Blocked` suspendent **tout** appel sortant (6 h, ou
 `Retry-After`) : insister pendant un blocage est ce qui le prolonge. `/health` et

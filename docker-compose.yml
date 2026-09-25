@@ -23,6 +23,17 @@ services:
       CATALOGS_FILE: /app/data/catalogs.json
     volumes:
       - movix-data:/app/data
+    # `tunnel-net` donne acces au proxy SOCKS5 du conteneur nas-tunnel (sortie par une IP
+    # residentielle), utilise par les seuls appels Simkl via SIMKL_PROXY_URL. `default`
+    # garde le reseau habituel du projet.
+    networks:
+      - default
+      - tunnel-net
 
 volumes:
   movix-data:
+
+networks:
+  tunnel-net:
+    name: tunnel-net
+    external: true
