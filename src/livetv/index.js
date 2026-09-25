@@ -16,9 +16,16 @@ const cache = require('../core/cache');
  *   northlive_*  lecteur en IFRAME (`_isEmbed`). Injouable par Stremio/Nuvio: la reponse
  *                est une page HTML, pas un flux. On ne les propose qu'en "ouvrir dans le
  *                navigateur", et seulement si SHOW_UNPLAYABLE_EMBEDS est actif.
- *   match_*      rencontres sportives FCTV. Le flux natif est verrouille par IP et resolu
- *                cote client par l'extension du site; sans elle le site retombe lui aussi
- *                sur un embed. Meme traitement que northlive.
+ *   match_*      rencontres sportives FCTV, servies en playlist HLS par Mainapi: jouables.
+ *   streamed_*   rencontres Streamed. Annoncees en embed `embed.st`, mais chaque lecteur
+ *                porte une `_streamedKey` que `/api/livetv/streamed/native/...` convertit,
+ *                pour un VIP, en m3u8 signee sur proxiesembed (`/streamed-proxy`). C'est
+ *                ce que fait le site; sans cle VIP, ils restent des embeds.
+ *
+ * Pour un VIP, Mainapi joint aussi a chaque flux direct une `proxyUrl` signee (le
+ * `/proxy` de proxiesembed, en-tetes amont compris). On la propose en second choix: le
+ * lien direct reste le plus court, mais c'est la voie de secours quand un CDN refuse
+ * l'appareil qui lit.
  *
  * Les ids voyagent prefixes `movixtv:` pour ne pas entrer en collision avec les ids TMDB
  * ou IMDb du reste de l'addon, et les catalogues `movixtv-`.
@@ -35,6 +42,8 @@ const CATALOG_TTL_MS = 60 * 1000;
 // Un flux live est resolu a la demande et ses URLs tournent: on ne le garde qu'un instant,
 // juste assez pour qu'un lecteur qui redemande immediatement ne repaye pas la resolution.
 const STREAM_TTL_MS = 30 * 1000;
+// Resolution d'un lecteur Streamed: un POST d'extraction cote Movix, ~1 s en temps normal.
+const STREAMED_RESOLVE_TIMEOUT_MS = 12000;
 
 function enabled() {
   return config.LIVETV_ENABLED && !!config.MAIN_API_BASE_URL;
@@ -163,10 +172,13 @@ async function streams(id) {
   try {
     const rows = await cache.wrap(`livetv:stream:${raw}`, STREAM_TTL_MS, STREAM_TTL_MS, async () => {
       const { data } = await mainApi.get(`/api/livetv/stream/tv/${encodeURIComponent(raw)}`, { timeout: 15000 });
-      return Array.isArray(data?.streams) ? data.streams : [];
+      const list = Array.isArray(data?.streams) ? data.streams : [];
+      // Resolus dans le cache: un lecteur qui redemande la liste ne relance pas l'extraction.
+      return Promise.all(list.map((row) => resolveStreamed(raw, row)));
     });
 
     const out = [];
+    const fallbacks = [];
     for (const row of rows) {
       if (!row?.url) continue;
       const title = row.title || 'Direct';
@@ -182,8 +194,17 @@ async function streams(id) {
         url: row.url,
         behaviorHints: { notWebReady: false },
       });
+      // URL signee a utiliser TELLE QUELLE: la reconstruire la rendrait invalide.
+      if (row.proxyUrl && row.proxyUrl !== row.url) {
+        fallbacks.push({
+          name: 'Movix TV',
+          title: `${title} · via proxy Movix`,
+          url: row.proxyUrl,
+          behaviorHints: { notWebReady: false },
+        });
+      }
     }
-    return out;
+    return [...out, ...fallbacks];
   } catch (err) {
     // 403 = chaine reservee aux VIP (Xtream) sans cle valide. Le dire: une liste vide
     // ressemble sinon a une chaine morte.
@@ -193,6 +214,29 @@ async function streams(id) {
       console.warn(`[livetv] flux ${raw} indisponible: ${err.message}`);
     }
     return [];
+  }
+}
+
+/**
+ * Lecteur Streamed -> flux natif, comme le fait le site pour un VIP.
+ *
+ * La route exige la cle VIP (`x-access-key`, injectee par mainApi) et ne resout que les
+ * lecteurs qu'elle a elle-meme annonces pour cette chaine: on lui renvoie donc la
+ * `_streamedKey` recue, rien d'autre. En cas d'echec la ligne reste un embed.
+ */
+async function resolveStreamed(channelId, row) {
+  if (!row?._isEmbed || !row._streamedKey || !config.VIP_ACCESS_KEY) return row;
+
+  try {
+    const path = `/api/livetv/streamed/native/${encodeURIComponent(channelId)}/${encodeURIComponent(row._streamedKey)}`;
+    const { data } = await mainApi.get(path, { timeout: STREAMED_RESOLVE_TIMEOUT_MS });
+    if (typeof data?.url !== 'string' || !data.url) return row;
+    // Rendue relative quand proxiesembed partage l'origine de Mainapi.
+    const url = new URL(data.url, config.MAIN_API_BASE_URL).href;
+    return { ...row, url, _isEmbed: false };
+  } catch (err) {
+    console.warn(`[livetv] ${channelId}: lecteur Streamed "${row.title}" non resolu (${err.response?.status || err.message})`);
+    return row;
   }
 }
 
