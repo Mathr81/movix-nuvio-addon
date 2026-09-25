@@ -55,6 +55,9 @@ async function readNuvio(profileId) {
       if (!id) return;
       const season = Number(row.season) || null;
       const episode = Number(row.episode) || null;
+      // Une serie "vue" sans episode n'est pas transposable (Movix et Simkl raisonnent par
+      // episode): meme regle que le lecteur Movix, sinon elle circule sans fin.
+      if (type === 'series' && !(season && episode)) return;
       model.watched.set(watchedKey(type, id, season, episode), { type, id, season, episode, watchedAt: row.watched_at });
     }),
   );

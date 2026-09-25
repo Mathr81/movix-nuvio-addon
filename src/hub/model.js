@@ -25,8 +25,13 @@ function toEpochMs(value) {
 }
 
 const libKey = (type, id) => `${type}:${id}`;
-const watchedKey = (type, id, season, episode) =>
-  type === 'series' && season ? `series:${id}:${season}:${episode}` : `movie:${id}`;
+// Une serie sans episode garde sa propre cle: la ranger sous `movie:<id>` la confondait
+// avec le film de meme id TMDB (les deux sequences sont distinctes), et le hub l'ajoutait
+// puis la retirait a chaque cycle.
+const watchedKey = (type, id, season, episode) => {
+  if (type !== 'series') return `movie:${id}`;
+  return season && episode ? `series:${id}:${season}:${episode}` : `series:${id}`;
+};
 const progressKey = watchedKey;
 
 /** `movie:157336` / `series:1399:2:5` -> objet exploitable. */

@@ -321,12 +321,12 @@ cycle, sans instantané, traite tout comme nouveau et produit l'union des deux c
 | | Sens | Contenu |
 |---|---|---|
 | Movix ↔ Nuvio | bidirectionnel | listes, titres et épisodes vus, positions de lecture |
-| → Simkl | miroir seulement | historique et listes (jamais une source) |
+| ↔ Simkl | bidirectionnel, à son rythme | listes et historique (films, séries, anime) ; positions envoyées en `/scrobble/pause` |
 
 - **Conflit sur une même position** (les deux côtés ont bougé) : la position la plus
   avancée gagne.
-- **Simkl ne reçoit pas les positions** : son API n'a pas d'endpoint de progression, et
-  sa progression n'est de toute façon conservée qu'une semaine.
+- **Simkl est lu au plus tous les `SIMKL_POLL_INTERVAL_MS`** (15 min) et peut manquer un
+  tour : il est alors mis de côté, sans rien en déduire. Voir « Pont Simkl » plus bas.
 - L'instantané n'est enregistré qu'en cas de succès complet — un échec partiel est
   rejoué au cycle suivant plutôt qu'oublié. Il intègre aussi ce que le cycle vient
   d'**écrire** : sans ça, nos propres écritures reviendraient au tour suivant comme des
@@ -389,9 +389,9 @@ Trois options, cumulables :
 | **Simkl** *(recommandé sans VIP)* | Simkl (gratuit) | Historique + listes partagés, **pas de limite d'app**, intégré nativement par Nuvio depuis août 2026. |
 | **Trakt** | Trakt (gratuit) | Le plus large écosystème d'addons — mais un seul slot : voir l'import ponctuel ci-dessous. |
 
-Les positions de reprise à la seconde près restent gérées par le push **Nuvio Sync**
-(section précédente) : l'API Simkl n'a pas d'endpoint de progression, et le slot Trakt
-sert mieux à Nuvio qu'à cet addon.
+Les positions de reprise à la seconde près restent gérées par **Nuvio Sync** (section
+précédente) : Simkl ne garde qu'un pourcentage, 7 jours sur un compte gratuit, et le slot
+Trakt sert mieux à Nuvio qu'à cet addon.
 
 ### Pont Simkl (historique partagé, sans limite)
 
@@ -399,32 +399,56 @@ sert mieux à Nuvio qu'à cet addon.
 # 1. Crée une app sur https://simkl.com/settings/developer
 # 2. Renseigne SIMKL_CLIENT_ID dans .env (aucun secret nécessaire)
 npm run simkl:auth        # affiche un code à saisir sur simkl.com/pin
-npm run simkl:push:dry
-npm run simkl:push
+npm run simkl:push:dry    # ce que Simkl n'a pas encore, sans rien envoyer
+npm run simkl:push        # import ponctuel (inutile avec le hub actif)
+curl http://localhost:8787/simkl/status   # autorisé ? en pause, et pourquoi ?
 ```
 
-| Movix | → Simkl |
-|-------|---------|
-| Films vus + épisodes vus | Historique (`/sync/history`) |
-| Watchlist + Favoris | `plantowatch` |
-| Titres en cours de lecture | `watching` |
+> **Avec Docker**, le jeton doit être dans le volume : `SIMKL_TOKEN_FILE` y pointe
+> (`/app/data/.simkl-token.json`). Un `.simkl-token.json` resté à la racine du dépôt
+> n'est **pas** lu par le conteneur (il est exclu de l'image) — Simkl paraît alors
+> « non autorisé », sans autre message.
 
-Contrairement à Nuvio, qui n'a qu'une bibliothèque plate, Simkl distingue
-`plantowatch` / `watching` / `completed` — le push s'en sert. Un titre n'ayant qu'un
-seul statut, une lecture en cours l'emporte sur « à voir ».
+L'intégration suit la documentation officielle (**api.simkl.org**, spec OpenAPI comprise).
+Les règles qui la façonnent :
+
+| Règle Simkl | Ce que fait l'addon |
+|---|---|
+| `client_id`, `app-name`, `app-version` en query + `User-Agent` sur **chaque** requête | Toujours envoyés (`movix-nuvio-addon/<version>`) |
+| **1 POST/s**, 10 GET/s ; POST en rafale → blocage du jeton ou du `client_id` | Une requête en vol à la fois, POST espacés de 1,1 s, écritures **par lots de 50** |
+| Verrou d'écriture de ~20 s par utilisateur (`400 RATE_LIMIT`) | Nouvel essai 5 s plus tard, jamais de recul exponentiel |
+| Ne **jamais** relire `/sync/all-items` en boucle — motif de suspension du `client_id` sans préavis | `/sync/activities` d'abord, au plus tous les `SIMKL_POLL_INTERVAL_MS` ; relecture du seul delta (`date_from`) des types qui ont bougé |
+| Les retraits n'apparaissent pas dans `date_from` | Si `removed_from_list` bouge : liste des seuls ids (`extended=simkl_ids_only`) |
+| Épisodes des séries **terminées** seulement avec `include_all_episodes=yes` | Demandé ; sans lui, une série finie semblait n'avoir aucun épisode vu et le hub la renvoyait sans fin |
+| L'anime est un compartiment à part | Lu (`full_anime_seasons`, pour la numérotation TVDB = TMDB) |
+| `not_found` dans chaque réponse d'écriture | Titre retenu comme introuvable, plus jamais renvoyé |
+| Pas de `/sync/add-to-list` derrière `/sync/history` | Un titre qui reçoit de l'historique n'est pas remis en `plantowatch` |
+| Pas d'endpoint « retirer de la liste » : `/sync/history/remove` sans saisons efface le titre **entier** | Réservé aux titres encore en `plantowatch` ; une série commencée n'est jamais effacée pour un retrait de watchlist |
+
+La copie locale de Simkl vit dans `data/simkl-library.json`. Les écritures y sont
+reportées dès qu'elles réussissent : entre deux lectures, le hub voit Simkl tel qu'il
+sera, et ne renvoie rien deux fois. Seul ce qu'une vraie lecture a montré sert à déduire
+un **retrait** côté Simkl — un titre fraîchement écrit ne peut pas « disparaître ».
+
+**Positions.** Envoyées en `/scrobble/pause`, **seulement** si elles diffèrent de celles
+que Simkl a déjà (lues via `/sync/playback`) ou approchent de sa limite de rétention, et
+au plus `SIMKL_SCROBBLE_MAX_PER_CYCLE` (5) par cycle.
+
+**Refus et pauses.** Chaque refus est traité selon sa cause (voir `simklCloud.js`). Un
+quota épuisé, un `412` ou un `403 Blocked` suspendent **tout** appel sortant (6 h, ou
+`Retry-After`) : insister pendant un blocage est ce qui le prolonge. `/health` et
+`/simkl/status` disent si Simkl est en pause, et pourquoi.
 
 ```bash
-npm run simkl:probe   # lecture seule: affiche la forme réelle des réponses de l'API
+npm run simkl:probe    # lecture seule : forme réelle des réponses sur ton compte
+npm run simkl:resync   # oublie la copie locale et relit tout (cache suspect seulement)
 ```
 
-`simkl:probe` sert à câbler la synchronisation **Simkl → hub** : la documentation
-publique de Simkl est incomplète (le fichier apiary figé sur GitHub ne contient ni
-`/scrobble` ni les formes de réponse de `/sync/all-items`), donc on interroge le compte
-réel plutôt que de coder sur des suppositions.
+Branche aussi Simkl dans les réglages de Nuvio : il y scrobble tout seul ce que tu
+regardes. `SIMKL_PUSH_INTERVAL_MS` reste disponible pour un import périodique sans hub.
 
-Branche ensuite Simkl dans les réglages de Nuvio : il y scrobble tout seul, donc
-l'historique reste à jour sans relancer l'import. `SIMKL_PUSH_INTERVAL_MS` active
-malgré tout un import périodique depuis Movix si tu continues à utiliser le site.
+> **Échéance** : Simkl retire son authentification V1 (PIN, utilisée ici) vers
+> avril 2027. Il faudra passer au flux « device » d'AUTH V2 avec un nouveau `client_id`.
 
 ### Pont Trakt (historique partagé + recommandations)
 
@@ -856,11 +880,25 @@ que l'addon prend à la place du site :
 | `vavoo_` | HLS brut, gratuit, sans clé | ✅ |
 | `tvmio-` | playlist M3U locale du serveur | ✅ |
 | `iptv_` | Xtream, **réservé aux VIP** (403 sans clé) | ✅ |
+| `match_` | rencontres sportives FCTV, en playlist HLS servie par Mainapi | ✅ |
+| `streamed_` | rencontres Streamed : embed `embed.st`, converti en flux natif | ✅ avec clé VIP |
 | `northlive_` | lecteur en **iframe** | ❌ page web, pas un flux |
-| `match_` | rencontres sportives FCTV | ❌ flux natif verrouillé par IP, résolu côté client par l'extension du site |
 
-Les deux derniers ne sont proposés qu'avec `SHOW_UNPLAYABLE_EMBEDS=true`, en « ouvrir dans
-le navigateur ».
+Chaque lecteur Streamed porte une `_streamedKey` ; pour un VIP,
+`/api/livetv/streamed/native/<chaîne>/<clé>` la convertit en m3u8 signée sur
+proxiesembed (`/streamed-proxy`) — exactement ce que fait le site. L'addon le fait à la
+demande de la liste des flux (~1 s par lecteur, en parallèle). Sans clé VIP, ou si la
+résolution échoue, le lecteur reste un embed.
+
+Pour un VIP, Mainapi joint aussi à chaque flux direct une `proxyUrl` signée (le `/proxy`
+de proxiesembed, en-têtes amont compris). L'addon la propose en **second choix**
+(« · via proxy Movix »), à utiliser telle quelle : la reconstruire casserait la signature.
+
+Les embeds restants ne sont proposés qu'avec `SHOW_UNPLAYABLE_EMBEDS=true`, en « ouvrir
+dans le navigateur ».
+
+**Désactivée par défaut** : elle ajoute le type `tv` et des dizaines de rangées au
+manifest. Pour l'activer :
 
 ```bash
 LIVETV_ENABLED=true

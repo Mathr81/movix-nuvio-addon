@@ -24,6 +24,7 @@
     "nuvio:merge:dry": "node -e \"require('./src/hub').mergeNuvioIds({dryRun:true}).then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\"",
     "simkl:probe": "node -e \"require('./src/integrations/simklProbe').probeSimkl()\"",
     "simkl:push": "node -e \"require('./src/integrations/simklPush').pushToSimkl().then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\"",
+    "simkl:resync": "node -e \"const l=require('./src/integrations/simklLibrary');l.reset();l.sync({force:true}).then(ok=>{console.log(ok?'relu':'echec');process.exit(ok?0:1)})\"",
     "simkl:push:dry": "node -e \"require('./src/integrations/simklPush').pushToSimkl({dryRun:true}).then(s=>console.log(JSON.stringify(s,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\"",
     "aether:diag": "node src/addons/aetherDiag.js"
   },

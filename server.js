@@ -23,6 +23,7 @@ const { pushToTrakt } = require('./src/integrations/traktPush');
 const trakt = require('./src/integrations/traktCloud');
 const { pushToSimkl } = require('./src/integrations/simklPush');
 const simkl = require('./src/integrations/simklCloud');
+const simklLibrary = require('./src/integrations/simklLibrary');
 const hub = require('./src/hub');
 
 const app = express();
@@ -492,6 +493,21 @@ app.post('/simkl/push', async (req, res) => {
   }
 });
 
+// Repart de zero: oublie la copie locale de Simkl (et les titres qu'il n'avait pas su
+// identifier), puis la relit en entier. Une lecture complete, donc a garder pour les cas
+// ou le cache est suspect -- la doc Simkl reserve ce genre de lecture a la premiere synchro.
+app.post('/simkl/resync', async (_req, res) => {
+  try {
+    simklLibrary.reset();
+    const ok = await simklLibrary.sync({ force: true });
+    res.status(ok ? 200 : 502).json({ ok, simkl: simkl.status() });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/simkl/status', (_req, res) => res.json(simkl.status()));
+
 app.get('/health', async (_req, res) => {
   res.json({
     ok: true,
@@ -511,6 +527,7 @@ app.get('/health', async (_req, res) => {
     addons: addons.describe().filter((a) => a.enabled).map((a) => a.id),
     traktAuthenticated: trakt.isAuthenticated(),
     simklAuthenticated: simkl.isAuthenticated(),
+    simkl: simkl.status(),
   });
 });
 

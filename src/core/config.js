@@ -114,9 +114,18 @@ const config = {
   // Le jeton Simkl n'expire pas: pas de client secret ni de refresh a gerer.
   SIMKL_TOKEN_FILE: readEnv('SIMKL_TOKEN_FILE', ''),
   SIMKL_PUSH_INTERVAL_MS: Number(readEnv('SIMKL_PUSH_INTERVAL_MS', 0)),
-  // Renvoi des positions de lecture vers Simkl a chaque cycle du hub (il ne les garde
-  // qu'une semaine, donc les repousser est ce qui les maintient en vie).
+  // Delai minimal entre deux lectures de Simkl par le hub. Chaque lecture commence par
+  // `/sync/activities` et ne telecharge rien si rien n'a bouge; la doc Simkl demande
+  // 15-30 min entre deux verifications pour une app qui tourne en fond, et suspend sans
+  // preavis les `client_id` qui interrogent `/sync/all-items` en boucle. Plancher a 5 min.
+  // Les ECRITURES vers Simkl, elles, partent a chaque cycle du hub.
+  SIMKL_POLL_INTERVAL_MS: Math.max(Number(readEnv('SIMKL_POLL_INTERVAL_MS', 15 * 60 * 1000)), 5 * 60 * 1000),
+  // Envoi des positions de lecture vers Simkl (`/scrobble/pause`), uniquement quand elles
+  // different de ce que Simkl a deja enregistre.
   SIMKL_SCROBBLE: readBool('SIMKL_SCROBBLE', true),
+  // Positions envoyees au plus par cycle: Simkl accepte 1 POST/s et verrouille chaque
+  // utilisateur le temps d'une ecriture. Le reste part aux cycles suivants.
+  SIMKL_SCROBBLE_MAX_PER_CYCLE: Math.max(Number(readEnv('SIMKL_SCROBBLE_MAX_PER_CYCLE', 5)), 1),
   // Simkl ne cree une session de reprise que sous ce pourcentage: au-dela il tient le
   // titre pour termine et n'affiche rien, meme si l'appel est accepte.
   SIMKL_RESUME_MAX_PERCENT: Number(readEnv('SIMKL_RESUME_MAX_PERCENT', 80)),
@@ -130,7 +139,7 @@ const config = {
   // Xtream reserve aux VIP, et des lecteurs en iframe (NorthLive, rencontres sportives)
   // qu'aucun lecteur video ne sait ouvrir. L'addon relaie les premiers et ecarte les
   // seconds. Ajoute le type `tv` au manifest: le desactiver le retire entierement.
-  LIVETV_ENABLED: readBool('LIVETV_ENABLED', true),
+  LIVETV_ENABLED: readBool('LIVETV_ENABLED', false),
   // Catalogues retenus, tels que Movix les nomme (`vavoo_france`, `northlive_sport`...).
   // Vide = tous ceux qu'il annonce -- ce qui fait beaucoup de rangees, une par pays.
   LIVETV_CATALOGS: readList('LIVETV_CATALOGS', null),

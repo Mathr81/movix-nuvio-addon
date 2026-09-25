@@ -32,8 +32,11 @@ const {
  * l'addon du tout mais par l'API cloud Nuvio, qui expose en lecture ce que l'app y
  * ecrit. Le hub interroge les deux cotes en boucle et propage les nouveautes.
  *
- * Simkl ne recoit que l'historique et les listes: son API n'a pas d'endpoint de
- * position, et sa progression n'est de toute facon conservee qu'une semaine.
+ * Simkl est lu et ecrit pour l'historique et les listes; les positions ne font que
+ * partir vers lui (`/scrobble/pause`). Il n'est lu qu'a son rythme (SIMKL_POLL_INTERVAL_MS,
+ * voir integrations/simklLibrary.js) et peut manquer un tour: il est alors simplement
+ * laisse de cote, sans rien en deduire. Ce qui doit lui parvenir se mesure depuis le
+ * dernier cycle ou il a ete servi (`simklBase`), pour qu'une indisponibilite ne perde rien.
  *
  * Ce fichier n'orchestre que le cycle; lire, comparer et ecrire vivent dans
  * `readers/`, `diff.js` et `writers/`.
@@ -41,6 +44,8 @@ const {
 
 let running = false;
 let lastRun = null;
+
+const emptyDelta = () => ({ library: [], watched: [], progress: [] });
 
 /** Profil Nuvio cible: celui configure, sinon le premier du compte. */
 async function resolveProfileId() {
@@ -75,19 +80,32 @@ async function runCycle({ dryRun = false } = {}) {
       }
     }
 
-    const [movix, nuvioModel, simklModel] = await Promise.all([readMovix(), readNuvio(profileId), readSimkl()]);
+    const [movix, nuvioModel, simklView] = await Promise.all([readMovix(), readNuvio(profileId), readSimkl()]);
     const previous = loadState();
+    // `confirmed`: ce que Simkl a reellement montre; seule base pour en deduire quoi que ce soit.
+    const simklModel = simklView?.confirmed || null;
+    // Etat Movix/Nuvio lors du dernier cycle ou Simkl a ete servi.
+    const simklBase = previous?.simklBase || { movix: previous?.movix, nuvio: previous?.nuvio };
 
     const changes = {
       movix: changesSince(movix, previous?.movix),
       nuvio: changesSince(nuvioModel, previous?.nuvio),
-      simkl: changesSince(simklModel, previous?.simkl),
+      simkl: simklModel ? changesSince(simklModel, previous?.simkl) : emptyDelta(),
     };
 
     // Chaque cible recoit ce qui a bouge chez les deux autres, moins ce qu'elle a deja.
     const toNuvio = notYetIn(union(changes.movix, changes.simkl), nuvioModel);
     const toMovix = notYetIn(union(changes.nuvio, changes.simkl), movix);
-    const toSimkl = notYetIn(union(changes.movix, changes.nuvio), simklModel);
+    const toSimkl = simklView
+      ? {
+          ...notYetIn(
+            union(changesSince(movix, simklBase.movix), changesSince(nuvioModel, simklBase.nuvio)),
+            simklView.known,
+          ),
+          // Les positions partent en scrobble, plus bas, selon leurs propres regles.
+          progress: [],
+        }
+      : emptyDelta();
 
     // Suppressions: memes chemins que les ajouts, mais on ecarte tout element (re)ajoute
     // ailleurs pendant le meme cycle -- effacer un ajout frais est irrattrapable, alors
@@ -97,18 +115,38 @@ async function runCycle({ dryRun = false } = {}) {
       ? {
           movix: guardRemovals('Movix', removalsSince(movix, previous?.movix), movix, previous?.movix),
           nuvio: guardRemovals('Nuvio', removalsSince(nuvioModel, previous?.nuvio), nuvioModel, previous?.nuvio),
-          simkl: guardRemovals('Simkl', removalsSince(simklModel, previous?.simkl), simklModel, previous?.simkl),
+          simkl: simklModel ? guardRemovals('Simkl', simklRemovals(), simklModel, previous?.simkl) : emptyDelta(),
         }
       : { movix: null, nuvio: null, simkl: null };
 
+    // Un titre passe de "a voir" a "termine" quitte la liste `plantowatch` sans quitter
+    // Simkl: ce n'est pas un retrait. Seul compte un titre absent de TOUTE liste Simkl.
+    function simklRemovals() {
+      const removed = removalsSince(simklModel, previous?.simkl);
+      return { ...removed, library: removed.library.filter((k) => !simklView.known.library.has(k)) };
+    }
+
     const removeFrom = (a, b) =>
       config.HUB_PROPAGATE_DELETIONS
-        ? withoutContested(mergeRemovals(a, b), allAdditions)
-        : { library: [], watched: [], progress: [] };
+        ? withoutContested(mergeRemovals(a || emptyDelta(), b || emptyDelta()), allAdditions)
+        : emptyDelta();
 
     const removeInNuvio = removeFrom(gone.movix, gone.simkl);
     const removeInMovix = removeFrom(gone.nuvio, gone.simkl);
-    const removeInSimkl = removeFrom(gone.movix, gone.nuvio);
+    // Vers Simkl, les disparitions se mesurent elles aussi depuis `simklBase`, et ne
+    // visent que ce que Simkl possede.
+    const removeInSimkl = (() => {
+      if (!simklView || !config.HUB_PROPAGATE_DELETIONS) return emptyDelta();
+      const merged = removeFrom(
+        guardRemovals('Movix', removalsSince(movix, simklBase.movix), movix, simklBase.movix),
+        guardRemovals('Nuvio', removalsSince(nuvioModel, simklBase.nuvio), nuvioModel, simklBase.nuvio),
+      );
+      return {
+        library: merged.library.filter((k) => simklView.known.library.has(k)),
+        watched: merged.watched.filter((k) => simklView.known.watched.has(k)),
+        progress: [],
+      };
+    })();
 
     const count = (d) => ({ library: d.library.length, watched: d.watched.length, progress: d.progress.length });
     const summary = {
@@ -118,7 +156,9 @@ async function runCycle({ dryRun = false } = {}) {
       premierTour: !previous,
       movix: { library: movix.library.size, watched: movix.watched.size, progress: movix.progress.size },
       nuvio: { library: nuvioModel.library.size, watched: nuvioModel.watched.size, progress: nuvioModel.progress.size },
-      simkl: { library: simklModel.library.size, watched: simklModel.watched.size },
+      simkl: simklModel
+        ? { library: simklModel.library.size, watched: simklModel.watched.size }
+        : `indisponible ce tour-ci${simkl.status().reason ? ` (${simkl.status().reason})` : ''}`,
       versNuvio: count(toNuvio),
       versMovix: count(toMovix),
       versSimkl: count(toSimkl),
@@ -171,22 +211,29 @@ async function runCycle({ dryRun = false } = {}) {
       await step('retireDeSimkl', () => applyRemovalsToSimkl(removeInSimkl));
     }
 
-    // Les positions partent vers Simkl a chaque cycle, sans filtrage par delta: il ne les
-    // conserve qu'une semaine, donc les repousser est justement ce qui les maintient.
-    if (config.SIMKL_SCROBBLE && simkl.isAuthenticated()) {
+    // Positions: seulement celles qui different de ce que Simkl a deja (voir le writer).
+    if (config.SIMKL_SCROBBLE && simklView) {
       const positions = [...movix.progress.values()];
       if (positions.length > 0) await step('scrobbleSimkl', () => scrobbleToSimkl(positions));
     }
 
-    // L'instantane n'est enregistre qu'en cas de succes complet: un echec partiel doit
-    // etre rejoue au tour suivant, pas oublie.
-    if (summary.ok) {
+    // L'instantane n'est enregistre que si Movix et Nuvio ont ete servis sans erreur: un
+    // echec partiel doit etre rejoue au tour suivant, pas oublie. Un echec cote Simkl ne
+    // bloque pas les deux autres: il laisse seulement `simklBase` en place, de sorte que
+    // ce qui devait partir vers Simkl reparte au prochain tour.
+    const simklFailed = Object.keys(summary.errors).some((name) => /Simkl$/.test(name));
+    const coreOk = Object.keys(summary.errors).every((name) => /Simkl$/.test(name));
+    if (coreOk) {
+      const movixSnap = snapshot(movix, toMovix, removeInMovix);
+      const nuvioSnap = snapshot(nuvioModel, toNuvio, removeInNuvio);
+      const simklServed = simklView && !simklFailed;
       saveState({
-        movix: snapshot(movix, toMovix, removeInMovix),
-        nuvio: snapshot(nuvioModel, toNuvio, removeInNuvio),
-        // Simkl n'expose pas les positions en lecture: elles partent en scrobble et ne
-        // reviennent jamais. Les inscrire dans son instantane serait une fausse promesse.
-        simkl: snapshot(simklModel, toSimkl, removeInSimkl, ['library', 'watched']),
+        movix: movixSnap,
+        nuvio: nuvioSnap,
+        // Seul le confirme y entre: une ecriture pas encore relue ne doit pas pouvoir
+        // "disparaitre" de Simkl au tour suivant.
+        simkl: simklModel ? snapshot(simklModel, null, removeInSimkl, ['library', 'watched']) : previous?.simkl || null,
+        simklBase: simklServed ? { movix: movixSnap, nuvio: nuvioSnap } : simklBase,
       });
     }
 

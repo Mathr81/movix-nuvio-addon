@@ -1,15 +1,11 @@
 const simkl = require('./simklCloud');
 
 /**
- * Reconnaissance de l'API Simkl sur ton compte.
+ * Reconnaissance de l'API Simkl sur ton compte: affiche la forme exacte des reponses.
  *
- * La documentation publique de Simkl est incomplete: le fichier apiary fige sur GitHub
- * ne contient ni /scrobble ni les formes de reponse de /sync/all-items, et le site de
- * doc n'est pas toujours joignable. Plutot que de coder sur des suppositions, ce script
- * interroge l'API reelle et affiche la forme exacte de ce qu'elle renvoie -- de quoi
- * ecrire la synchronisation Simkl -> hub sans deviner.
- *
- * Lecture seule: aucune de ces requetes ne modifie le compte.
+ * La reference est desormais la doc officielle (api.simkl.org, spec OpenAPI comprise);
+ * cette sonde sert a verifier ce que renvoie TON compte (anime, episodes des series
+ * terminees, positions de reprise). Lecture seule, une requete par compartiment.
  */
 function shapeOf(value, depth = 0) {
   if (value === null) return 'null';
@@ -38,12 +34,10 @@ async function probeSimkl() {
   const calls = [
     ['activites (detection de changement)', () => simkl.activities()],
     ['reglages du compte', () => simkl.settings()],
-    ['films -> plantowatch', () => simkl.allItems('movies', 'plantowatch')],
-    ['films -> completed', () => simkl.allItems('movies', 'completed')],
-    ['series -> watching', () => simkl.allItems('shows', 'watching')],
-    ['series -> completed', () => simkl.allItems('shows', 'completed')],
-    // Endpoints non documentes publiquement: on regarde simplement s'ils repondent.
-    ['progression en cours (/sync/playback)', () => simkl.get('/sync/playback')],
+    ['films', () => simkl.allItems({ type: 'movies', extended: 'full' })],
+    ['series', () => simkl.allItems({ type: 'shows', extended: 'full', include_all_episodes: 'yes' })],
+    ['anime', () => simkl.allItems({ type: 'anime', extended: 'full_anime_seasons', include_all_episodes: 'yes' })],
+    ['positions de reprise (/sync/playback)', () => simkl.playback()],
   ];
 
   for (const [label, run] of calls) {
