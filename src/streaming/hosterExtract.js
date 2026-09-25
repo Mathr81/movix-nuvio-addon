@@ -2,6 +2,7 @@ const axios = require('axios');
 const config = require('../core/config');
 const breaker = require('../core/breaker');
 const voe = require('./hosterVoe');
+const veev = require('./hosterVeev');
 const streamProxy = require('./streamProxy');
 
 const BROWSER_UA =
@@ -98,7 +99,7 @@ const BUILTIN_HOSTER_PATTERNS = {
 };
 
 /** Hebergeurs que l'addon sait extraire SEUL, sans passer par Movix. */
-const LOCAL_EXTRACTORS = new Set(['voe', 'darkibox', 'oneupload']);
+const LOCAL_EXTRACTORS = new Set(['voe', 'veev', 'darkibox', 'oneupload']);
 
 /** Motifs compiles, alias supplementaires de la configuration inclus. */
 const HOSTER_PATTERNS = (() => {
@@ -232,6 +233,29 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
 
   // Service connu pour etre en panne a l'instant: on ne paye pas l'aller-retour.
   if (extractBreaker.isOpen(hoster)) return { ok: false, reason: 'cooldown', hoster };
+
+  if (hoster === 'veev') {
+    try {
+      const result = await veev.extract(embedUrl);
+      extractBreaker.noteRecovery(hoster);
+      if (!result.ok) {
+        console.warn(`[extract:veev] rien a extraire de ${embedUrl}: ${result.reason}`);
+        return { ok: false, reason: result.reason === 'unavailable' ? 'deleted' : result.reason, hoster };
+      }
+      // Le CDN de Veev n'accepte que l'Origin/Referer de son lecteur: proxy de flux, comme voe.
+      const url = config.STREAM_PROXY_ENABLED
+        ? streamProxy.proxyUrl(result.url, {
+            headers: { accept: '*/*', origin: result.origin, referer: `${result.origin}/`, 'user-agent': veev.BROWSER_UA },
+          })
+        : result.url;
+      return { ok: true, url, hoster };
+    } catch (err) {
+      console.warn(`[extract:veev] echec HTTP pour ${embedUrl}: ${err.message}`);
+      const status = err.response?.status;
+      if (!status || status >= 500) extractBreaker.noteOutage(hoster);
+      return { ok: false, reason: 'http-error', hoster, status };
+    }
+  }
 
   if (hoster === 'voe') {
     try {

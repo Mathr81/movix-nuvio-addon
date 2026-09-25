@@ -36,7 +36,7 @@ const config = {
   // elles-memes quand on leur passe `resolve=1` ET une cle VIP valide, et rendent des
   // m3u8 deja proxifiees et signees, jouables telles quelles.
   //
-  // Sans VIP_ACCESS_KEY, l'addon ne peut extraire que voe, darkibox et oneupload, qu'il
+  // Sans VIP_ACCESS_KEY, l'addon ne peut extraire que voe, veev, darkibox et oneupload, qu'il
   // sait lire seul. Ce reglage n'existe que pour desactiver la demande (diagnostic,
   // comparaison): il n'y a aucune raison de le couper en usage normal.
   MOVIX_RESOLVE: readBool('MOVIX_RESOLVE', true),
@@ -269,8 +269,10 @@ const config = {
   // --- Cinejoy (cinejoy.to -- canal scelle lumen-gate-v2 pilote via crush.wasm) ---
   // Aucune cle : la crypto est dans le wasm (src/addons/vendor/crush.wasm). Depuis un
   // serveur, le POST passe en fetch natif, sans curl-impersonate.
-  CINEJOY_ENDPOINT: readEnv('CINEJOY_ENDPOINT', 'https://api.shegu.st/g'),
-  CINEJOY_ORIGIN: readEnv('CINEJOY_ORIGIN', 'https://cinejoy.to'),
+  CINEJOY_ENDPOINT: readEnv('CINEJOY_ENDPOINT', 'https://api.wing.st/g'),
+  CINEJOY_ORIGIN: readEnv('CINEJOY_ORIGIN', 'https://cinejoy.pk'),
+  // Serveurs interroges (`Lisbon,Nebula,...`). Vide = ceux que `/servers` annonce `ok`.
+  CINEJOY_SERVERS: readList('CINEJOY_SERVERS', null),
   CINEJOY_TIMEOUT_MS: Number(readEnv('CINEJOY_TIMEOUT_MS', '10000')),
   CINEJOY_LANG: readEnv('CINEJOY_LANG', 'VO'),
 

@@ -28,14 +28,22 @@ const streamProxy = require('../streaming/streamProxy');
  * (la variante choisie + les pistes audio), servi par le proxy en playlist synthetique. Le
  * lecteur garde ainsi le son a la qualite exacte demandee.
  *
- * Films ET series : seul le payload change (`/Lisbon/movie` vs `/Lisbon/series`).
+ * Films ET series : seul le payload change (`/<serveur>/movie` vs `/<serveur>/series`).
+ *
+ * Plusieurs serveurs (Lisbon, Nebula, Solara, Athens... annonces par `/servers`) servent le
+ * meme titre depuis des CDN differents: ils sont tous interroges en parallele, et un master
+ * mort sur l'un (le CDN de Lisbon repond parfois 403 pour un titre donne) n'empeche pas
+ * les autres de le servir.
+ *
+ * Septembre 2026: l'API est passee de api.shegu.st a api.wing.st, le site de cinejoy.to a
+ * cinejoy.pk, et crush.wasm a change de cle (version de canal 02 01 -> 02 02). Le wasm se
+ * recupere sur `<api>/crush.wasm`; la version est lue dans sa sortie, pas figee ici.
  */
 
 // --- Scellement (crush.wasm) ----------------------------------------------
 const WASM_PATH = path.join(__dirname, 'vendor', 'crush.wasm');
-const VERSION = Buffer.from([0x02, 0x01]);
 const AAD_LABEL = Buffer.from('lumen-gate-v2\0', 'binary');
-const PREFIX_LEN = 32 + 1 + 65; // K_reponse(32) | flag(1) | ephPub(65)
+const PREFIX_LEN = 32 + 1 + 65; // K_reponse(32) | version mineure(1) | ephPub(65)
 
 let wasmModule = null;
 try {
@@ -58,10 +66,12 @@ function sealRequest(plaintext) {
   if (ret < 0) throw new Error(`seal_request a echoue (code ${ret})`);
   const whole = Buffer.from(mem().slice(outP, outP + ret));
   const wire = whole.subarray(PREFIX_LEN);
-  if (wire[0] !== 0x02 || wire[1] !== 0x01 || wire[2] !== 0x04) {
+  // La version (02 01, puis 02 02 depuis septembre 2026) change a chaque rotation de la cle
+  // serveur: on la lit dans ce que le wasm produit au lieu de la figer ici.
+  if (wire[0] !== 0x02 || wire[2] !== 0x04) {
     throw new Error(`corps reseau inattendu: ${wire.subarray(0, 3).toString('hex')}`);
   }
-  return { wire, kResp: whole.subarray(0, 32), ephPub: wire.subarray(2, 67) };
+  return { wire, version: wire.subarray(0, 2), kResp: whole.subarray(0, 32), ephPub: wire.subarray(2, 67) };
 }
 
 function gcmOpen(key, iv, blob, aad) {
@@ -75,7 +85,7 @@ function gcmOpen(key, iv, blob, aad) {
 
 async function resolveSealed(requestObj) {
   const plaintext = Buffer.from(JSON.stringify(requestObj));
-  const { wire, kResp, ephPub } = sealRequest(plaintext);
+  const { wire, version, kResp, ephPub } = sealRequest(plaintext);
   const res = await fetch(config.CINEJOY_ENDPOINT, {
     method: 'POST',
     headers: {
@@ -88,8 +98,8 @@ async function resolveSealed(requestObj) {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   let resp = Buffer.from(await res.arrayBuffer());
-  if (resp[0] === 0x02 && resp[1] === 0x01) resp = resp.subarray(2);
-  const aad = Buffer.concat([AAD_LABEL, VERSION, ephPub]); // 81 octets
+  if (resp[0] === version[0] && resp[1] === version[1]) resp = resp.subarray(2);
+  const aad = Buffer.concat([AAD_LABEL, version, ephPub]); // 81 octets
   const plain = gcmOpen(kResp, resp.subarray(0, 12), resp.subarray(12), aad).toString('utf8');
   return JSON.parse(plain);
 }
@@ -138,17 +148,17 @@ function miniMaster(master, variant) {
 }
 
 // --- Addon -----------------------------------------------------------------
-function buildRequest({ type, tmdbId, season, episode, imdb, year, title }) {
+function buildRequest({ server, type, tmdbId, season, episode, imdb, year, title }) {
   const base = { tmdb: String(tmdbId), imdb: imdb || '', year: year || '', title: title || '' };
   if (type === 'series') {
     // L'ordre des cles compte : le JSON est chiffre tel quel. On respecte l'ordre observe
     // cote client (tmdb, season, episode, imdb, year, title).
     return {
-      path: '/Lisbon/series',
+      path: `/${server}/series`,
       payload: { tmdb: base.tmdb, season: String(season), episode: String(episode), imdb: base.imdb, year: base.year, title: base.title },
     };
   }
-  return { path: '/Lisbon/movie', payload: base };
+  return { path: `/${server}/movie`, payload: base };
 }
 
 function playlistsOf(resp) {
@@ -156,6 +166,33 @@ function playlistsOf(resp) {
   if (list.length) return list.map((s) => s.playlist);
   if (resp?.playlist) return [resp.playlist];
   return [];
+}
+
+// --- Serveurs --------------------------------------------------------------
+const SERVERS_TTL_MS = 60 * 60 * 1000;
+let serversCache = { at: 0, list: null };
+
+/** Serveurs annonces `ok` par l'API, CINEJOY_SERVERS pour forcer une liste. */
+async function servers() {
+  if (config.CINEJOY_SERVERS) return config.CINEJOY_SERVERS;
+  if (serversCache.list && Date.now() - serversCache.at < SERVERS_TTL_MS) return serversCache.list;
+  try {
+    const url = new URL('servers', config.CINEJOY_ENDPOINT.replace(/[^/]*$/, '')).href;
+    const res = await fetch(url, {
+      headers: { accept: '*/*', origin: config.CINEJOY_ORIGIN, referer: `${config.CINEJOY_ORIGIN}/`, 'user-agent': kit.BROWSER_UA },
+      signal: AbortSignal.timeout(config.CINEJOY_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const list = ((await res.json())?.servers || [])
+      .filter((sv) => sv?.name && (!sv.status || sv.status === 'ok'))
+      .map((sv) => sv.name);
+    if (list.length === 0) throw new Error('liste vide');
+    serversCache = { at: Date.now(), list };
+  } catch (err) {
+    console.warn(`[cinejoy] liste des serveurs indisponible (${err.message}) -- repli sur Lisbon`);
+    serversCache = { at: Date.now(), list: serversCache.list || ['Lisbon'] };
+  }
+  return serversCache.list;
 }
 
 const proxyReady = () => config.STREAM_PROXY_ENABLED && !!config.PUBLIC_URL;
@@ -183,17 +220,25 @@ async function getStreams({ tmdbId, type, season, episode }) {
     tmdb.getImdbId(type, tmdbId).catch(() => null),
   ]);
 
-  let resp;
-  try {
-    resp = await resolveSealed(buildRequest({ type, tmdbId, season, episode, imdb, year: meta.year, title: meta.title }));
-  } catch (err) {
-    log.fail('Cinejoy', label, err);
-    return [];
-  }
+  const request = { type, tmdbId, season, episode, imdb, year: meta.year, title: meta.title };
+  const names = await servers();
+  const answers = await Promise.all(
+    names.map(async (server) => {
+      try {
+        const resp = await resolveSealed(buildRequest({ server, ...request }));
+        return { server, masters: playlistsOf(resp), status: resp?.status ?? resp?.message ?? '?' };
+      } catch (err) {
+        log.fail('Cinejoy', `${label} (${server})`, err);
+        return { server, masters: [] };
+      }
+    }),
+  );
 
-  const masters = playlistsOf(resp);
-  if (masters.length === 0) {
-    log.ok('Cinejoy', label, `aucune playlist (status applicatif ${resp?.status ?? '?'})`);
+  const found = answers.filter((a) => a.masters.length > 0);
+  const empty = answers.filter((a) => a.masters.length === 0 && a.status !== undefined);
+  if (empty.length) log.ok('Cinejoy', label, `sans playlist: ${empty.map((a) => `${a.server} (${a.status})`).join(', ')}`);
+  if (found.length === 0) {
+    log.ok('Cinejoy', label, `aucune playlist sur ${names.join(', ')}`);
     return [];
   }
 
@@ -212,35 +257,49 @@ async function getStreams({ tmdbId, type, season, episode }) {
   // par palier suppose le proxy actif.
   if (!proxyReady()) {
     log.ok('Cinejoy', label, 'proxy inactif -- master brut (pas de selecteur par palier)');
-    return masters.map((url) => ({ url, direct: true, sourceName: 'Cinejoy', lang: config.CINEJOY_LANG || undefined }));
+    return found.flatMap(({ server, masters }) =>
+      masters.map((url) => ({ url, direct: true, sourceName: 'Cinejoy', player: server, lang: config.CINEJOY_LANG || undefined })),
+    );
   }
 
   const results = [];
-  for (const master of masters) {
-    let parsed;
-    try {
-      parsed = parseMaster(await fetchMaster(master), master);
-    } catch (err) {
-      // Master illisible : on retombe sur l'URL brute plutot que de perdre la source.
-      log.ok('Cinejoy', label, `master illisible (${err.message}) -- rendu brut`);
-      results.push({ url: master, direct: true, sourceName: 'Cinejoy', lang: config.CINEJOY_LANG || undefined });
-      continue;
-    }
-    for (const variant of parsed.variants) {
-      const quality = qualityLabel(variant);
-      results.push({
-        // Playlist synthetique : la variante choisie + l'audio, servie par le proxy.
-        url: streamProxy.proxyInlinePlaylist(miniMaster(parsed, variant), master, { headers }),
-        direct: true,
-        sourceName: 'Cinejoy',
-        // Chaque palier est une entree distincte a conserver : `variant` empeche l'elagage
-        // des redondants de n'en garder qu'une (il ne compare que des variantes egales).
-        variant: quality,
-        quality,
-        lang: config.CINEJOY_LANG || undefined,
-      });
-    }
-  }
+  const dead = [];
+  await Promise.all(
+    found.flatMap(({ server, masters }) =>
+      masters.map(async (master) => {
+        let parsed;
+        try {
+          parsed = parseMaster(await fetchMaster(master), master);
+        } catch (err) {
+          // Refus du CDN (4xx): le lien est mort, le proposer ferait un lecteur qui tourne
+          // dans le vide. Une panne passagere (reseau, 5xx) garde en revanche l'URL brute.
+          if (/HTTP 4\d\d/.test(err.message)) {
+            dead.push(`${server}: ${err.message}`);
+            return;
+          }
+          log.ok('Cinejoy', label, `${server}: master illisible (${err.message}) -- rendu brut`);
+          results.push({ url: master, direct: true, sourceName: 'Cinejoy', player: server, lang: config.CINEJOY_LANG || undefined });
+          return;
+        }
+        for (const variant of parsed.variants) {
+          const quality = qualityLabel(variant);
+          results.push({
+            // Playlist synthetique : la variante choisie + l'audio, servie par le proxy.
+            url: streamProxy.proxyInlinePlaylist(miniMaster(parsed, variant), master, { headers }),
+            direct: true,
+            sourceName: 'Cinejoy',
+            player: server,
+            // Chaque palier est une entree distincte a conserver : `variant` empeche l'elagage
+            // des redondants de n'en garder qu'une (il ne compare que des variantes egales).
+            variant: `${server} ${quality}`,
+            quality,
+            lang: config.CINEJOY_LANG || undefined,
+          });
+        }
+      }),
+    ),
+  );
+  if (dead.length) log.ok('Cinejoy', label, `master(s) refuse(s) par le CDN: ${dead.join(', ')}`);
 
   log.ok('Cinejoy', label, `${results.length} palier(s) pour "${meta.title || '?'}"`);
   return results;
@@ -254,6 +313,7 @@ module.exports = {
   getStreams,
   settings: () => ({
     endpoint: config.CINEJOY_ENDPOINT,
+    serveurs: serversCache.list || config.CINEJOY_SERVERS || '(lus sur /servers)',
     origin: config.CINEJOY_ORIGIN,
     langue: config.CINEJOY_LANG,
     wasm: wasmModule ? 'charge' : 'absent',

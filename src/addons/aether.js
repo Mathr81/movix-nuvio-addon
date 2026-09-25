@@ -130,22 +130,28 @@ const SERVERS = {
     label: 'Aurora',
     lang: () => config.AETHER_LANG,
     async resolve({ http, path, refererUrl }) {
-      const { data, status } = await http.get(`https://nebula.${config.AETHER_API_DOMAIN}${path}`, {
-        params: { ser: 'tik' },
-        headers: apiHeaders(refererUrl),
-        validateStatus: () => true,
-        // Le repli par regex a besoin du corps tel quel, pas d'un objet deja parse.
-        transformResponse: (body) => body,
-      });
-      if (status !== 200) return null;
+      // Le site essaie `ser=tik` puis `ser=cf` (deux fournisseurs derriere la meme route):
+      // on fait pareil, le second rattrape les titres absents du premier.
+      for (const ser of ['tik', 'cf']) {
+        const { data, status } = await http.get(`https://nebula.${config.AETHER_API_DOMAIN}${path}`, {
+          params: { ser },
+          headers: apiHeaders(refererUrl),
+          validateStatus: () => true,
+          // Le repli par regex a besoin du corps tel quel, pas d'un objet deja parse.
+          transformResponse: (body) => body,
+        });
+        if (status !== 200) continue;
 
-      let parsed = {};
-      try {
-        parsed = JSON.parse(data);
-      } catch {
-        // Reponse non-JSON: la regex sur le corps brut reste valable.
+        let parsed = {};
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          // Reponse non-JSON: la regex sur le corps brut reste valable.
+        }
+        const found = findM3u8(parsed, data);
+        if (found) return found;
       }
-      return findM3u8(parsed, data);
+      return null;
     },
   },
 

@@ -96,8 +96,9 @@ src/
 │   ├── streamBuilder.js    Agrège sources + addons, construit les objets stream
 │   ├── streamProxy.js       Proxy HTTP qui rejoue les en-têtes attendus par les CDN
 │   ├── hosterExtract.js      Détection d'hébergeur + extractions faites SEUL (voe,
-│   │                          darkibox, oneupload) ; le reste est résolu par Movix
+│   │                          veev, darkibox, oneupload) ; le reste est résolu par Movix
 │   ├── hosterVoe.js           Résolution spécifique aux domaines tournants Voe
+│   ├── hosterVeev.js          Veev : défi LZW + API player_api (portage de proxiesembed)
 │   ├── probe.js               Sonde le débit/la taille réels d'un flux
 │   ├── playback.js             Quel flux est en cours de lecture (le protocole ne le dit pas)
 │   └── subtitles/              Sous-titres : cascade de fournisseurs, conversion VTT, calage
@@ -785,7 +786,7 @@ liens communautaires — rendent à la place une table parallèle `m3u8ByPlayer`
 Trois conséquences qui gouvernent le reste :
 
 1. **La clé VIP est devenue indispensable.** Sans `VIP_ACCESS_KEY`, Movix ne résout rien et
-   l'addon ne peut extraire que `voe`, `darkibox` et `oneupload`, qu'il sait lire seul.
+   l'addon ne peut extraire que `voe`, `veev`, `darkibox` et `oneupload`, qu'il sait lire seul.
    `/health` répond `serverResolve: true/false` — c'est le premier point à vérifier quand
    une liste de streams est vide.
 2. **Un épisode à la fois.** La résolution ne porte que sur ce qu'on demande : pour une
@@ -950,6 +951,18 @@ déclare les en-têtes que ses CDN exigent. C'est la voie d'ajout d'un site reve
 > mini-master reconstruit (la variante + les pistes audio), servi par le proxy en
 > *playlist synthétique* (`proxyInlinePlaylist`) — le son est ainsi conservé à la qualité
 > exacte choisie. Sans proxy actif, l'addon retombe sur le master brut (une seule entrée).
+>
+> **Plusieurs serveurs** : l'API annonce les siens sur `/servers` (Lisbon, Nebula, Solara,
+> Athens…) ; l'addon les interroge **tous en parallèle** et étiquette chaque palier du nom
+> de son serveur. Un master refusé par le CDN (4xx) est écarté au lieu d'être proposé
+> brut. `CINEJOY_SERVERS` force une liste.
+>
+> **Quand Cinejoy tombe en panne** (septembre 2026 : l'API est passée de `api.shegu.st` à
+> `api.wing.st`, le site de `cinejoy.to` à `cinejoy.pk`, et le wasm a changé de clé) :
+> ouvrir une page `/watch/movie/<tmdb>` du site dans un navigateur et relever le domaine
+> du `POST …/g` et du `GET …/crush.wasm`. Remplacer `vendor/crush.wasm` par le nouveau et
+> ajuster `CINEJOY_ENDPOINT` / `CINEJOY_ORIGIN`. La version du canal (`02 01`, puis `02 02`)
+> est lue dans la sortie du wasm : un nouveau wasm suffit, sans toucher au code.
 
 ```bash
 curl http://localhost:8787/debug/addons   # lesquels sont chargés, lesquels sont écartés et pourquoi
@@ -1475,7 +1488,7 @@ serveur**, et la raison d'un échec (status HTTP, champ URL manquant).
 - **Sans clé VIP, presque rien n'est jouable.** Movix n'expose plus aucune route
   d'extraction publique : les m3u8 ne sont résolues que par les routes catalogue, contre
   `resolve=1` **et** une clé VIP valide. L'addon ne sait extraire seul que `voe`,
-  `darkibox` et `oneupload`. `/health` → `serverResolve` dit où on en est.
+  `veev`, `darkibox` et `oneupload`. `/health` → `serverResolve` dit où on en est.
 - **Certains embeds restent inexploitables** : `lecteurvideo.com`, `p2pstream.vip` n'ont
   d'extracteur ni côté Movix ni ici (le site les lit via son extension navigateur, qui n'a
   pas d'équivalent serveur). `SHOW_UNPLAYABLE_EMBEDS=true` les expose en « ouvrir dans le
