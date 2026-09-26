@@ -12,6 +12,26 @@ const config = require('../core/config');
  */
 const client = axios.create({ baseURL: config.NUVIO_BASE_URL, timeout: 20000 });
 
+// Limite de debit: elle est GLOBALE -- 350 requetes/s partagees par tous les clients
+// Nuvio (en-tetes `x-ratelimit-*-second`, meme cle publishable pour tout le monde) --, et
+// elle sature par vagues de quelques secondes environ toutes les 20 s. Un 429 veut donc
+// dire "reviens dans un instant", pas "tu abuses". Sans nouvel essai, un hub dont le cycle
+// tombe dans la vague (ce qui depend seulement de l'heure de demarrage) echoue a CHAQUE
+// tour. On attend la fin de la fenetre, avec un peu d'alea pour ne pas retomber en phase.
+const RATE_LIMIT_RETRIES = 6;
+client.interceptors.response.use(null, async (err) => {
+  const request = err.config;
+  if (err.response?.status !== 429 || !request) throw err;
+  request.rateLimitRetries = (request.rateLimitRetries || 0) + 1;
+  if (request.rateLimitRetries > RATE_LIMIT_RETRIES) throw err;
+
+  const headers = err.response.headers || {};
+  const resetSeconds = Number(headers['retry-after'] ?? headers['ratelimit-reset']) || 1;
+  const waitMs = resetSeconds * 1000 + request.rateLimitRetries * 500 + Math.random() * 500;
+  await new Promise((resolve) => setTimeout(resolve, waitMs));
+  return client.request(request);
+});
+
 let session = null; // { access_token, refresh_token, expiresAt }
 
 function authHeaders(token) {
