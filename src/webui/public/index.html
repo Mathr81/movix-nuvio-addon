@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Movix addon</title>
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0a0b10" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f6f7fb" media="(prefers-color-scheme: light)" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%238b7bff'/%3E%3Cstop offset='1' stop-color='%234fd1c5'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Cpath d='M12 9l11 7-11 7z' fill='white'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
+    <link rel="stylesheet" href="styles.css" />
+    <script>
+      // Theme applique avant le premier rendu: pas de flash clair -> sombre.
+      try {
+        const theme = JSON.parse(localStorage.getItem('movix-ui:theme') || '"system"');
+        if (theme !== 'system') document.documentElement.dataset.theme = theme;
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <noscript>Cette interface a besoin de JavaScript.</noscript>
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>

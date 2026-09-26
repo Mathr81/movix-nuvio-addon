@@ -1,15 +1,14 @@
+// En tout premier: la page Logs de la WebUI doit voir aussi les avertissements que la
+// config emet des son chargement.
+require('./src/webui/logBuffer').install();
+
 const express = require('express');
 const { getRouter } = require('stremio-addon-sdk');
 const addonInterface = require('./src/addon');
 const config = require('./src/core/config');
-const subtitles = require('./src/streaming/subtitles');
-const { servedVtt, readPayload, isAllowedHost } = subtitles;
+const { servedVtt, readPayload, isAllowedHost } = require('./src/streaming/subtitles');
 const subsync = require('./src/streaming/subtitles/sync');
-const playback = require('./src/streaming/playback');
-const { resolveId } = require('./src/catalog/idResolver');
-const { collectRawLinks, resolveStreams, buildStreams } = require('./src/streaming/streamBuilder');
-const { breakerState: probeBreakerState } = require('./src/streaming/probe');
-const { detectHoster, extractDirectUrl, breakerState, LOCAL_EXTRACTORS } = require('./src/streaming/hosterExtract');
+const diagnostics = require('./src/diagnostics');
 const resolvedSources = require('./src/sources/resolved');
 const livetv = require('./src/livetv');
 const { mainApi } = require('./src/integrations/movixClient');
@@ -25,6 +24,8 @@ const { pushToSimkl } = require('./src/integrations/simklPush');
 const simkl = require('./src/integrations/simklCloud');
 const simklLibrary = require('./src/integrations/simklLibrary');
 const hub = require('./src/hub');
+const { startCodeAuth } = require('./src/webui/actions');
+const webui = require('./src/webui');
 
 const app = express();
 
@@ -83,6 +84,10 @@ app.get('/subtitle/:payload', (req, res) => serveSubtitle(readPayload(req.params
 // Ancienne forme (?src=), conservee pour les liens deja distribues a un client.
 app.get('/subtitle.vtt', (req, res) => serveSubtitle({ url: req.query.src }, res));
 
+// --- WebUI ------------------------------------------------------------------
+// Tableau de bord sous /ui (sante, testeur de titre, synchro, logs). Cf. src/webui/.
+webui.mount(app);
+
 // --- Proxy de flux --------------------------------------------------------
 // Rejoue les en-tetes (Origin/Referer/User-Agent...) exiges par les CDN des addons, que
 // Nuvio/Stremio ne savent pas poser eux-memes, et reecrit les playlists m3u8 pour que les
@@ -91,6 +96,14 @@ app.get('/subtitle.vtt', (req, res) => serveSubtitle({ url: req.query.src }, res
 streamProxy.mount(app);
 
 // --- Diagnostic -----------------------------------------------------------
+async function sendDiagnostic(res, pending) {
+  try {
+    res.json(await pending);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
 // Montre ce que chaque source a reellement renvoye, avant extraction. Utile quand
 // Nuvio affiche "aucun stream" sans qu'on sache quelle etape a lache.
 // --- Diagnostic Nuvio -----------------------------------------------------
@@ -163,185 +176,23 @@ app.get('/debug/nuvio/sample', async (_req, res) => {
   }
 });
 
-app.get('/debug/:type/:id', async (req, res) => {
-  try {
-    const { type, id } = req.params;
-    const { tmdbId, season, episode } = await resolveId(type, id);
-    const raw = await collectRawLinks({ tmdbId, type, season, episode });
+app.get('/debug/:type/:id', (req, res) => sendDiagnostic(res, diagnostics.rawLinks(req.params.type, req.params.id)));
 
-    res.json({
-      tmdbId,
-      type,
-      season,
-      episode,
-      total: raw.length,
-      links: raw.map((r) => ({
-        source: r.sourceName,
-        url: r.url,
-        player: r.player,
-        lang: r.lang,
-        quality: r.quality,
-        direct: !!r.direct,
-        hoster: r.direct ? 'n/a (lien direct)' : detectHoster(r.url, r.player) || 'AUCUN EXTRACTEUR',
-      })),
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// Diagnostic de l'extraction: ce que chaque embed est devenu, et pourquoi (cf. src/diagnostics.js).
+app.get('/debug/extract/:type/:id', (req, res) =>
+  sendDiagnostic(res, diagnostics.extraction(req.params.type, req.params.id)),
+);
 
-// Diagnostic de l'extraction: ce que chaque embed est devenu, et pourquoi.
-//
-// Depuis que Movix resout ses m3u8 lui-meme (`?resolve=1`), la question utile n'est plus
-// "l'extracteur a-t-il marche" mais "qui devait extraire ce lien". Trois issues:
-//   resolu       le serveur Movix l'a rendu directement (il n'apparait pas ici, il n'est
-//                deja plus un embed)
-//   local        l'addon l'a extrait seul (voe, darkibox, oneupload)
-//   server-only  extractible, mais par Movix seulement -- il manque une cle VIP valide
-//                ou l'extraction amont a echoue
-app.get('/debug/extract/:type/:id', async (req, res) => {
-  try {
-    const { type, id } = req.params;
-    const { tmdbId, season, episode } = await resolveId(type, id);
-    const raw = await collectRawLinks({ tmdbId, type, season, episode });
-    const embeds = raw.filter((r) => !r.direct && r.url);
+// Diagnostic de la mesure de debit: ce que la sonde a REELLEMENT obtenu par lien.
+app.get('/debug/streams/:type/:id', (req, res) =>
+  sendDiagnostic(res, diagnostics.streams(req.params.type, req.params.id)),
+);
 
-    const results = await Promise.all(
-      embeds.map(async (item) => {
-        const hoster = detectHoster(item.url, item.player);
-        if (!hoster) {
-          return { source: item.sourceName, url: item.url, hoster: null, issue: 'aucun extracteur' };
-        }
-        const outcome = await extractDirectUrl(item.url, item.player);
-        return {
-          source: item.sourceName,
-          hoster,
-          url: item.url,
-          extracteur: LOCAL_EXTRACTORS.has(hoster) ? 'local' : 'Movix (resolve=1)',
-          ok: outcome.ok,
-          resultat: outcome.ok ? outcome.url : undefined,
-          issue: outcome.ok ? undefined : `${outcome.reason}${outcome.status ? ` (${outcome.status})` : ''}`,
-        };
-      }),
-    );
-
-    res.json({
-      tmdbId,
-      total: embeds.length,
-      extraits: results.filter((r) => r.ok).length,
-      // Hebergeurs momentanement ecartes: sans ca, un "0/3" ressemble a une extraction
-      // ratee alors qu'aucune requete n'a ete envoyee.
-      ecartes: breakerState(),
-      parHebergeur: Object.fromEntries(
-        [...new Set(results.map((r) => r.hoster || 'inconnu'))].map((h) => [
-          h,
-          `${results.filter((r) => r.hoster === h && r.ok).length}/${results.filter((r) => r.hoster === h).length}`,
-        ]),
-      ),
-      liens: results,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Diagnostic de la mesure de debit: ce que la sonde a REELLEMENT obtenu par lien, avant
-// mise en forme. C'est la difference entre "aucune mesure" et "mesure aberrante", que le
-// libelle affiche dans Nuvio ne permet plus de distinguer.
-app.get('/debug/streams/:type/:id', async (req, res) => {
-  try {
-    const { type, id } = req.params;
-    const { tmdbId, season, episode } = await resolveId(type, id);
-    // `wait`: on veut l'etat FINAL des mesures, pas celui de la premiere reponse.
-    const resolved = await resolveStreams({ tmdbId, type, season, episode, wait: true });
-
-    res.json({
-      tmdbId,
-      type,
-      // Cette liste montre TOUT ce qui a ete resolu; le mode compact en masque une partie
-      // a l'affichage. Donner les deux nombres evite de croire a une source perdue.
-      mode: config.STREAM_LIST,
-      total: resolved.length,
-      affichesDansNuvio: (await buildStreams({ tmdbId, type, season, episode })).length,
-      // Voies de mesure momentanement ecartees (un service qui ne repond plus).
-      ecartes: probeBreakerState(),
-      streams: resolved.map((r) => ({
-        source: r.sourceName,
-        proxifie: streamProxy.isProxied(r.url),
-        cible: streamProxy.targetOf(r.url) || r.url,
-        qualiteAnnoncee: r.quality || null,
-        // La resolution telle que le master l'annonce, et le palier qui en decoule. Un film
-        // en scope (1920x800) doit sortir en 1080p: c'est la largeur qui le dit.
-        resolution: r.width && r.height ? `${r.width}x${r.height}` : r.height || null,
-        palier: r.tier || null,
-        hauteurRetenue: r.height || null,
-        debitBps: r.bitrate || null,
-        // "declare" = lu dans le master HLS (AVERAGE-BANDWIDTH), "mesure" = calcule sur des
-        // segments peses, "aucun" = la sonde n'a rien pu obtenir.
-        origineDebit: r.bitrate ? (r.bitrateEstimated ? 'mesure' : 'declare') : 'aucun',
-        // "flux" = lue par ffprobe dans le media faute d'etre annoncee, "playlist" = lue ou
-        // deduite de la playlist, "libelle" = seule la source l'annonce, "aucune" = inconnue.
-        origineResolution: r.resolutionSource || 'aucune',
-        segmentsPeses: r.bitrateSamples || null,
-        tailleOctets: r.bytes || null,
-      })),
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Diagnostic du calage des sous-titres: quels flux sont connus pour ce titre, lequel est
-// (ou a ete) lu, et ce que le calage a trouve. `?compute=1` force le calcul au lieu de se
+// Diagnostic du calage des sous-titres. `?compute=1` force le calcul au lieu de se
 // contenter de ce qui est deja en cache -- c'est la facon de le tester sans lancer Nuvio.
-app.get('/debug/subsync/:type/:id', async (req, res) => {
-  try {
-    const { type, id } = req.params;
-    const { tmdbId, season, episode } = await resolveId(type, id);
-    const content = `${type}:${tmdbId}:${season ?? ''}:${episode ?? ''}`;
-
-    // Construire la liste garantit que les flux sont enregistres: sans ouverture de fiche
-    // prealable, le registre serait vide et le diagnostic ne montrerait rien.
-    await buildStreams({ tmdbId, type, season, episode });
-    const [tracks, ffmpeg] = await Promise.all([
-      subtitles.collectTracks({ type, tmdbId, season, episode }),
-      subsync.enabled(),
-    ]);
-
-    const known = playback.forContent(content);
-    const playing = playback.current(content, { fallbackToFirst: true });
-    const compute = req.query.compute === '1' || req.query.compute === 'true';
-
-    let calage = null;
-    if (compute && playing && tracks.length > 0) {
-      const vtt = await subtitles.fetchAsVtt(tracks[0].url);
-      const plan = await subsync.planFor({
-        streamUrl: playing.record.url,
-        streamKey: playing.record.key,
-        subtitleKey: tracks[0].url,
-        vtt,
-        refererUrl: playing.record.refererUrl,
-        durationHint: playing.record.durationHint,
-      });
-      calage = { piste: tracks[0].lang, resume: subsync.describe(plan), plan };
-    }
-
-    res.json({
-      content,
-      actif: config.SUBTITLE_AUTOSYNC,
-      ffmpegDisponible: ffmpeg,
-      liaison: config.SUBTITLE_AUTOSYNC_BIND,
-      seuilConfiance: config.SUBTITLE_AUTOSYNC_MIN_CONFIDENCE,
-      fluxConnus: known.map((r) => ({ id: r.id, libelle: r.label, cle: r.key, dureeTmdb: r.durationHint })),
-      // `certain: false` = rien n'a ete observe par le proxy, c'est le mieux classe qui est
-      // propose. Le calage ne s'appuie dessus que si SUBTITLE_AUTOSYNC_GUESS_STREAM est actif.
-      fluxRetenu: playing ? { libelle: playing.record.label, certain: playing.certain } : null,
-      pistes: tracks.map((t) => ({ lang: t.lang, fournisseur: t.provider })),
-      calage,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+app.get('/debug/subsync/:type/:id', (req, res) => {
+  const compute = req.query.compute === '1' || req.query.compute === 'true';
+  sendDiagnostic(res, diagnostics.subtitleSync(req.params.type, req.params.id, { compute }));
 });
 
 // Etat du registre d'addons: lesquels sont charges, lesquels sont ecartes et pourquoi.
@@ -424,16 +275,8 @@ app.post('/nuvio/merge', async (req, res) => {
 // l'attente de validation se poursuit cote serveur (elle peut durer plusieurs minutes).
 app.post('/trakt/auth', async (_req, res) => {
   try {
-    const started = await new Promise((resolve, reject) => {
-      const done = trakt.deviceAuth({ onCode: (device) => resolve(device) });
-      done.catch(reject);
-      done.then(() => console.log('[trakt] autorisation terminee'), () => {});
-    });
     res.json({
-      ok: true,
-      code: started.user_code,
-      url: started.verification_url,
-      expiresInSeconds: started.expires_in,
+      ...(await startCodeAuth('trakt', trakt.deviceAuth)),
       hint: 'Saisis le code sur cette URL, puis redemarre l\'addon pour activer la rangee de recommandations.',
     });
   } catch (err) {
@@ -471,12 +314,7 @@ app.get('/hub/status', (_req, res) => res.json(hub.status()));
 // Meme principe que Trakt, sans la limite d'une seule application connectee.
 app.post('/simkl/auth', async (_req, res) => {
   try {
-    const started = await new Promise((resolve, reject) => {
-      const done = simkl.pinAuth({ onCode: (device) => resolve(device) });
-      done.catch(reject);
-      done.then(() => console.log('[simkl] autorisation terminee'), () => {});
-    });
-    res.json({ ok: true, code: started.user_code, url: started.verification_url, expiresInSeconds: started.expires_in });
+    res.json(await startCodeAuth('simkl', simkl.pinAuth));
   } catch (err) {
     res.status(502).json({ ok: false, error: err.message });
   }
@@ -599,6 +437,7 @@ app.listen(config.PORT, () => {
   console.log(`Diagnostic     : /debug/movie/tmdb:157336  |  /debug/extract/movie/tmdb:157336  |  /debug/streams/...`);
   console.log(`                 /debug/subsync/movie/tmdb:157336?compute=1 (calage des sous-titres)`);
   console.log(`                 /debug/sync  |  /debug/addons  |  /health`);
+  if (config.WEBUI_ENABLED) console.log(`WebUI          : http://127.0.0.1:${config.PORT}/ui/`);
 
   if (config.NUVIO_PUSH_INTERVAL_MS > 0 && config.NUVIO_EMAIL) {
     const minutes = Math.round(config.NUVIO_PUSH_INTERVAL_MS / 60000);

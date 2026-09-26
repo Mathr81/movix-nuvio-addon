@@ -127,6 +127,14 @@ src/
 │   └── resolved.js       Résolution serveur des m3u8 (`?resolve=1`) : paramètres à
 │                          envoyer, et lecture des m3u8 rendues
 │
+├── diagnostics.js       Diagnostics d'un titre, partagés par /debug/* et la WebUI
+├── webui/               Tableau de bord /ui (voir « WebUI » plus bas)
+│   ├── index.js           Montage sous /ui, authentification optionnelle
+│   ├── api.js              API JSON /ui/api/*
+│   ├── actions.js           Actions déclenchables (push, cycle, auth…)
+│   ├── journalIndex.js       Index incrémental du journal du hub
+│   ├── logBuffer.js           Tampon circulaire des logs console (SSE)
+│   └── public/                 Front sans build : Preact + htm vendorisés
 ├── livetv/              TV en direct : relais du triplet manifest/catalog/stream Movix
 └── addons/              Sources autonomes (indépendantes de Mainapi), voir plus bas
 ```
@@ -1441,6 +1449,30 @@ laisserait sinon un JSON tronqué, et le cache serait perdu au démarrage suivan
 cherche précisément à éviter. Les entrées portent leur date d'expiration : celles qui l'ont
 dépassée ne sont ni écrites ni relues. Un fichier illisible est ignoré et le serveur démarre
 sur un cache vide.
+
+## WebUI
+
+Un tableau de bord est servi sur **`/ui/`** (la racine `/` y redirige) :
+
+| Page | Contenu |
+|---|---|
+| **Santé** | Verdict global et points à corriger (clé VIP, services injoignables, disjoncteurs ouverts, Simkl en pause, cycle du hub en échec…), joignabilité TMDB/Movix, sources et addons, lecture (proxy, sous-titres, calage, TV), trackers, stockage. URL du manifest à copier ou à ouvrir dans Stremio. |
+| **Testeur** | Recherche TMDB (ou id `tt…` / `tmdb:…`), choix de l'épisode pour une série, puis les quatre diagnostics de `/debug` présentés côte à côte : flux mesurés, liens bruts par source, extraction par hébergeur, sous-titres (avec calcul du calage à la demande). |
+| **Synchro** | Dernier cycle du hub (comptes, flux entre services, erreurs), Nuvio / Simkl / Trakt avec leurs actions — push, fusion des ids, relecture Simkl, connexion par code —, et le journal par cycle avec **restauration des retraits** d'un cycle précis. |
+| **Logs** | Console du serveur en direct (SSE), filtres par niveau, par tag (`[simkl]`, `[hub]`…) et par texte. |
+
+Les actions qui écrivent dans un compte distant demandent confirmation et proposent d'abord
+la simulation (`dryRun`) quand elle existe. Elles appellent exactement les mêmes fonctions
+que les routes POST et les scripts npm.
+
+⚠️ **Protéger `/ui`** si l'addon est exposé : `WEBUI_PASSWORD` active une authentification
+HTTP Basic (nom d'utilisateur libre), ou bien protège le préfixe `/ui` au reverse proxy.
+Tout ce qu'utilise la WebUI vit sous ce préfixe (API comprise), une seule règle suffit.
+Les routes historiques (`/debug/*`, `POST /hub/sync`, `/nuvio/push`, `/simkl/auth`…) restent,
+elles, **sans authentification** : à protéger au proxy si elles ne doivent pas être publiques.
+
+Le front n'a pas d'étape de build : Preact + htm sont vendorisés dans
+`src/webui/public/vendor/`, le reste est du JS module servi tel quel.
 
 ## Diagnostic
 

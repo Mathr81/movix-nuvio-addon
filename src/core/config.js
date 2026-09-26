@@ -414,6 +414,16 @@ const config = {
 
   // Langues privilegiees dans le tri des streams (prefixes matches sur le libelle).
   PREFERRED_LANGS: readList('PREFERRED_LANGS', ['MULTI', 'VFF', 'VFQ', 'VF', 'TRUEFRENCH', 'FRENCH']),
+
+  // --- WebUI (/ui) ------------------------------------------------------------
+  // Tableau de bord: sante, testeur de titre, synchro/trackers, logs en direct. Elle peut
+  // DECLENCHER des ecritures (push, restauration du hub, autorisations): si l'addon est
+  // expose, la proteger -- par WEBUI_PASSWORD, ou au reverse proxy sur le prefixe /ui.
+  WEBUI_ENABLED: readBool('WEBUI_ENABLED', true),
+  // Vide = pas d'authentification integree. Sinon, HTTP Basic (utilisateur au choix).
+  WEBUI_PASSWORD: readEnv('WEBUI_PASSWORD', ''),
+  // Lignes de console gardees en memoire pour la page Logs.
+  WEBUI_LOG_LINES: Number(readEnv('WEBUI_LOG_LINES', 2000)),
 };
 
 // Icone de l'addon. Derivee de SPOOFED_ORIGIN par defaut pour suivre automatiquement
