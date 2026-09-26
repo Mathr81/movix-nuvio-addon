@@ -376,9 +376,21 @@ Le journal est écrit **avant** l'opération : si une écriture échoue en cours
 trace de ce qui a été tenté existe quand même. `hub:undo` efface aussi l'instantané —
 il décrit un monde où ces éléments n'existaient plus, le garder les re-supprimerait au
 cycle suivant.
+
+Le journal ne grossit plus sans fin :
+- un cycle qui n'a **rien écrit ni échoué** n'y laisse aucune ligne (à 20 s d'intervalle,
+  ces résumés vides en faisaient l'essentiel : ~3 Mo par jour) ;
+- au démarrage puis chaque jour, les lignes plus vieilles que `HUB_JOURNAL_RETENTION_DAYS`
+  (30 par défaut, `0` = tout garder) sont effacées, avec les résumés vides d'avant ce
+  changement. Un retrait effacé ne peut plus être annulé.
 - Les objets écrits côté Movix reproduisent exactement les formes du site
   (`{id, type, title, poster_path, addedAt}`, `continueWatching`, `watched_episodes_tv_*`),
   pour que l'interface du site les affiche normalement.
+
+> Nuvio applique une limite de débit **globale** (350 requêtes/s partagées par tous ses
+> utilisateurs) qui sature par vagues de quelques secondes, environ toutes les 20 s. Un
+> `429` est donc réessayé après la fenêtre (jusqu'à 6 fois) au lieu de faire échouer le
+> cycle : sans ça, un hub dont le tour tombait dans la vague échouait à chaque fois.
 
 > La latence perçue est `HUB_INTERVAL_MS`. Descendre à 15–20 s rend la reprise quasi
 > immédiate, au prix d'un aller-retour Movix + Nuvio à chaque cycle.

@@ -56,6 +56,19 @@ function logRemovals(target, removals, before = {}) {
   }
 }
 
+/**
+ * Un resume qui ne rapporte rien: aucune ecriture, aucun retrait, aucune erreur. Le hub
+ * n'en ecrit plus, mais les journaux anterieurs en sont pleins -- une ligne toutes les
+ * 20 s, jour et nuit, soit l'essentiel de leur taille.
+ */
+function isIdle(summary) {
+  if (!summary || summary.ok === false || Object.keys(summary.errors || {}).length > 0) return false;
+  if (summary.fusionNuvio) return false;
+  const total = (value) =>
+    typeof value === 'number' ? value : value && typeof value === 'object' ? Object.values(value).reduce((n, v) => n + total(v), 0) : 0;
+  return total(summary.versNuvio) + total(summary.versMovix) + total(summary.versSimkl) + total(summary.retraits) === 0;
+}
+
 function logCycle(summary) {
   write({ action: 'cycle', summary });
 }
@@ -89,4 +102,59 @@ function removalsOf(cycle = null) {
   return { cycle: target, entries: all.filter((e) => e.cycle === target) };
 }
 
-module.exports = { begin, write, logAdditions, logRemovals, logCycle, read, removalsOf, JOURNAL_FILE };
+// Incremente a chaque reecriture: un lecteur qui memorise des positions dans le fichier
+// (l'index de la WebUI) sait ainsi qu'elles ne valent plus rien.
+let generation = 0;
+
+/**
+ * Menage: retire les lignes plus vieilles que HUB_JOURNAL_RETENTION_DAYS, les resumes de
+ * cycles qui n'ont rien fait, et les lignes illisibles.
+ *
+ * Volontairement SYNCHRONE, comme `write`: le fichier est relu et remplace d'un seul tenant,
+ * sans qu'un ajout puisse s'intercaler et se perdre. Le remplacement passe par un fichier
+ * temporaire puis un rename, pour qu'un arret en cours de route laisse l'ancien intact.
+ */
+function prune({ now = Date.now() } = {}) {
+  let text;
+  try {
+    text = fs.readFileSync(JOURNAL_FILE, 'utf8');
+  } catch {
+    return { ok: true, avant: 0, apres: 0 };
+  }
+  const retentionMs = config.HUB_JOURNAL_RETENTION_DAYS > 0 ? config.HUB_JOURNAL_RETENTION_DAYS * 86400000 : 0;
+  const cutoff = retentionMs ? new Date(now - retentionMs).toISOString() : '';
+
+  const lines = text.split('\n').filter(Boolean);
+  const kept = lines.filter((line) => {
+    try {
+      const entry = JSON.parse(line);
+      if (cutoff && String(entry.at) < cutoff) return false;
+      return !(entry.action === 'cycle' && isIdle(entry.summary));
+    } catch {
+      return false;
+    }
+  });
+  if (kept.length === lines.length) return { ok: true, avant: lines.length, apres: kept.length };
+
+  const temp = `${JOURNAL_FILE}.tmp`;
+  fs.writeFileSync(temp, kept.length ? `${kept.join('\n')}\n` : '');
+  fs.renameSync(temp, JOURNAL_FILE);
+  generation += 1;
+  const result = { ok: true, avant: lines.length, apres: kept.length, octetsAvant: Buffer.byteLength(text) };
+  console.log(`[journal] menage: ${lines.length} -> ${kept.length} ligne(s)`);
+  return result;
+}
+
+module.exports = {
+  begin,
+  write,
+  logAdditions,
+  logRemovals,
+  logCycle,
+  isIdle,
+  read,
+  removalsOf,
+  prune,
+  generation: () => generation,
+  JOURNAL_FILE,
+};

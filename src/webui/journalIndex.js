@@ -16,6 +16,7 @@ const journal = require('../core/journal');
  */
 const cycles = new Map();
 let scanned = 0;
+let seenGeneration = journal.generation();
 let scanning = null;
 
 function cycleOf(id) {
@@ -64,10 +65,11 @@ async function scan() {
     scanned = 0;
     return;
   }
-  if (size < scanned) {
-    // Journal tronque ou remplace: on repart de zero.
+  if (size < scanned || seenGeneration !== journal.generation()) {
+    // Journal tronque ou reecrit par le menage: les positions ne valent plus rien.
     cycles.clear();
     scanned = 0;
+    seenGeneration = journal.generation();
   }
 
   const CHUNK = 4 * 1024 * 1024;

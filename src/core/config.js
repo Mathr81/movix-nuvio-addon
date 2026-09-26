@@ -107,6 +107,9 @@ const config = {
   // l'element retire, ce qui rend `npm run hub:undo` possible.
   HUB_JOURNAL: readBool('HUB_JOURNAL', true),
   HUB_JOURNAL_FILE: readEnv('HUB_JOURNAL_FILE', ''),
+  // Au-dela, les lignes sont effacees (au demarrage, puis une fois par jour). 0 = tout garder.
+  // Un retrait plus vieux que ca ne peut plus etre annule par `hub:undo`.
+  HUB_JOURNAL_RETENTION_DAYS: Number(readEnv('HUB_JOURNAL_RETENTION_DAYS', 30)),
 
   // --- Simkl (tracker sans limite d'app connectee, integre nativement par Nuvio) ---
   SIMKL_BASE_URL: readEnv('SIMKL_BASE_URL', 'https://api.simkl.com'),

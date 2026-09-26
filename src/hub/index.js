@@ -238,7 +238,9 @@ async function runCycle({ dryRun = false } = {}) {
     }
 
     summary.cycle = cycleId;
-    journal.logCycle(summary);
+    // Un cycle qui n'a rien fait n'a rien a raconter: a raison d'un tour toutes les 20 s,
+    // ces resumes faisaient l'essentiel du journal (des dizaines de Mo).
+    if (!journal.isIdle(summary)) journal.logCycle(summary);
     lastRun = { at: new Date().toISOString(), summary };
     if (deltaSize(toNuvio) + deltaSize(toMovix) + deltaSize(toSimkl) > 0 || !summary.ok) {
       console.log('[hub] cycle:', JSON.stringify(summary));
@@ -259,6 +261,17 @@ function start() {
   const seconds = Math.round(config.HUB_INTERVAL_MS / 1000);
   console.log(`Hub de synchronisation actif (cycle toutes les ${seconds}s)`);
   const tick = () => runCycle().catch((err) => console.error(`[hub] cycle echoue: ${err.message}`));
+
+  // Menage du journal au demarrage, puis une fois par jour (cf. HUB_JOURNAL_RETENTION_DAYS).
+  const prune = () => {
+    try {
+      journal.prune();
+    } catch (err) {
+      console.warn(`[journal] menage impossible: ${err.message}`);
+    }
+  };
+  prune();
+  setInterval(prune, 24 * 3600 * 1000).unref();
   tick();
   setInterval(tick, config.HUB_INTERVAL_MS).unref();
 }
