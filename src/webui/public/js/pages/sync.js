@@ -3,7 +3,7 @@ import { api, useResource, useTick, timeAgo, formatDate, formatInterval, plural 
 import { Card, Badge, Dot, Button, Skeleton, ErrorBox, Empty, KeyValue, Callout, Icon, Spinner, JsonView, Segmented } from '../ui.js';
 import { useActions } from '../actions.js';
 
-const KINDS = { library: 'Bibliothèque', watched: 'Vus', progress: 'Reprises' };
+const KINDS = { library: 'Bibliothèque', watched: 'Vus', progress: 'Reprises', listeDejaVus: 'Liste, déjà vus' };
 const TARGETS = { movix: 'Movix', nuvio: 'Nuvio', simkl: 'Simkl' };
 
 function sumOf(counts) {
@@ -63,7 +63,9 @@ function CycleSummary({ summary }) {
       ${['movix', 'nuvio', 'simkl'].map(
         (side) => summary[side] && html`<div class="side">
           <div class="side-name">${TARGETS[side]}</div>
-          ${Object.entries(summary[side]).map(([k, v]) => html`<div class="side-row"><span class="muted">${KINDS[k] || k}</span><strong>${v}</strong></div>`)}
+          ${typeof summary[side] === 'string'
+            ? html`<div class="muted small">${summary[side]}</div>`
+            : Object.entries(summary[side]).map(([k, v]) => html`<div class="side-row"><span class="muted">${KINDS[k] || k}</span><strong>${v}</strong></div>`)}
         </div>`,
       )}
     </div>

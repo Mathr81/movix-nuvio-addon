@@ -157,7 +157,16 @@ async function runCycle({ dryRun = false } = {}) {
       movix: { library: movix.library.size, watched: movix.watched.size, progress: movix.progress.size },
       nuvio: { library: nuvioModel.library.size, watched: nuvioModel.watched.size, progress: nuvioModel.progress.size },
       simkl: simklModel
-        ? { library: simklModel.library.size, watched: simklModel.watched.size }
+        ? {
+            library: simklModel.library.size,
+            watched: simklModel.watched.size,
+            // Titres de la liste Movix que Simkl range en "termine": une liste Simkl est
+            // exclusive, un titre vu n'y est plus "a voir". Ils manquent donc a `library`
+            // sans rien avoir de perdu -- ce compte explique l'ecart.
+            listeDejaVus: [...movix.library.keys()].filter(
+              (k) => !simklModel.library.has(k) && simklView.known.library.has(k),
+            ).length,
+          }
         : `indisponible ce tour-ci${simkl.status().reason ? ` (${simkl.status().reason})` : ''}`,
       versNuvio: count(toNuvio),
       versMovix: count(toMovix),
