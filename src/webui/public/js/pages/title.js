@@ -222,20 +222,58 @@ function LinksTab({ state }) {
     <${JsonView} data=${data} />`;
 }
 
+const ISSUE_LABELS = {
+  'aucun extracteur': 'hébergeur que personne ne sait lire',
+  'server-only': 'lisible par Movix seulement, qui ne l’a pas résolu',
+  'no-url-field': 'page lue, mais aucun flux dedans',
+  cooldown: 'hébergeur mis de côté par le disjoncteur',
+  deleted: 'vidéo supprimée',
+};
+
 function ExtractTab({ state }) {
   const { data, error, reload } = state;
   if (error) return html`<${ErrorBox} error=${error} onRetry=${reload} />`;
   if (!data) return html`<div class="loading-block"><${Spinner} /> Extraction des embeds…</div>`;
-  if (!data.total) return html`<${Empty} icon="check" title="Aucun embed à extraire">Tous les liens sont déjà directs ou résolus par Movix.</${Empty}>`;
+
+  const resolved = data.resolusParMovix ?? null;
+  const issues = new Map();
+  for (const l of data.liens.filter((x) => !x.ok)) {
+    const key = (l.issue || 'inconnu').replace(/\s*\(\d+\)$/, '');
+    issues.set(key, (issues.get(key) || 0) + 1);
+  }
+
   return html`
-    <div class="row gap wrap tab-intro">
-      <${Badge} tone=${data.extraits === data.total ? 'ok' : data.extraits ? 'warn' : 'error'}>${data.extraits}/${data.total} extraits</${Badge}>
-      ${Object.entries(data.ecartes || {}).map(([k, v]) => html`<${Badge} tone="warn" title=${v}>${k} écarté</${Badge}>`)}
+    <div class="extract-summary">
+      ${resolved !== null && html`<div class="extract-step extract-ok">
+        <span class="extract-num">${resolved}</span>
+        <span>résolus directement par Movix<br /><span class="muted small">ce sont les flux jouables (onglet Flux)</span></span>
+      </div>`}
+      <div class="extract-step">
+        <span class="extract-num">${data.total}</span>
+        <span>embeds restants<br /><span class="muted small">non résolus par Movix, à extraire par l'addon</span></span>
+      </div>
+      <div class=${`extract-step${data.extraits ? ' extract-ok' : ''}`}>
+        <span class="extract-num">${data.extraits}</span>
+        <span>extraits par l'addon<br /><span class="muted small">voe, veev, darkibox, oneupload</span></span>
+      </div>
     </div>
-    <div class="hoster-meters">
+    ${data.total > 0 && data.extraits === 0 && html`<${Callout} title="Normal que ce soit bas">
+      Les embeds qui arrivent ici sont ceux que Movix n'a pas su résoudre : la plupart sont
+      morts ou chez des hébergeurs illisibles. Ce qui compte est l'onglet <strong>Flux</strong>.
+    </${Callout}>`}
+    ${issues.size > 0 && html`<div class="issue-list">
+      ${[...issues].sort((a, b) => b[1] - a[1]).map(([issue, n]) => html`<div class="issue-row">
+        <${Badge} tone=${issue === 'server-only' ? 'warn' : 'neutral'}>${n}</${Badge}>
+        <code>${issue}</code><span class="muted">${ISSUE_LABELS[issue] || ''}</span>
+      </div>`)}
+    </div>`}
+    ${Object.keys(data.ecartes || {}).length > 0 && html`<div class="row gap wrap tab-intro">
+      ${Object.entries(data.ecartes).map(([k, v]) => html`<${Badge} tone="warn" title=${v}>${k} écarté</${Badge}>`)}
+    </div>`}
+    ${data.total > 0 && html`<div class="hoster-meters">
       ${Object.entries(data.parHebergeur).map(([hoster, ratio]) => {
         const [ok, total] = ratio.split('/').map(Number);
-        return html`<div class="hoster-meter"><span>${hoster}</span><${Meter} value=${ok} total=${total} /><span class="muted small">${ratio}</span></div>`;
+        return total > 0 && html`<div class="hoster-meter"><span>${hoster}</span><${Meter} value=${ok} total=${total} /><span class="muted small">${ratio}</span></div>`;
       })}
     </div>
     <div class="table-wrap">
@@ -245,21 +283,25 @@ function ExtractTab({ state }) {
           ${data.liens.map(
             (l) => html`<tr>
               <td>${l.source}</td>
-              <td>${l.hoster || html`<span class="muted">inconnu</span>`}</td>
+              <td>${l.hoster || html`<span class="muted" title=${l.url}>${hostOf(l.url)}</span>`}</td>
               <td>${l.extracteur ? html`<${Badge} tone=${l.extracteur === 'local' ? 'info' : 'accent'}>${l.extracteur}</${Badge}>` : '—'}</td>
               <td>${l.ok
                 ? html`<${Badge} tone="ok">ok</${Badge}>`
-                : html`<${Badge} tone=${/server-only/.test(l.issue || '') ? 'warn' : 'error'}>${l.issue}</${Badge}>`}</td>
+                : html`<${Badge} tone=${/server-only/.test(l.issue || '') ? 'warn' : 'neutral'}>${l.issue}</${Badge}>`}</td>
             </tr>`,
           )}
         </tbody>
       </table>
-    </div>
-    <${Callout} title="Lire les issues">
-      <code>server-only</code> : extractible par Movix seulement (clé VIP ou résolution amont en cause) ·
-      <code>no-extractor</code> : personne ne sait le lire · <code>cooldown</code> : hébergeur mis de côté par le disjoncteur.
-    </${Callout}>
+    </div>`}
     <${JsonView} data=${data} />`;
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return 'inconnu';
+  }
 }
 
 function SubtitlesTab({ type, id, state }) {
@@ -327,7 +369,7 @@ function Diagnostic({ type, id }) {
       <${Segmented} value=${tab} onChange=${setTab} options=${[
         { value: 'streams', label: 'Flux', icon: 'play', count: count(streams, (d) => d.total) },
         { value: 'links', label: 'Liens bruts', icon: 'link', count: count(links, (d) => d.total) },
-        { value: 'extract', label: 'Extraction', icon: 'zap', count: count(extract, (d) => `${d.extraits}/${d.total}`) },
+        { value: 'extract', label: 'Extraction', icon: 'zap', count: count(extract, (d) => d.total) },
         { value: 'subs', label: 'Sous-titres', icon: 'captions', count: count(subs, (d) => d.pistes.length) },
       ]} />
     </div>

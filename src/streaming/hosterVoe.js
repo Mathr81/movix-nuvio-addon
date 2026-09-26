@@ -73,6 +73,10 @@ function extractJson(html) {
 }
 
 const REDIRECT_PATTERNS = [
+  // Page d'attente "Loading..." (2026-09): renvoie vers la meme URL munie d'un jeton
+  // `?ch=1&js=<JWT>`. Le motif generique plus bas la reconnaissait aussi, mais SANS la
+  // requete: on rechargeait la page d'attente jusqu'a epuiser les rebonds (`no-json`).
+  /window\.location\.replace\(\s*['"]([^'"]+)['"]\s*\)/i,
   /window\.location\.href\s*=\s*['"]([^'"]+)['"]/i,
   /http-equiv=["']refresh["'][^>]*content=["'][^;]+;\s*url=([^"']+)/i,
   /https?:\/\/[a-z0-9.-]+\/e\/[a-z0-9]+/i,

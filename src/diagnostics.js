@@ -73,6 +73,11 @@ async function extraction(type, id) {
 
   return {
     tmdbId,
+    // Les liens deja resolus par Movix (`direct`) n'ont rien a extraire et n'apparaissent
+    // pas ci-dessous: sans ces deux nombres, "0/30 extraits" se lit comme "aucun flux",
+    // alors que les flux jouables sont justement ceux qui ne sont pas ici.
+    liensBruts: raw.length,
+    resolusParMovix: raw.length - embeds.length,
     total: embeds.length,
     extraits: results.filter((r) => r.ok).length,
     // Hebergeurs momentanement ecartes: sans ca, un "0/3" ressemble a une extraction
