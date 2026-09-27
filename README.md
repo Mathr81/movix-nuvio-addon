@@ -96,7 +96,7 @@ src/
 │   ├── streamBuilder.js    Agrège sources + addons, construit les objets stream
 │   ├── streamProxy.js       Proxy HTTP qui rejoue les en-têtes attendus par les CDN
 │   ├── hosterExtract.js      Détection d'hébergeur + extractions faites SEUL (voe,
-│   │                          veev, darkibox, oneupload) ; le reste est résolu par Movix
+│   │                          veev, darkibox, oneupload, sharecloudy) ; le reste par Movix
 │   ├── hosterVoe.js           Résolution spécifique aux domaines tournants Voe
 │   ├── hosterVeev.js          Veev : défi LZW + API player_api (portage de proxiesembed)
 │   ├── probe.js               Sonde le débit/la taille réels d'un flux
@@ -806,7 +806,7 @@ liens communautaires — rendent à la place une table parallèle `m3u8ByPlayer`
 Trois conséquences qui gouvernent le reste :
 
 1. **La clé VIP est devenue indispensable.** Sans `VIP_ACCESS_KEY`, Movix ne résout rien et
-   l'addon ne peut extraire que `voe`, `veev`, `darkibox` et `oneupload`, qu'il sait lire seul.
+   l'addon ne peut extraire que `voe`, `veev`, `darkibox`, `oneupload` et `sharecloudy`, qu'il sait lire seul.
    `/health` répond `serverResolve: true/false` — c'est le premier point à vérifier quand
    une liste de streams est vide.
 2. **Un épisode à la fois.** La résolution ne porte que sur ce qu'on demande : pour une
@@ -1532,7 +1532,7 @@ serveur**, et la raison d'un échec (status HTTP, champ URL manquant).
 - **Sans clé VIP, presque rien n'est jouable.** Movix n'expose plus aucune route
   d'extraction publique : les m3u8 ne sont résolues que par les routes catalogue, contre
   `resolve=1` **et** une clé VIP valide. L'addon ne sait extraire seul que `voe`,
-  `veev`, `darkibox` et `oneupload`. `/health` → `serverResolve` dit où on en est.
+  `veev`, `darkibox`, `oneupload` et `sharecloudy`. `/health` → `serverResolve` dit où on en est.
 - **Certains embeds restent inexploitables** : `lecteurvideo.com`, `p2pstream.vip` n'ont
   d'extracteur ni côté Movix ni ici (le site les lit via son extension navigateur, qui n'a
   pas d'équivalent serveur). `SHOW_UNPLAYABLE_EMBEDS=true` les expose en « ouvrir dans le

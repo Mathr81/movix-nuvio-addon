@@ -254,7 +254,7 @@ function ExtractTab({ state }) {
       </div>
       <div class=${`extract-step${data.extraits ? ' extract-ok' : ''}`}>
         <span class="extract-num">${data.extraits}</span>
-        <span>extraits par l'addon<br /><span class="muted small">voe, veev, darkibox, oneupload</span></span>
+        <span>extraits par l'addon<br /><span class="muted small">voe, veev, darkibox, oneupload, sharecloudy</span></span>
       </div>
     </div>
     ${data.total > 0 && data.extraits === 0 && html`<${Callout} title="Normal que ce soit bas">

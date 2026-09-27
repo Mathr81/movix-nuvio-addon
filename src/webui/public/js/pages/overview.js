@@ -17,7 +17,7 @@ function checksOf(o) {
   if (!o.config.tmdbKeyConfigured) add('error', 'TMDB_API_KEY manquant', 'Catalogues et fiches ne fonctionneront pas.');
   if (!o.movix.mainApi) add('error', 'MAIN_API_BASE_URL manquant', 'Aucune source Movix ne peut répondre.');
   if (!o.movix.vipKeyConfigured) {
-    add('error', 'Clé VIP absente', 'Movix ne résout plus aucun flux : seuls voe, darkibox et oneupload restent lisibles.');
+    add('error', 'Clé VIP absente', 'Movix ne résout plus aucun flux : seuls voe, veev, darkibox, oneupload et sharecloudy restent lisibles.');
   } else if (!o.movix.serverResolve) {
     add('warn', 'Résolution serveur désactivée', 'MOVIX_RESOLVE=false alors qu’une clé VIP est présente.');
   }

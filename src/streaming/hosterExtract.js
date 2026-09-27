@@ -28,8 +28,9 @@ const BROWSER_UA =
  * sans rien demander a Movix:
  *
  *   voe        repli local complet (src/streaming/hosterVoe.js)
- *   darkibox   lecture du HTML de la page d'embed
- *   oneupload  idem
+ *   darkibox     lecture du HTML de la page d'embed
+ *   oneupload    idem
+ *   sharecloudy  idem, flux servi par le proxy (le CDN exige Origin/Referer)
  *
  * Tout le reste demande la resolution serveur. Renvoyer "no-extractor" pour ces liens
  * n'est pas une regression: sans cle VIP ils n'etaient de toute facon plus extractibles
@@ -92,14 +93,18 @@ const BUILTIN_HOSTER_PATTERNS = {
   ],
   vidzy: ['vidzy'],
   fsvid: ['fsvid'],
-  // Hors liste amont: ces deux-la n'ont jamais eu d'extracteur cote Movix, l'addon les
+  // Hors liste amont: ces trois-la n'ont jamais eu d'extracteur cote Movix, l'addon les
   // lit lui-meme depuis le HTML de la page d'embed.
   darkibox: ['darkibox'],
   oneupload: ['oneupload'],
+  sharecloudy: ['sharecloudy'],
 };
 
 /** Hebergeurs que l'addon sait extraire SEUL, sans passer par Movix. */
-const LOCAL_EXTRACTORS = new Set(['voe', 'veev', 'darkibox', 'oneupload']);
+const LOCAL_EXTRACTORS = new Set(['voe', 'veev', 'darkibox', 'oneupload', 'sharecloudy']);
+
+/** Le CDN de Sharecloudy (shareNNNNN.sharecloudy.com) rend 403 sans l'Origin de son lecteur. */
+const SHARECLOUDY_ORIGIN = 'https://sharecloudy.com';
 
 /** Motifs compiles, alias supplementaires de la configuration inclus. */
 const HOSTER_PATTERNS = (() => {
@@ -274,7 +279,27 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
   try {
     const html = await fetchEmbedHtml(embedUrl, hoster === 'oneupload' ? 'https://oneupload.net/' : undefined);
 
-    if (hoster === 'darkibox') {
+    if (hoster === 'sharecloudy') {
+      // Sharecloudy: jwplayer, `sources: [{ file: "https://shareNNNNN.sharecloudy.com/...m3u8" }]`.
+      const url = firstMatch(html, [/file:\s*["']([^"']+\.m3u8[^"']*)/i, /"file":\s*"([^"]+\.m3u8[^"]*)"/i]);
+      if (url) {
+        extractBreaker.noteRecovery(hoster);
+        // Segments compris: sans l'Origin/Referer du lecteur, le CDN refuse tout (403).
+        const proxied = config.STREAM_PROXY_ENABLED
+          ? streamProxy.proxyUrl(url, {
+              headers: {
+                accept: '*/*',
+                origin: SHARECLOUDY_ORIGIN,
+                referer: `${SHARECLOUDY_ORIGIN}/`,
+                'user-agent': BROWSER_UA,
+              },
+              // Son nginx etiquette les .ts en `text/vnd.trolltech.linguist` (traductions Qt).
+              rules: [{ match: '\\.ts(?:$|\\?)', contentType: 'video/mp2t' }],
+            })
+          : url;
+        return { ok: true, url: proxied, hoster };
+      }
+    } else if (hoster === 'darkibox') {
       // Darkibox: bloc `sources: [{src: "...m3u8"}]`.
       const block = html.match(/sources:\s*\[([\s\S]*?)\]/);
       const url = block ? firstMatch(block[1], [/src:\s*"([^"]+)"/]) : null;

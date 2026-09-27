@@ -36,7 +36,7 @@ const config = {
   // elles-memes quand on leur passe `resolve=1` ET une cle VIP valide, et rendent des
   // m3u8 deja proxifiees et signees, jouables telles quelles.
   //
-  // Sans VIP_ACCESS_KEY, l'addon ne peut extraire que voe, veev, darkibox et oneupload, qu'il
+  // Sans VIP_ACCESS_KEY, l'addon ne peut extraire que voe, veev, darkibox, oneupload et sharecloudy, qu'il
   // sait lire seul. Ce reglage n'existe que pour desactiver la demande (diagnostic,
   // comparaison): il n'y a aucune raison de le couper en usage normal.
   MOVIX_RESOLVE: readBool('MOVIX_RESOLVE', true),
@@ -436,8 +436,8 @@ config.LOGO_URL = readEnv('LOGO_URL', `${config.SPOOFED_ORIGIN.replace(/\/+$/, '
 if (!config.MAIN_API_BASE_URL) console.warn('[config] MAIN_API_BASE_URL manquant -- voir .env.example');
 if (!config.VIP_ACCESS_KEY) {
   console.warn(
-    '[config] VIP_ACCESS_KEY manquant -- Movix ne resoudra AUCUN flux. Seuls voe, darkibox ' +
-      "et oneupload restent extractibles (l'addon les lit lui-meme); toutes les autres sources " +
+    '[config] VIP_ACCESS_KEY manquant -- Movix ne resoudra AUCUN flux. Seuls voe, veev, darkibox, ' +
+      "oneupload et sharecloudy restent extractibles (l'addon les lit lui-meme); toutes les autres sources " +
       'ne rendront que des liens injouables.',
   );
 } else if (!config.MOVIX_RESOLVE) {

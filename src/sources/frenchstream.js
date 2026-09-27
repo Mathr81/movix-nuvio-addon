@@ -14,7 +14,7 @@ const log = require('../core/log');
 // porte toutes les saisons d'un coup, et Movix refuse d'extraire une serie entiere pour
 // une seule lecture (cf. le commentaire de respondWithFrenchStreamSources, tmdb.js).
 // Les episodes ressortent donc en liens d'embed, jouables seulement si l'un des
-// extracteurs LOCAUX de l'addon (voe, darkibox, oneupload) les reconnait.
+// extracteurs LOCAUX de l'addon (voe, veev, darkibox, oneupload, sharecloudy) les reconnait.
 
 function collectMoviePlayers(data) {
   const results = (data.player_links || [])

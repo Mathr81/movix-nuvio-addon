@@ -44,7 +44,7 @@ async function rawLinks(type, id) {
 // "l'extracteur a-t-il marche" mais "qui devait extraire ce lien". Trois issues:
 //   resolu       le serveur Movix l'a rendu directement (il n'apparait pas ici, il n'est
 //                deja plus un embed)
-//   local        l'addon l'a extrait seul (voe, darkibox, oneupload)
+//   local        l'addon l'a extrait seul (voe, veev, darkibox, oneupload, sharecloudy)
 //   server-only  extractible, mais par Movix seulement -- il manque une cle VIP valide
 //                ou l'extraction amont a echoue
 async function extraction(type, id) {
