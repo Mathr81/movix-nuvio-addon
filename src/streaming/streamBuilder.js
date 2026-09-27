@@ -44,11 +44,25 @@ function parseQuality(...labels) {
   const haystack = labels.filter(Boolean).join(' ');
   if (/\b(4k|2160p?)\b/i.test(haystack)) return 2160;
   if (/\b1440p?\b/i.test(haystack)) return 1440;
-  if (/\b1080p?\b|\bfhd\b/i.test(haystack)) return 1080;
+  if (/\b1080p?\b|\bfhd\b|\bfull[\s-]*hd\b/i.test(haystack)) return 1080;
   if (/\b720p?\b|\bhd\b/i.test(haystack)) return 720;
   if (/\b480p?\b/i.test(haystack)) return 480;
   if (/\b360p?\b/i.test(haystack)) return 360;
   return 0;
+}
+
+/**
+ * Definition qu'un libelle annonce PRECISEMENT, 0 sinon.
+ *
+ * "HD" seul ne dit rien de la definition: Movix et beaucoup de lecteurs l'affichent aussi
+ * bien sur du 720p que sur du 1920x800. S'il valait 720 ici, il dispenserait la sonde de
+ * lire la vraie definition, et un 1080p en scope resterait affiche 720p pour toujours.
+ * Il ne sert donc qu'en dernier recours (describe), jamais pour sauter la mesure.
+ */
+function announcedQuality(...labels) {
+  const quality = parseQuality(...labels);
+  if (quality !== 720) return quality;
+  return /\b720p?\b/i.test(labels.filter(Boolean).join(' ')) ? 720 : 0;
 }
 
 /**
@@ -355,8 +369,8 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false, ref
             refresh,
             // Le libelle du lien dit deja "1080p": inutile d'aller ouvrir le flux pour le
             // reapprendre. La sonde de definition ne sert qu'aux liens dont PERSONNE ne
-            // connait la definition.
-            knownHeight: parseQuality(r.quality, r.player, r.sourceName, r.lang),
+            // connait la definition -- un simple "HD" n'en dit pas assez (announcedQuality).
+            knownHeight: announcedQuality(r.quality, r.player, r.sourceName, r.lang),
           }).catch(() => ({}));
       slots[index] = describe(r, measured);
     });
