@@ -1188,7 +1188,8 @@ FStream · VFQ · uqload                        ~2.3 Mb/s
 - les hauteurs exotiques des masters HLS (`1036p`, `468p` — recadrages, encodages
   anamorphiques) sont ramenées au **palier** correspondant, à 10 % près ;
 - un libellé de source déjà composé (`pulse | 1080p | MULTI`) perd la résolution qui y
-  faisait doublon.
+  faisait doublon. PurStream, qui rend ce genre de nom, s'affiche simplement `PurStream`
+  (seule la langue en est gardée, pour le tri).
 
 **Le palier se lit sur la largeur, pas sur la hauteur.** Un film en 2.40:1 est encodé
 `1920x800` : juger sur la hauteur le faisait passer pour du **720p** alors que son image
@@ -1287,9 +1288,13 @@ construire, et la cascade s'est simplifiée d'autant :
    l'ancien micro-service `bypass403`, supprimé de l'amont, ne conviennent : il faut un
    `/proxy/<url>` à soi).
 
-Les streams sont triés : langue préférée d'abord (français par défaut), puis résolution,
-puis **débit** — à résolution égale, c'est lui qui sépare un vrai 1080p d'un upscale
-compressé. `PROBE_BITRATE=false` désactive la mesure si l'ouverture des fiches devient
+Les streams sont triés **par palier de définition** (4K, puis 1080p, puis 720p…), puis,
+dans chaque palier, langue préférée d'abord (`PREFERRED_LANGS`, français par défaut) et
+enfin **débit** — à définition égale, c'est lui qui sépare un vrai 1080p d'un upscale
+compressé. En queue de liste : les liens que la sonde n'a pu joindre par aucune voie
+(statut HTTP d'erreur ou délai dépassé), marqués `⚠` et relégués plutôt que masqués — un
+hébergeur peut n'être tombé que quelques minutes — puis les liens « ouvrir dans le
+navigateur ». `PROBE_BITRATE=false` désactive la mesure si l'ouverture des fiches devient
 lente (elle coûte un aller-retour par lien, mis en cache ensuite).
 
 #### Deux cas qui donnaient une mesure fausse

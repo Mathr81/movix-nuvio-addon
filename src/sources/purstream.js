@@ -13,6 +13,20 @@ const log = require('../core/log');
  *    parametres la rendrait invalide. La duree de vie du cache de streams
  *    (STREAM_TTL_MS, 30 min par defaut) reste tres en deca de ces 12 h.
  */
+/**
+ * Langue lue dans le nom compose que rend PurStream ("pulse | 1440p | MULTI").
+ *
+ * Le reste de ce nom n'est pas affiche: le serveur ("pulse") n'apprend rien, et la
+ * definition y est parfois fausse -- ce "1440p" designe un master qui n'a qu'une variante
+ * 1280x720. Seule la langue compte, pour le tri par PREFERRED_LANGS.
+ */
+function langOf(name) {
+  return String(name || '')
+    .split('|')
+    .map((part) => part.trim())
+    .find((part) => /^(MULTI|VFF|VFQ|VF|VOSTFR|VO|TRUEFRENCH|FRENCH)$/i.test(part));
+}
+
 async function getStreams({ tmdbId, type, season, episode }) {
   try {
     let data;
@@ -24,7 +38,7 @@ async function getStreams({ tmdbId, type, season, episode }) {
 
     const results = (data.sources || [])
       .filter((s) => s.url)
-      .map((s) => ({ url: s.url, sourceName: s.name ? `PurStream · ${s.name}` : 'PurStream', quality: s.format, direct: true }));
+      .map((s) => ({ url: s.url, sourceName: 'PurStream', lang: langOf(s.name), quality: s.format, direct: true }));
 
     log.ok('PurStream', tmdbId, `${results.length} source(s) directe(s) (reponse brute: ${JSON.stringify(data).slice(0, 200)})`);
     return results;

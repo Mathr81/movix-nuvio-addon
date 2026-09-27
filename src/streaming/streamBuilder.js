@@ -247,19 +247,27 @@ function describe(link, measured) {
       ? 'flux'
       : (measured.height ? 'playlist' : (labelled ? 'libelle' : 'aucune')),
     langRank: langScore(link.lang, link.sourceName, link.quality, link.player),
+    // La sonde n'a pu joindre le lien par aucune voie (statut d'erreur, timeout).
+    unreachable: measured.unreachable,
   };
 }
 
 /**
- * Tri: langue preferee, resolution, puis debit -- a resolution egale, c'est le debit qui
- * separe un vrai 1080p d'un upscale compresse. Les liens externes en dernier.
+ * Tri, par blocs de definition: 4K, puis 1080p, puis 720p... C'est ce qu'on cherche en
+ * parcourant la liste; la langue passait avant, et une 4K en VO se retrouvait noyee apres
+ * tous les 720p francais. Dans chaque palier: langue preferee d'abord, puis debit -- a
+ * definition egale, c'est lui qui separe un vrai 1080p d'un upscale compresse.
+ *
+ * En queue: les liens que la sonde n'a pu joindre (releguees, pas masques -- un hebergeur
+ * peut n'etre tombe que quelques minutes), puis les liens externes.
  */
 function sortStreams(streams) {
   return streams.sort((a, b) => {
-    if (a.langRank !== b.langRank) return a.langRank - b.langRank;
+    if (!!a.externalUrl !== !!b.externalUrl) return a.externalUrl ? 1 : -1;
+    if (!!a.unreachable !== !!b.unreachable) return a.unreachable ? 1 : -1;
     if (tierOf(b) !== tierOf(a)) return tierOf(b) - tierOf(a);
-    if ((b.bitrate || 0) !== (a.bitrate || 0)) return (b.bitrate || 0) - (a.bitrate || 0);
-    return (a.externalUrl ? 1 : 0) - (b.externalUrl ? 1 : 0);
+    if (a.langRank !== b.langRank) return a.langRank - b.langRank;
+    return (b.bitrate || 0) - (a.bitrate || 0);
   });
 }
 
@@ -499,6 +507,11 @@ async function buildStreams({ tmdbId, type, season, episode, refresh = false }) 
       title: [label, details].filter(Boolean).join(' · '),
       behaviorHints: { bingeGroup: `movix-${r.sourceName || 'source'}-${tierOf(r) || 'na'}` },
     };
+
+    if (r.unreachable) {
+      stream.name = `⚠ ${stream.name}`;
+      stream.title = `${stream.title}\n⚠ injoignable au dernier test (${r.unreachable === 'timeout' ? 'délai dépassé' : `HTTP ${r.unreachable}`})`;
+    }
 
     if (r.externalUrl) {
       stream.externalUrl = r.externalUrl;

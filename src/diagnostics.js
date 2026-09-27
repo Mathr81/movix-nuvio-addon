@@ -118,6 +118,7 @@ async function streams(type, id) {
       // Autres sources qui renvoyaient le MEME fichier, fusionnees dans ce lien.
       aussiChez: r.alsoFrom?.length ? r.alsoFrom : undefined,
       proxifie: streamProxy.isProxied(r.url),
+      injoignable: r.unreachable || undefined,
       cible: streamProxy.targetOf(r.url) || r.url,
       qualiteAnnoncee: r.quality || null,
       // La resolution telle que le master l'annonce, et le palier qui en decoule. Un film

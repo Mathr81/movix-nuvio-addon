@@ -170,6 +170,7 @@ function StreamsTab({ state }) {
               <td>
                 <${Badge} tone=${tierTone(s.palier)}>${s.palier ? (/^\d+$/.test(String(s.palier)) ? `${s.palier}p` : s.palier) : s.qualiteAnnoncee || '?'}</${Badge}>
                 ${s.resolution && html`<div class="muted small">${s.resolution} · ${s.origineResolution}</div>`}
+                ${s.injoignable && html`<div><${Badge} tone="error">injoignable · ${s.injoignable === 'timeout' ? 'délai' : `HTTP ${s.injoignable}`}</${Badge}></div>`}
               </td>
               <td class="nowrap">${formatBitrate(s.debitBps)}<div class="muted small">${s.origineDebit}${s.segmentsPeses ? ` · ${s.segmentsPeses} seg.` : ''}</div></td>
               <td class="nowrap">${s.tailleOctets ? formatBytes(s.tailleOctets) : '—'}</td>

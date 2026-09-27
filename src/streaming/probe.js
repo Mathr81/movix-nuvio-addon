@@ -180,7 +180,7 @@ const FULL_GET_CAP_BYTES = 24 * 1024 * 1024;
  * paraissaient tirees au sort. Seul `Content-Range` porte la taille totale; sans lui, une
  * longueur de 1 ne veut rien dire.
  */
-async function byteLength(access, url, { allowFullGet = false } = {}) {
+async function byteLength(access, url, { allowFullGet = false, report = null } = {}) {
   const target = access.resolve(url);
 
   const head = await access.http.head(target);
@@ -199,6 +199,8 @@ async function byteLength(access, url, { allowFullGet = false } = {}) {
 
   const contentRange = ranged.headers['content-range'];
   if (contentRange) return Number(/\/(\d+)$/.exec(contentRange)?.[1]) || 0;
+  // HEAD et GET refuses tous les deux: ce n'est plus une taille qui manque, c'est le lien.
+  if (report && head.status >= 400 && ranged.status >= 400) report.status = ranged.status;
   if (ranged.status < 400) {
     // Range ignore (reponse 200): le Content-Length annonce alors la taille complete.
     const length = Number(ranged.headers['content-length']);
@@ -458,6 +460,9 @@ async function probeHls(access, url, depth = 0, body = null) {
   let data = body;
   if (data === null) {
     const response = await access.http.get(access.resolve(url), { responseType: 'text' });
+    // Playlist d'ENTREE refusee: le lien lui-meme ne sert rien (proxy amont en 500, video
+    // supprimee...). Le dire, plutot que de le confondre avec "pas encore mesure".
+    if (response.status >= 400 && depth === 0) return { unreachable: response.status };
     if (response.status >= 400 || typeof response.data !== 'string') return {};
     data = response.data;
   }
@@ -614,8 +619,9 @@ async function finish(access, result, url, { deadline, knownHeight } = {}) {
 }
 
 async function probeFile(access, url, durationSeconds) {
-  const length = await byteLength(access, url);
-  if (!length) return {};
+  const report = {};
+  const length = await byteLength(access, url, { report });
+  if (!length) return report.status ? { unreachable: report.status } : {};
   // Sans duree (episode dont TMDB ignore le runtime), la taille reste comparable d'un
   // lien a l'autre: on la remonte plutot que de ne rien afficher.
   if (!durationSeconds) return { bytes: length };
@@ -645,7 +651,8 @@ async function attempt(access, url, durationSeconds) {
  *        hoster attend en Referer, et l'origine du CDN ne suffit pas.
  *        knownHeight = definition deja connue par ailleurs (libelle du lien). Non nulle,
  *        elle dispense d'ouvrir le flux pour la mesurer.
- * @returns {Promise<{bitrate?, height?, width?, bytes?, estimated?, resolutionProbed?}>}
+ * @returns {Promise<{bitrate?, height?, width?, bytes?, estimated?, resolutionProbed?, unreachable?}>}
+ *          unreachable = statut HTTP (ou 'timeout') quand AUCUNE voie n'a pu joindre le lien.
  */
 async function probe(url, { durationSeconds, refererUrl, deadline, refresh, knownHeight = 0 } = {}) {
   if (!config.PROBE_BITRATE || !url) return {};
@@ -671,16 +678,33 @@ async function probe(url, { durationSeconds, refererUrl, deadline, refresh, know
     ].filter(Boolean);
     if (config.PROBE_PROXY_BASE_URL) accesses.push(proxyAccess());
 
+    // Lien injoignable = TOUTES les voies ont echoue franchement (statut d'erreur ou
+    // timeout). Une voie sautee faute de budget ou de service, ou qui a repondu sans qu'on
+    // sache mesurer, laisse le doute: le lien reste alors simplement "non mesure".
+    let failure = null;
+    let undecided = false;
+
     for (const access of accesses) {
       // Un repli ne demarre plus une fois le budget epuise: c'est du temps ajoute a
       // l'ouverture de la fiche pour un resultat qui a deja echoue une fois.
-      if (deadline && Date.now() > deadline) break;
+      if (deadline && Date.now() > deadline) {
+        undecided = true;
+        break;
+      }
       // Service partage deja connu pour ne pas repondre: on ne repaye pas son timeout.
-      if (access.service && probeBreaker.isOpen(access.service)) continue;
+      if (access.service && probeBreaker.isOpen(access.service)) {
+        undecided = true;
+        continue;
+      }
 
       try {
         const entry = access.entry || url;
         const result = await attempt(access, entry, durationSeconds);
+        if (result?.unreachable) {
+          failure = failure || result.unreachable;
+          continue;
+        }
+        if (!result || Object.keys(result).length === 0) undecided = true;
         if (result && Object.keys(result).length > 0) {
           if (access.service) probeBreaker.noteRecovery(access.service);
           return finish(access, result, entry, { deadline, knownHeight });
@@ -690,9 +714,16 @@ async function probe(url, { durationSeconds, refererUrl, deadline, refresh, know
         // levent pas): c'est bien le service qui ne repond pas, pas ce lien-la.
         if (access.service) probeBreaker.noteOutage(access.service);
         console.warn(`[probe] ${access.label} a echoue sur ${url.slice(0, 80)}: ${err.message}`);
+        // Le repli par un service partage qui tombe ne dit rien du lien lui-meme.
+        if (access.service) undecided = true;
+        else failure = failure || 'timeout';
       }
     }
 
+    if (failure && !undecided) {
+      console.warn(`[probe] lien injoignable (${failure}): ${url.slice(0, 80)}`);
+      return { unreachable: failure };
+    }
     console.warn(`[probe] aucune mesure pour ${url.slice(0, 80)}`);
     return {};
   });
