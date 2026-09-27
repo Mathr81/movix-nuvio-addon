@@ -212,6 +212,11 @@ async function collectRawLinks({ tmdbId, type, season, episode }) {
   return settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
 }
 
+/** Ce qui designe le FICHIER servi: la cible d'un lien proxifie, pas l'URL de proxy. */
+function sameFileKey(link) {
+  return link.externalUrl || streamProxy.targetOf(link.url) || link.url;
+}
+
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms).unref?.());
 
 /** Mesures encore en cours, par cle de cache (cf. l'option `wait`). */
@@ -325,11 +330,24 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false, ref
     // Deduplication sur l'URL FINALE: plusieurs pages d'embed differentes (parfois de
     // sources differentes) pointent souvent vers le meme fichier chez le meme hebergeur.
     // Ce ne sont pas des liens fusionnes, ce sont les memes.
-    const seen = new Set();
+    //
+    // Pour un lien proxifie, c'est la CIBLE qui compte, pas l'URL de proxy: celle-ci scelle
+    // aussi les en-tetes, et deux sources qui proxifient le meme fichier avec des en-tetes
+    // a peine differents (Obrigoz ajoute accept-language a son Sharecloudy, l'extracteur
+    // local non) donnaient deux fois le meme film dans Nuvio. Le lien garde note les
+    // autres sources qui le proposaient (`alsoFrom`), pour qu'aucune ne semble perdue.
+    const kept = new Map();
     const deduped = resolved.filter((r) => {
-      const key = r.externalUrl || r.url;
-      if (seen.has(key)) return false;
-      seen.add(key);
+      const key = sameFileKey(r);
+      const first = kept.get(key);
+      if (first) {
+        if (r.sourceName && r.sourceName !== first.sourceName && !first.alsoFrom.includes(r.sourceName)) {
+          first.alsoFrom.push(r.sourceName);
+        }
+        return false;
+      }
+      r.alsoFrom = [];
+      kept.set(key, r);
       return true;
     });
     if (deduped.length < resolved.length) {
@@ -350,8 +368,9 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false, ref
     // soient morts pour autant: les perdre donnerait une liste qui RETRECIT quand on
     // demande a la rafraichir, exactement l'inverse de ce qu'on cherchait.
     // Ils gardent leurs mesures, et disparaitront d'eux-memes a l'expiration du cache.
-    const found = new Set(deduped.map((r) => r.externalUrl || r.url));
-    const carried = (previous || []).filter((p) => !found.has(p.externalUrl || p.url));
+    // Meme cle que la deduplication: sinon un lien fusionne a ce scan reviendrait par ici.
+    const found = new Set(deduped.map(sameFileKey));
+    const carried = (previous || []).filter((p) => !found.has(sameFileKey(p)));
     if (carried.length > 0) {
       console.log(`[streamBuilder] ${carried.length} lien(s) conserve(s) du scan precedent`);
     }

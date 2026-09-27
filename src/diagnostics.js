@@ -31,6 +31,8 @@ async function rawLinks(type, id) {
     links: raw.map((r) => ({
       source: r.sourceName,
       url: r.url,
+      // Un lien direct proxifie ne dit rien de ce qu'il sert: sa cible, si.
+      cible: streamProxy.targetOf(r.url) || null,
       player: r.player,
       lang: r.lang,
       quality: r.quality,
@@ -113,6 +115,8 @@ async function streams(type, id) {
     ecartes: probeBreakerState(),
     streams: resolved.map((r) => ({
       source: r.sourceName,
+      // Autres sources qui renvoyaient le MEME fichier, fusionnees dans ce lien.
+      aussiChez: r.alsoFrom?.length ? r.alsoFrom : undefined,
       proxifie: streamProxy.isProxied(r.url),
       cible: streamProxy.targetOf(r.url) || r.url,
       qualiteAnnoncee: r.quality || null,

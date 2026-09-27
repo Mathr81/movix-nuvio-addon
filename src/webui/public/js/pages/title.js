@@ -166,7 +166,7 @@ function StreamsTab({ state }) {
         <tbody>
           ${data.streams.map(
             (s) => html`<tr>
-              <td><strong>${s.source}</strong></td>
+              <td><strong>${s.source}</strong>${s.aussiChez && html`<div class="muted small">aussi chez ${s.aussiChez.join(', ')}</div>`}</td>
               <td>
                 <${Badge} tone=${tierTone(s.palier)}>${s.palier ? (/^\d+$/.test(String(s.palier)) ? `${s.palier}p` : s.palier) : s.qualiteAnnoncee || '?'}</${Badge}>
                 ${s.resolution && html`<div class="muted small">${s.resolution} · ${s.origineResolution}</div>`}
@@ -211,8 +211,8 @@ function LinksTab({ state }) {
                 <${Badge} tone=${l.direct ? 'info' : l.hoster === 'AUCUN EXTRACTEUR' ? 'error' : 'neutral'}>${l.direct ? 'direct' : l.hoster}</${Badge}>
                 ${l.lang && html`<${Badge} tone="accent">${l.lang}</${Badge}>`}
                 ${l.quality && html`<${Badge}>${l.quality}</${Badge}>`}
-                <span class="url" title=${l.url}>${l.url}</span>
-                <${CopyButton} text=${l.url} />
+                <span class="url" title=${l.url}>${l.cible ? html`<span class="muted">proxy →</span> ${l.cible}` : l.url}</span>
+                <${CopyButton} text=${l.cible || l.url} />
               </div>`,
             )}
           </div>
