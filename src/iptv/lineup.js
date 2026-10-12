@@ -4,6 +4,8 @@ const paths = require('../core/paths');
 const { SOURCES } = require('./sources');
 const names = require('./names');
 const epg = require('./epg');
+const health = require('./health');
+const overrides = require('./overrides');
 
 /**
  * Grille des chaines: les flux de toutes les sources, regroupes par chaine.
@@ -24,27 +26,7 @@ const STATE_FILE = () => paths.inData('iptv-lineup.json');
 const UNKNOWN_QUALITY_RANK = 600;
 
 let state = { builtAt: 0, entries: {}, channels: [] };
-let index = { byKey: new Map(), byId: new Map() };
 let building = null;
-
-function sourceRank(source) {
-  const order = config.IPTV_SOURCE_ORDER.indexOf(source);
-  return order < 0 ? config.IPTV_SOURCE_ORDER.length : order;
-}
-
-/** Classement statique des flux d'une chaine. La sante mesuree s'y ajoute a la lecture. */
-function compareStreams(a, b) {
-  // Au-dessus du plafond (IPTV_MAX_QUALITY), un flux n'est pas retire mais passe derriere:
-  // il reste le recours si tout le reste est mort.
-  const tooHeavy = (s) => config.IPTV_MAX_QUALITY > 0 && s.quality > config.IPTV_MAX_QUALITY;
-  const demoted = (s) => (s.backup || s.eventOnly ? 2 : tooHeavy(s) ? 1 : 0);
-  return (
-    demoted(a) - demoted(b) ||
-    (b.quality || UNKNOWN_QUALITY_RANK) - (a.quality || UNKNOWN_QUALITY_RANK) ||
-    sourceRank(a.source) - sourceRank(b.source) ||
-    a.server.localeCompare(b.server)
-  );
-}
 
 /** Identifiant numerique stable, exige par l'API Xtream (`stream_id`). */
 function numericId(key, taken) {
@@ -54,14 +36,6 @@ function numericId(key, taken) {
   while (taken.has(id)) id += 1;
   taken.add(id);
   return id;
-}
-
-function streamLabel(stream) {
-  const source = SOURCES[stream.source]?.label || stream.source;
-  const origin = stream.source === 'm3u' && stream.origin ? stream.origin : source;
-  return [names.qualityLabel(stream.quality), origin + (stream.server ? ` ${stream.server}` : ''), stream.backup ? 'secours' : '', stream.eventOnly ? 'événement' : '']
-    .filter(Boolean)
-    .join(' · ');
 }
 
 /** Vrai si une insertion, une suppression ou une substitution suffit a passer de `a` a `b`. */
@@ -107,7 +81,10 @@ function unify(groups, epgIndex) {
     aliases.delete(from);
   };
   /** Fusionne dans la cle qui a un guide, sinon dans la plus fournie. */
+  const { splits, merges } = overrides.get();
   const join = (a, b) => {
+    // Une ecriture detachee a la main ne se laisse plus absorber.
+    if (splits.includes(a) || splits.includes(b)) return;
     if (distinctGuides(a, b)) return;
     const score = (key) => (guideId(key) ? 1000 : 0) + groups.get(key).length;
     if (score(a) >= score(b)) absorb(b, a);
@@ -145,6 +122,9 @@ function unify(groups, epgIndex) {
     }
   }
 
+  // Fusions manuelles, en dernier: elles l'emportent sur tout le reste.
+  for (const [from, into] of Object.entries(merges)) absorb(from, into);
+
   return aliases;
 }
 
@@ -164,7 +144,6 @@ function merge(entriesBySource, epgIndex) {
 
   const channels = [];
   for (const [key, streams] of groups) {
-    streams.sort(compareStreams);
     const guide = epg.lookup(epgIndex, key);
     // Le nom du guide est le plus propre; a defaut celui de l'IPTV (casse mixte), puis Vavoo.
     const named = streams.find((s) => s.source !== 'vavoo') || streams[0];
@@ -186,39 +165,156 @@ function merge(entriesBySource, epgIndex) {
         server: s.server,
         backup: s.backup,
         eventOnly: s.eventOnly,
-        label: streamLabel(s),
+        origin: s.origin || '',
       })),
     });
   }
+
+  const taken = new Set();
+  // Attribues dans l'ordre des cles, pas de la grille: une chaine qui change de rang ne
+  // doit pas en decaler une autre en cas de collision.
+  const ids = new Map([...groups.keys()].sort().map((key) => [key, numericId(key, taken)]));
+  for (const channel of channels) channel.id = ids.get(channel.key);
+  return channels;
+}
+
+// --- Vue: la grille telle qu'elle est servie ------------------------------------
+// La fusion ne depend que des sources; ce qu'on SERT depend en plus de la sante mesuree
+// des flux et des retouches manuelles, qui changent sans que la grille soit reconstruite.
+// La vue est donc derivee a la demande, et recalculee seulement quand l'un des trois bouge.
+
+/** Hauteur mesuree -> palier de definition (une image 1920x800 reste de la FHD). */
+function tier(height) {
+  if (!height) return 0;
+  if (height >= 2000) return 2160;
+  if (height >= 1000) return 1080;
+  if (height >= 700) return 720;
+  return 480;
+}
+
+function sourceRank(source) {
+  const order = config.IPTV_SOURCE_ORDER.indexOf(source);
+  return order < 0 ? config.IPTV_SOURCE_ORDER.length : order;
+}
+
+/**
+ * Classement des flux d'une chaine. Dans l'ordre:
+ *   flux force a la main > vivants avant morts > permanents avant secours/evenement et
+ *   avant ceux qui depassent IPTV_MAX_QUALITY > puis, selon IPTV_RANK_BY, la source
+ *   preferee d'abord (`source`) ou la meilleure definition d'abord (`quality`).
+ */
+function compareStreams(a, b) {
+  const tooHeavy = (s) => config.IPTV_MAX_QUALITY > 0 && s.quality > config.IPTV_MAX_QUALITY;
+  const demoted = (s) => (s.backup || s.eventOnly ? 2 : tooHeavy(s) ? 1 : 0);
+  const bySource = sourceRank(a.source) - sourceRank(b.source);
+  const byQuality = (b.quality || UNKNOWN_QUALITY_RANK) - (a.quality || UNKNOWN_QUALITY_RANK);
+  return (
+    Number(b.preferred) - Number(a.preferred) ||
+    Number(a.ok === false) - Number(b.ok === false) ||
+    demoted(a) - demoted(b) ||
+    (config.IPTV_RANK_BY === 'quality' ? byQuality || bySource : bySource || byQuality) ||
+    a.server.localeCompare(b.server)
+  );
+}
+
+function streamLabel(stream) {
+  const source = SOURCES[stream.source]?.label || stream.source;
+  const origin = stream.source === 'm3u' && stream.origin ? stream.origin : source;
+  return [names.qualityLabel(stream.quality), origin + (stream.server ? ` ${stream.server}` : ''), stream.backup ? 'secours' : '', stream.eventOnly ? 'événement' : '']
+    .filter(Boolean)
+    .join(' · ');
+}
+
+// Une chaine n'est retiree qu'apres deux rondes sans le moindre flux vivant: une panne
+// passagere d'un fournisseur ne doit pas vider la playlist.
+const DEAD_AFTER_FAILS = 2;
+
+function hiddenReason(channel, edits) {
+  if (edits.hiddenChannels.includes(channel.key)) return 'user';
+  if (edits.hiddenGroups.includes(channel.group)) return 'group';
+  // Les canaux evenementiels sont eteints hors antenne: les retirer les ferait manquer
+  // au moment ou ils servent. Le sport en est plein, on ne le purge donc jamais.
+  const eventful = channel.group === 'Sport' || channel.streams.some((stream) => stream.eventOnly);
+  if (config.IPTV_HIDE_DEAD && !eventful && channel.streams.every((stream) => stream.fails >= DEAD_AFTER_FAILS)) return 'dead';
+  return null;
+}
+
+let view = null;
+let viewStamp = '';
+
+function buildView() {
+  const edits = overrides.get();
+
+  const all = state.channels.map((channel) => {
+    const preferred = edits.preferred[channel.key];
+    const streams = channel.streams.map((stream) => {
+      const measured = health.get(stream.sid) || {};
+      const enriched = {
+        ...stream,
+        announced: stream.quality,
+        // La definition mesuree remplace celle du libelle des qu'elle est connue.
+        quality: tier(measured.height) || stream.quality,
+        width: measured.width || 0,
+        height: measured.height || 0,
+        codec: measured.codec || '',
+        ok: measured.ok ?? null,
+        fails: measured.fails || 0,
+        checkedAt: measured.at || null,
+        preferred: stream.sid === preferred,
+      };
+      enriched.label = streamLabel(enriched);
+      return enriched;
+    });
+    streams.sort(compareStreams);
+
+    const edited = {
+      ...channel,
+      name: edits.names[channel.key] || channel.name,
+      group: edits.groups[channel.key] || channel.group,
+      streams,
+    };
+    edited.hidden = hiddenReason(edited, edits);
+    return edited;
+  });
 
   const tnt = (channel) => {
     const position = names.TNT_ORDER.indexOf(channel.key);
     return position < 0 ? Infinity : position;
   };
-  const groupRank = (channel) => names.GROUPS.indexOf(channel.group);
-  channels.sort(
+  const groupRank = (channel) => {
+    const position = names.GROUPS.indexOf(channel.group);
+    return position < 0 ? names.GROUPS.length : position;
+  };
+  all.sort(
     (a, b) =>
       tnt(a) - tnt(b) ||
       groupRank(a) - groupRank(b) ||
       a.name.localeCompare(b.name, 'fr', { numeric: true, sensitivity: 'base' }),
   );
 
-  const taken = new Set();
-  // Attribues dans l'ordre des cles, pas de la grille: une chaine qui change de rang ne
-  // doit pas en decaler une autre en cas de collision.
-  const ids = new Map([...groups.keys()].sort().map((key) => [key, numericId(key, taken)]));
+  const channels = all.filter((channel) => !channel.hidden);
   channels.forEach((channel, position) => {
-    channel.id = ids.get(channel.key);
     channel.num = position + 1;
   });
-  return channels;
+
+  return {
+    builtAt: state.builtAt,
+    // `channels` est ce que la playlist annonce; `all` garde les chaines masquees, qui
+    // restent jouables par leur URL (un lecteur n'a pas forcement recharge sa liste).
+    channels,
+    all,
+    byKey: new Map(all.map((channel) => [channel.key, channel])),
+    byId: new Map(all.map((channel) => [String(channel.id), channel])),
+  };
 }
 
-function reindex() {
-  index = {
-    byKey: new Map(state.channels.map((channel) => [channel.key, channel])),
-    byId: new Map(state.channels.map((channel) => [String(channel.id), channel])),
-  };
+function currentView() {
+  const stamp = `${state.builtAt}|${health.version()}|${overrides.version()}`;
+  if (!view || stamp !== viewStamp) {
+    view = buildView();
+    viewStamp = stamp;
+  }
+  return view;
 }
 
 function loadFromDisk() {
@@ -226,7 +322,6 @@ function loadFromDisk() {
     const parsed = JSON.parse(fs.readFileSync(STATE_FILE(), 'utf8'));
     if (Array.isArray(parsed?.channels)) {
       state = { builtAt: parsed.builtAt || 0, entries: parsed.entries || {}, channels: parsed.channels };
-      reindex();
     }
   } catch (err) {
     if (err.code !== 'ENOENT') console.warn(`[iptv] grille sur disque ignoree: ${err.message}`);
@@ -269,7 +364,6 @@ async function build() {
   }
 
   state = { builtAt: Date.now(), entries, channels };
-  reindex();
   saveToDisk();
   const withGuide = channels.filter((channel) => channel.tvgId).length;
   const absorbed = channels.reduce((sum, channel) => sum + (channel.aliases?.length || 0), 0);
@@ -282,10 +376,24 @@ function refresh() {
   return building;
 }
 
-/** Grille courante. Attend la premiere construction si rien n'est encore disponible. */
+/** Grille servie. Attend la premiere construction si rien n'est encore disponible. */
 async function get() {
   if (state.channels.length === 0) await refresh().catch((err) => console.warn(`[iptv] grille: ${err.message}`));
-  return { ...state, ...index };
+  return currentView();
+}
+
+/** Refond la grille a partir des flux deja lus: apres une fusion ou un detachement manuel. */
+async function remerge() {
+  const channels = merge(state.entries, await epg.channels());
+  state = { ...state, builtAt: Date.now(), channels };
+  saveToDisk();
+  return currentView();
+}
+
+/** Tous les flux de la grille, pour la ronde de sante. */
+async function allStreams() {
+  const { all } = await get();
+  return all.flatMap((channel) => channel.streams);
 }
 
 function start() {
@@ -297,4 +405,4 @@ function start() {
   }, config.IPTV_REFRESH_MS).unref();
 }
 
-module.exports = { start, get, refresh };
+module.exports = { start, get, refresh, remerge, allStreams };

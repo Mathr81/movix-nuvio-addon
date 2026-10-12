@@ -168,8 +168,23 @@ const config = {
   // Playlists M3U tierces a fusionner: `Nom|https://.../liste.m3u|PREFIXE`, separees par
   // des virgules. Le prefixe (optionnel) filtre sur `group-title` ou sur le nom.
   IPTV_EXTRA_M3U: readList('IPTV_EXTRA_M3U', []),
-  // A definition egale, source preferee en premier.
+  // Ordre de preference des sources.
   IPTV_SOURCE_ORDER: readList('IPTV_SOURCE_ORDER', ['xtream', 'vavoo', 'm3u']),
+  // Ce qui classe les flux d'une chaine: `source` = la source preferee d'abord (l'IPTV
+  // VIP, plus stable, passe devant un Vavoo mieux defini), `quality` = la meilleure
+  // definition d'abord, la source ne departageant que les ex aequo.
+  IPTV_RANK_BY: /^quality$/i.test(readEnv('IPTV_RANK_BY', 'source')) ? 'quality' : 'source',
+  // Sert un master HLS a plusieurs variantes (une par definition disponible) au lieu
+  // d'une redirection: le lecteur affiche alors un choix de qualite. Contrepartie: un
+  // lecteur a debit adaptatif peut changer de variante -- donc de fournisseur -- seul.
+  IPTV_VARIANTS: readBool('IPTV_VARIANTS', false),
+  // Ronde de sante: teste tous les flux en tache de fond et mesure leur definition reelle
+  // (ffprobe). 0 = pas de ronde, les flux ne sont testes qu'au zap.
+  IPTV_SWEEP_MS: Number(readEnv('IPTV_SWEEP_MS', 6 * 60 * 60 * 1000)),
+  IPTV_SWEEP_CONCURRENCY: Number(readEnv('IPTV_SWEEP_CONCURRENCY', 3)),
+  // Retire de la playlist une chaine dont aucun flux ne repond depuis deux rondes (hors
+  // sport et canaux evenementiels, eteints par nature hors antenne).
+  IPTV_HIDE_DEAD: readBool('IPTV_HIDE_DEAD', true),
   // Definition maximale preferee (hauteur: 2160, 1080, 720). Les flux au-dessus passent
   // en dernier recours -- utile quand l'appareil peine sur la 4K HEVC. 0 = pas de plafond.
   IPTV_MAX_QUALITY: Number(readEnv('IPTV_MAX_QUALITY', 0)),
@@ -182,6 +197,9 @@ const config = {
   // Desactive, la chaine redirige toujours vers son premier flux, sans verification.
   IPTV_CHECK_STREAMS: readBool('IPTV_CHECK_STREAMS', true),
   IPTV_CHECK_TIMEOUT_MS: Number(readEnv('IPTV_CHECK_TIMEOUT_MS', 4000)),
+  // Patience au zap pour un flux IPTV: le bouquet demarre ses chaines a la demande, et une
+  // chaine froide met 3 a 11 s a repondre. Passe ce delai, on bascule sur le flux suivant.
+  IPTV_XTREAM_WAIT_MS: Number(readEnv('IPTV_XTREAM_WAIT_MS', 6000)),
   // Journalise le flux retenu a chaque zap.
   IPTV_LOG: readBool('IPTV_LOG', false),
 

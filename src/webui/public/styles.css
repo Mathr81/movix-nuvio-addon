@@ -1981,3 +1981,113 @@ details[open] > summary .json-caret {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* --- Chaines (playlist IPTV) ------------------------------------------------------------- */
+.gap-sm {
+  gap: 6px;
+}
+.top-gap-sm {
+  margin-top: 10px;
+}
+.pad {
+  padding: 14px;
+}
+.table-flush {
+  border: 0;
+  border-radius: 0;
+}
+.channels-table tbody tr {
+  cursor: pointer;
+}
+.channels-table tr.is-hidden td {
+  opacity: 0.55;
+}
+.channel-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 200px;
+}
+.channel-cell img,
+.logo-fallback {
+  width: 34px;
+  height: 24px;
+  flex: none;
+  object-fit: contain;
+  border-radius: 5px;
+  /* Fond sombre fixe: beaucoup de logos de chaines sont blancs sur transparent. */
+  background: #1d2029;
+  padding: 2px;
+}
+.logo-fallback {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.group-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.chip-btn.is-off {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+.icon-btn-sm {
+  width: 26px;
+  height: 26px;
+}
+.url-list {
+  margin-top: 16px;
+  display: grid;
+  gap: 6px;
+}
+.url-row {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+.url-row .url {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+@media (max-width: 700px) {
+  .url-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .url-row > .muted {
+    grid-column: 1 / -1;
+  }
+}
+.channel-edit {
+  display: grid;
+  gap: 10px;
+}
+.edit-field {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+}
+.edit-field input,
+.edit-field select {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  min-width: 0;
+}
+.alias {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}

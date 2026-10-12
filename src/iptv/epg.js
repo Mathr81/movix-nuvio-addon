@@ -250,4 +250,76 @@ async function filteredFile(ids) {
   return filtering;
 }
 
-module.exports = { enabled, refresh, channels, lookup, filteredFile, sourceAgeMs };
+// --- Programmes en memoire (guide court) -------------------------------------------
+
+/** `20261011203000 +0200` -> horodatage en ms. */
+function parseXmltvTime(text) {
+  const m = String(text || '').match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?\s*([+-]\d{4})?/);
+  if (!m) return 0;
+  const zone = m[7] ? `${m[7].slice(0, 3)}:${m[7].slice(3)}` : 'Z';
+  return Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6] || '00'}${zone}`) || 0;
+}
+
+// Fenetre gardee en memoire: de quoi repondre "maintenant / ensuite" et remplir une soiree,
+// sans tenir les 80 000 programmes de la semaine.
+const WINDOW_BEFORE_MS = 3 * 60 * 60 * 1000;
+const WINDOW_AFTER_MS = 36 * 60 * 60 * 1000;
+const PROGRAMMES_TTL_MS = 3 * 60 * 60 * 1000;
+
+let programmeCache = null; // { stamp, at, byChannel }
+
+/**
+ * Programmes par chaine du guide (`tvg-id`), tries, sur la fenetre courante.
+ *
+ * Certaines applications n'affichent "maintenant / ensuite" que par l'API Xtream
+ * (`get_short_epg`), sans jamais lire le XMLTV: il faut donc pouvoir repondre programme
+ * par programme. L'index est tire du guide FILTRE, deja reduit aux chaines de la grille.
+ */
+async function programmes(ids) {
+  const file = await filteredFile(ids);
+  if (!file) return new Map();
+  const stamp = `${file}|${fs.statSync(file).mtimeMs}`;
+  if (programmeCache && programmeCache.stamp === stamp && Date.now() - programmeCache.at < PROGRAMMES_TTL_MS) {
+    return programmeCache.byChannel;
+  }
+
+  const from = Date.now() - WINDOW_BEFORE_MS;
+  const until = Date.now() + WINDOW_AFTER_MS;
+  const byChannel = new Map();
+  const pattern = /<programme\b([^>]*)>([\s\S]*?)<\/programme>/g;
+  const attr = (text, name) => (text.match(new RegExp(`\\b${name}="([^"]*)"`)) || [])[1] || '';
+  const tag = (text, name) => decodeEntities((text.match(new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)</${name}>`)) || [])[1] || '').trim();
+
+  try {
+    const raw = fs.createReadStream(file);
+    const stream = raw.pipe(zlib.createGunzip());
+    stream.setEncoding('utf8');
+    raw.on('error', (err) => stream.destroy(err));
+
+    let buffer = '';
+    for await (const chunk of stream) {
+      buffer += chunk;
+      let consumed = 0;
+      pattern.lastIndex = 0;
+      for (let match = pattern.exec(buffer); match; match = pattern.exec(buffer)) {
+        consumed = pattern.lastIndex;
+        const start = parseXmltvTime(attr(match[1], 'start'));
+        const stop = parseXmltvTime(attr(match[1], 'stop'));
+        if (!start || stop < from || start > until) continue;
+        const channel = decodeEntities(attr(match[1], 'channel'));
+        if (!byChannel.has(channel)) byChannel.set(channel, []);
+        byChannel.get(channel).push({ start, stop, title: tag(match[2], 'title'), desc: tag(match[2], 'desc') });
+      }
+      buffer = buffer.slice(consumed);
+    }
+  } catch (err) {
+    console.warn(`[iptv] programmes illisibles: ${err.message}`);
+    return new Map();
+  }
+
+  for (const list of byChannel.values()) list.sort((a, b) => a.start - b.start);
+  programmeCache = { stamp, at: Date.now(), byChannel };
+  return byChannel;
+}
+
+module.exports = { enabled, refresh, channels, lookup, filteredFile, programmes, sourceAgeMs };

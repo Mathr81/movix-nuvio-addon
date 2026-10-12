@@ -15,6 +15,7 @@ const addons = require('../addons');
 const sources = require('../sources');
 const resolvedSources = require('../sources/resolved');
 const livetv = require('../livetv');
+const iptvAdmin = require('../iptv/admin');
 const streamProxy = require('../streaming/streamProxy');
 const subsync = require('../streaming/subtitles/sync');
 const { breakerState: extractBreakerState } = require('../streaming/hosterExtract');
@@ -270,6 +271,16 @@ function router() {
     const params = { ...(req.body || {}), dryRun: req.query.dryRun === '1' || req.body?.dryRun === true };
     send(res, actions.run(req.params.name, params));
   });
+
+  // Playlist IPTV: etat de la grille, retouches manuelles, ronde de sante.
+  api.get('/iptv', (_req, res) => send(res, iptvAdmin.state()));
+  api.post('/iptv/override', (req, res) => {
+    const { action, ...payload } = req.body || {};
+    send(res, iptvAdmin.override(action, payload).catch((err) => { throw Object.assign(err, { status: err.status || 400 }); }));
+  });
+  api.post('/iptv/test', (req, res) => send(res, iptvAdmin.test(String(req.body?.key || ''))));
+  api.post('/iptv/sweep', (_req, res) => send(res, iptvAdmin.sweep()));
+  api.post('/iptv/refresh', (_req, res) => send(res, iptvAdmin.refresh()));
 
   api.get('/logs', (req, res) => res.json(logBuffer.since(Number(req.query.after) || 0)));
 

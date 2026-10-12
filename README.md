@@ -961,9 +961,13 @@ indépendamment de `LIVETV_ENABLED`.
 plusieurs définitions, des secours), le bouquet IPTV VIP ~400 de plus. `names.js` sépare,
 dans chaque libellé, ce qui identifie la chaîne de ce qui décrit le flux
 (`Fr: TF1 FHD`, `TF 1 ULTRA 4K .c` → chaîne `tf1`, définitions 1080 et 2160), et
-`lineup.js` en fait **une entrée par chaîne** portant tous ses flux, classés : flux
-permanents avant secours et « événement », meilleure définition d'abord, puis
-`IPTV_SOURCE_ORDER`. Résultat courant : ~650 chaînes pour ~1450 flux.
+`lineup.js` en fait **une entrée par chaîne** portant tous ses flux. Résultat courant :
+~610 chaînes pour ~1440 flux.
+
+**Classement des flux d'une chaîne** — flux forcé à la main, puis vivants avant morts,
+permanents avant secours et « événement », puis selon `IPTV_RANK_BY` : `source` (défaut)
+met la source préférée d'abord (`IPTV_SOURCE_ORDER`, l'IPTV VIP en tête), `quality` la
+meilleure définition d'abord.
 
 | Source | Contenu | Réglage |
 |---|---|---|
@@ -978,10 +982,39 @@ sont des événements, pas des chaînes : elles restent côté [TV en direct](#t
 **Bascule au zap** — la playlist ne contient aucune URL de flux (elles portent un jeton qui
 expire) mais un lien vers `/iptv/<jeton>/play/<chaîne>.m3u8`. À l'ouverture, `play.js`
 résout les 4 meilleurs flux en parallèle, lit le début de leur playlist, et **redirige**
-(302) vers le mieux classé qui répond ; un flux en échec est relégué 10 min. Une part des
-flux Vavoo est morte à tout instant : sans ça, le lecteur afficherait une erreur. La vidéo
-ne transite pas par l'addon. `IPTV_CHECK_STREAMS=false` coupe le test,
+(302) vers le mieux classé qui répond ; un flux en échec est relégué 10 min. La vidéo ne
+transite pas par l'addon. Tant que le lecteur relit la playlist, il reçoit la **même
+cible** (revalidée une fois par minute) : en changer en cours de lecture casserait la
+continuité des segments. `IPTV_CHECK_STREAMS=false` coupe le test,
 `IPTV_MAX_QUALITY=1080` relègue la 4K en dernier recours.
+
+Le bouquet IPTV sert ses chaînes **à la demande** : une chaîne que personne ne regarde met
+3 à 11 s à rendre sa première playlist, puis répond en 400 ms. Au zap on lui laisse
+`IPTV_XTREAM_WAIT_MS` (6 s) avant de basculer sur le flux suivant ; la ronde, elle, attend
+15 s et réessaie une fois avant de déclarer un flux mort.
+
+**Ronde de santé et définition mesurée** (`health.js`) — toutes les `IPTV_SWEEP_MS` (6 h),
+chaque flux est résolu et testé ; ffprobe lit la taille réelle de l'image (une fois par
+semaine et par flux). Les libellés mentent volontiers (`HD` servi en 1080p, `FHD` en
+720p) : la définition mesurée remplace celle du libellé dans le classement et l'affichage.
+Les flux morts passent en queue, et un premier flux vu vivant récemment est servi sans
+re-test (sauf l'IPTV, qui peut s'être rendormi). Une chaîne dont plus aucun flux ne répond
+depuis deux rondes sort de la playlist (`IPTV_HIDE_DEAD`), sauf sport et canaux
+événementiels, éteints par nature hors antenne.
+
+**Variantes de qualité** (`IPTV_VARIANTS=true`) — un lecteur ne propose un choix de qualité
+que s'il reçoit un master HLS à plusieurs variantes ; une redirection vers un flux unique
+n'en a aucune. La route de lecture sert alors un master dont chaque variante est le
+meilleur flux vivant d'**une définition** (`1080p · IPTV`, `2160p · Vavoo C`, `720p`…).
+Un flux demandé qui ne répond plus retombe sur le choix automatique. Contrepartie : un
+lecteur à débit adaptatif peut changer de variante — donc de fournisseur — de lui-même ;
+`?variants=0` sur l'URL, ou l'option à `false`, rend la redirection simple.
+
+**Page Chaînes de la WebUI** (`/ui/#/chaines`) — la grille, l'état de chaque flux
+(vivant, définition annoncée et mesurée), et les retouches : masquer une chaîne ou un
+thème, forcer un flux en premier, renommer, changer de thème, fusionner deux chaînes ou
+détacher une écriture regroupée à tort, tester le zap, lancer une ronde. Les retouches
+vivent dans `data/iptv-overrides.json` et survivent aux reconstructions de la grille.
 
 **Guide** — `epg.js` télécharge le XMLTV de [xmltvfr.fr](https://xmltvfr.fr) (toutes les
 12 h), y lit l'identifiant et le nom propre de chaque chaîne (`tvg-id`), et sert une copie
@@ -1001,7 +1034,9 @@ filtrée sur les chaînes de la playlist. Environ 290 chaînes ont un guide ; le
 M3U ou Xtream : même contenu. Xtream est plus confortable sur une application TV
 (catégories natives, guide rattaché tout seul, un seul couple serveur/mot de passe à
 saisir) ; la M3U est lue partout. La façade Xtream ne sert que le direct
-(`get_live_categories`, `get_live_streams`, `xmltv.php`, `get.php`, `/live/…`).
+(`get_live_categories`, `get_live_streams`, `get_short_epg`, `get_simple_data_table`,
+`xmltv.php`, `get.php`, `/live/…`). Le guide court (« maintenant / ensuite ») est tiré du
+même XMLTV, gardé en mémoire sur une fenêtre de 36 h.
 
 ```bash
 IPTV_ENABLED=true

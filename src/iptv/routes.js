@@ -6,6 +6,7 @@ const config = require('../core/config');
 const lineup = require('./lineup');
 const epg = require('./epg');
 const play = require('./play');
+const health = require('./health');
 const names = require('./names');
 
 /**
@@ -104,8 +105,57 @@ function redirect(res, url) {
   res.redirect(302, url);
 }
 
-async function playChannel(res, channel) {
+// Debit annonce par palier, faute de mesure: il sert au lecteur a ordonner ses choix.
+const NOMINAL = {
+  2160: { bandwidth: 16000000, resolution: '3840x2160' },
+  1080: { bandwidth: 6000000, resolution: '1920x1080' },
+  720: { bandwidth: 3000000, resolution: '1280x720' },
+  480: { bandwidth: 1200000, resolution: '854x480' },
+};
+
+/**
+ * Variantes de qualite d'une chaine: le meilleur flux vivant de CHAQUE definition.
+ *
+ * Un lecteur ne propose un choix de qualite que s'il recoit un master HLS a plusieurs
+ * variantes; une redirection vers un flux unique n'en a aucune. On lui en fabrique donc
+ * un, dont chaque variante est un de nos flux. Une seule par definition: le menu du
+ * lecteur liste des definitions, et dix "1080p" indiscernables n'aideraient personne.
+ */
+function variantsOf(channel) {
+  const usable = channel.streams.filter((stream) => stream.ok !== false && !stream.backup && !stream.eventOnly);
+  const seen = new Set();
+  const variants = [];
+  for (const stream of usable) {
+    if (!NOMINAL[stream.quality] || seen.has(stream.quality)) continue;
+    seen.add(stream.quality);
+    variants.push(stream);
+  }
+  return variants;
+}
+
+function buildMaster(channel, variants, base) {
+  const root = `${base}/iptv/${config.IPTV_TOKEN}/play/${channel.key}`;
+  const lines = ['#EXTM3U', '#EXT-X-VERSION:3'];
+  for (const stream of variants) {
+    const nominal = NOMINAL[stream.quality];
+    const resolution = stream.width && stream.height ? `${stream.width}x${stream.height}` : nominal.resolution;
+    lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=${nominal.bandwidth},RESOLUTION=${resolution},NAME="${attr(stream.label)}"`);
+    lines.push(`${root}/${stream.sid}.m3u8`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+async function playChannel(req, res, channel) {
   if (!channel) return res.status(404).type('text/plain').send('chaine inconnue');
+
+  if (config.IPTV_VARIANTS && req.query.variants !== '0') {
+    const variants = variantsOf(channel);
+    if (variants.length > 1) {
+      res.set('Cache-Control', 'no-store');
+      return res.type('application/vnd.apple.mpegurl').send(buildMaster(channel, variants, baseUrl(req)));
+    }
+  }
+
   const result = await play.pick(channel);
   if (!result.url) return res.status(503).type('text/plain').send('aucun flux disponible pour cette chaine');
   if (config.IPTV_LOG) console.log(`[iptv] ${channel.name} -> ${result.stream.label}`);
@@ -116,8 +166,58 @@ async function playStream(res, channel, sid) {
   const stream = channel?.streams.find((row) => row.sid === sid);
   if (!stream) return res.status(404).type('text/plain').send('flux inconnu');
   const url = await play.direct(stream);
-  if (!url) return res.status(502).type('text/plain').send('flux non resolu');
-  return redirect(res, url);
+  if (url) return redirect(res, url);
+  // Le flux demande est mort: une autre definition vaut mieux qu'une erreur.
+  const result = await play.pick(channel);
+  if (!result.url) return res.status(503).type('text/plain').send('aucun flux disponible pour cette chaine');
+  return redirect(res, result.url);
+}
+
+/** Etat lisible de la grille: route de diagnostic et page Chaines de la WebUI. */
+function describe(view, { q, unmatched, merged } = {}) {
+  const query = names.keyOf(q || '');
+  const rows = view.all
+    .filter((channel) => !query || channel.key.includes(query) || names.keyOf(channel.name).includes(query))
+    .filter((channel) => !unmatched || !channel.tvgId)
+    .filter((channel) => !merged || channel.aliases?.length);
+  const streams = view.all.flatMap((channel) => channel.streams);
+  return {
+    builtAt: view.builtAt ? new Date(view.builtAt).toISOString() : null,
+    channels: view.channels.length,
+    hidden: view.all.length - view.channels.length,
+    withGuide: view.channels.filter((channel) => channel.tvgId).length,
+    streams: streams.length,
+    alive: streams.filter((stream) => stream.ok === true).length,
+    dead: streams.filter((stream) => stream.ok === false).length,
+    measured: streams.filter((stream) => stream.height).length,
+    rankBy: config.IPTV_RANK_BY,
+    variants: config.IPTV_VARIANTS,
+    sweep: health.status(),
+    groups: names.GROUPS,
+    shown: rows.length,
+    rows: rows.map((channel) => ({
+      num: channel.num || null,
+      id: channel.id,
+      key: channel.key,
+      name: channel.name,
+      group: channel.group,
+      logo: channel.logo,
+      tvgId: channel.tvgId,
+      hidden: channel.hidden,
+      ...(channel.aliases?.length ? { aliases: channel.aliases } : {}),
+      streams: channel.streams.map((stream) => ({
+        sid: stream.sid,
+        source: stream.source,
+        label: stream.label,
+        raw: stream.raw,
+        announced: stream.announced,
+        ...(stream.height ? { width: stream.width, height: stream.height, codec: stream.codec } : {}),
+        ok: stream.ok,
+        checkedAt: stream.checkedAt,
+        ...(stream.preferred ? { preferred: true } : {}),
+      })),
+    })),
+  };
 }
 
 const stripExt = (file) => String(file || '').replace(/\.(?:m3u8|ts|mp4)$/i, '');
@@ -139,7 +239,7 @@ router.get('/iptv/:token/epg.xml', (_req, res) => sendEpg(res, { gzip: false }))
 
 router.get('/iptv/:token/play/:file', async (req, res) => {
   const { byKey } = await lineup.get();
-  return playChannel(res, byKey.get(stripExt(req.params.file)));
+  return playChannel(req, res, byKey.get(stripExt(req.params.file)));
 });
 
 router.get('/iptv/:token/play/:key/:file', async (req, res) => {
@@ -154,35 +254,8 @@ router.get('/iptv/:token/play/:key/:file', async (req, res) => {
  *   ?merged=1      chaines nees d'un rapprochement d'ecritures, pour le relire
  */
 router.get('/iptv/:token/channels.json', async (req, res) => {
-  const { channels, builtAt } = await lineup.get();
-  const failing = new Set(play.health());
-  const query = names.keyOf(req.query.q || '');
-  const rows = channels
-    .filter((channel) => !query || channel.key.includes(query))
-    .filter((channel) => !req.query.unmatched || !channel.tvgId)
-    .filter((channel) => !req.query.merged || channel.aliases?.length);
-  res.json({
-    builtAt: new Date(builtAt).toISOString(),
-    channels: channels.length,
-    withGuide: channels.filter((channel) => channel.tvgId).length,
-    streams: channels.reduce((sum, channel) => sum + channel.streams.length, 0),
-    shown: rows.length,
-    rows: rows.map((channel) => ({
-      num: channel.num,
-      id: channel.id,
-      key: channel.key,
-      name: channel.name,
-      group: channel.group,
-      tvgId: channel.tvgId,
-      ...(channel.aliases?.length ? { aliases: channel.aliases } : {}),
-      streams: channel.streams.map((stream) => ({
-        sid: stream.sid,
-        label: stream.label,
-        raw: stream.raw,
-        ...(failing.has(stream.sid) ? { failing: true } : {}),
-      })),
-    })),
-  });
+  const view = await lineup.get();
+  res.json(describe(view, { q: req.query.q, unmatched: req.query.unmatched, merged: req.query.merged }));
 });
 
 /** Teste la bascule d'une chaine sans lecteur: quels flux essayes, lequel retenu. */
@@ -191,7 +264,7 @@ router.get('/iptv/:token/test/:key', async (req, res) => {
   const channel = byKey.get(names.keyOf(req.params.key));
   if (!channel) return res.status(404).json({ error: 'chaine inconnue' });
   const started = Date.now();
-  const result = await play.pick(channel);
+  const result = await play.pick(channel, { fresh: true });
   return res.json({
     channel: channel.name,
     ms: Date.now() - started,
@@ -242,8 +315,36 @@ function xtreamStream(channel) {
   };
 }
 
+const parisTime = (ms) => new Date(ms).toLocaleString('sv-SE', { timeZone: 'Europe/Paris' });
+const base64 = (text) => Buffer.from(String(text || ''), 'utf8').toString('base64');
+
+/** Programmes a venir d'une chaine, au format Xtream (titres et resumes en base64). */
+async function shortEpg(channel, channels, limit) {
+  if (!channel?.tvgId) return [];
+  const ids = new Set(channels.map((row) => row.tvgId).filter(Boolean));
+  const list = (await epg.programmes(ids)).get(channel.tvgId) || [];
+  const now = Date.now();
+  return list
+    .filter((programme) => programme.stop > now)
+    .slice(0, limit)
+    .map((programme) => ({
+      id: String(Math.floor(programme.start / 1000)),
+      epg_id: channel.tvgId,
+      title: base64(programme.title),
+      lang: 'fr',
+      start: parisTime(programme.start),
+      end: parisTime(programme.stop),
+      description: base64(programme.desc),
+      channel_id: channel.tvgId,
+      start_timestamp: String(Math.floor(programme.start / 1000)),
+      stop_timestamp: String(Math.floor(programme.stop / 1000)),
+      now_playing: programme.start <= now ? 1 : 0,
+      has_archive: 0,
+    }));
+}
+
 router.get('/player_api.php', xtreamAuth, async (req, res) => {
-  const { channels } = await lineup.get();
+  const { channels, byId } = await lineup.get();
   const action = String(req.query.action || '');
 
   if (action === 'get_live_categories') return res.json(xtreamCategories(channels));
@@ -253,8 +354,11 @@ router.get('/player_api.php', xtreamAuth, async (req, res) => {
   }
   // Ni films ni series: des listes vides, pas des erreurs, pour ne pas bloquer l'accueil.
   if (/^get_(?:vod|series)/.test(action)) return res.json([]);
-  // Guide court: non servi ici, les applications retombent sur xmltv.php.
-  if (action === 'get_short_epg' || action === 'get_simple_data_table') return res.json({ epg_listings: [] });
+  if (action === 'get_short_epg' || action === 'get_simple_data_table') {
+    // Guide court = les N prochains programmes; table complete = toute la fenetre connue.
+    const limit = action === 'get_short_epg' ? Math.max(1, Number(req.query.limit) || 4) : Infinity;
+    return res.json({ epg_listings: await shortEpg(byId.get(String(req.query.stream_id || '')), channels, limit) });
+  }
 
   const base = new URL(baseUrl(req));
   const https = base.protocol === 'https:';
@@ -295,7 +399,7 @@ async function xtreamPlay(req, res, next) {
   // repond que si le deuxieme segment est le jeton, et on passe la main sinon.
   if (!enabled() || !tokenOk(req.params.password) || !/^\d+(?:\.\w+)?$/.test(req.params.file)) return next();
   const { byId } = await lineup.get();
-  return playChannel(res, byId.get(stripExt(req.params.file)));
+  return playChannel(req, res, byId.get(stripExt(req.params.file)));
 }
 
 router.get('/live/:username/:password/:file', xtreamPlay);
@@ -308,6 +412,7 @@ function start() {
     return;
   }
   lineup.start();
+  health.start(lineup.allStreams);
 }
 
-module.exports = { router, start, enabled };
+module.exports = { router, start, enabled, describe };
