@@ -136,6 +136,7 @@ src/
 │   ├── logBuffer.js           Tampon circulaire des logs console (SSE)
 │   └── public/                 Front sans build : Preact + htm vendorisés
 ├── livetv/              TV en direct : relais du triplet manifest/catalog/stream Movix
+├── iptv/                Playlist IPTV : chaînes fusionnées en M3U + API Xtream + guide XMLTV
 └── addons/              Sources autonomes (indépendantes de Mainapi), voir plus bas
 ```
 
@@ -147,6 +148,7 @@ src/
 | `meta` | Fiches complètes, épisodes par saison, casting, genres |
 | `stream` | Agrégation des sources Movix + addons autonomes ; les m3u8 sont résolues par Movix (`?resolve=1`, clé VIP) et complétées par les extracteurs locaux |
 | `catalog`/`meta`/`stream` en `tv` | [TV en direct](#tv-en-direct) relayée depuis Movix (Vavoo, M3U locale, IPTV VIP) |
+| `/iptv/<jeton>/playlist.m3u`, API Xtream | [Playlist IPTV](#playlist-iptv-m3u--xtream--guide) : chaînes fusionnées + guide, pour lecteur IPTV |
 | `subtitles` | vdrk puis OpenSubtitles en repli, nettoyés et servis en WebVTT (KissKH fournit les siens, rattachés au flux) |
 
 ### Catalogues personnalisables
@@ -948,6 +950,66 @@ démarrage, alors que la liste des catalogues Live TV vient de Movix et change e
 route (les rangées « rencontres » suivent les matchs du moment). `server.js` sert donc
 `/manifest.json`, `/catalog/tv/…`, `/meta/tv/…` et `/stream/tv/…` lui-même, **avant** le
 routeur du SDK, qui garde tout le reste (films, séries, sous-titres).
+
+### Playlist IPTV (M3U / Xtream + guide)
+
+Les chaînes au milieu des films, dans Nuvio, ce n'est pas pratique. `src/iptv/` sert donc
+les **mêmes chaînes à un lecteur IPTV** (TiviMate, IPTV Smarters, VLC, Kodi, Jellyfin…),
+indépendamment de `LIVETV_ENABLED`.
+
+**Fusion** — Vavoo annonce ~1000 lignes pour la France (trois fournisseurs `.s`/`.b`/`.c`,
+plusieurs définitions, des secours), le bouquet IPTV VIP ~400 de plus. `names.js` sépare,
+dans chaque libellé, ce qui identifie la chaîne de ce qui décrit le flux
+(`Fr: TF1 FHD`, `TF 1 ULTRA 4K .c` → chaîne `tf1`, définitions 1080 et 2160), et
+`lineup.js` en fait **une entrée par chaîne** portant tous ses flux, classés : flux
+permanents avant secours et « événement », meilleure définition d'abord, puis
+`IPTV_SOURCE_ORDER`. Résultat courant : ~650 chaînes pour ~1450 flux.
+
+| Source | Contenu | Réglage |
+|---|---|---|
+| Vavoo | HLS gratuit, groupes par pays | `IPTV_VAVOO_GROUPS` (défaut `france,france-sport`) |
+| IPTV web (Xtream) | bouquet **VIP**, signé par proxiesembed | `IPTV_XTREAM_PREFIXES` (défaut `FR`) |
+| M3U tierces | n'importe quelle playlist | `IPTV_EXTRA_M3U=Nom\|URL\|PREFIXE` |
+
+NorthLive n'est pas une source : ce sont les mêmes flux Vavoo (ses « Serveur B/S/C »)
+derrière un lecteur web et un jeton de lecture. Les rencontres (`match_`, `streamed_`)
+sont des événements, pas des chaînes : elles restent côté [TV en direct](#tv-en-direct).
+
+**Bascule au zap** — la playlist ne contient aucune URL de flux (elles portent un jeton qui
+expire) mais un lien vers `/iptv/<jeton>/play/<chaîne>.m3u8`. À l'ouverture, `play.js`
+résout les 4 meilleurs flux en parallèle, lit le début de leur playlist, et **redirige**
+(302) vers le mieux classé qui répond ; un flux en échec est relégué 10 min. Une part des
+flux Vavoo est morte à tout instant : sans ça, le lecteur afficherait une erreur. La vidéo
+ne transite pas par l'addon. `IPTV_CHECK_STREAMS=false` coupe le test,
+`IPTV_MAX_QUALITY=1080` relègue la 4K en dernier recours.
+
+**Guide** — `epg.js` télécharge le XMLTV de [xmltvfr.fr](https://xmltvfr.fr) (toutes les
+12 h), y lit l'identifiant et le nom propre de chaque chaîne (`tvg-id`), et sert une copie
+filtrée sur les chaînes de la playlist. Environ 290 chaînes ont un guide ; les autres
+(canaux événementiels, chaînes locales) n'en ont pas chez xmltvfr.
+
+| Usage | Adresse |
+|---|---|
+| Playlist M3U (une ligne par chaîne) | `<PUBLIC_URL>/iptv/<IPTV_TOKEN>/playlist.m3u` |
+| Playlist détaillée (une ligne par flux, `TF1 · FHD · IPTV`) | `…/playlist.m3u?sources=all` |
+| Guide XMLTV | `…/epg.xml.gz` ou `…/epg.xml` (déjà référencé dans la M3U) |
+| **Xtream Codes** | serveur `<PUBLIC_URL>`, identifiant libre, mot de passe `IPTV_TOKEN` |
+| État de la grille | `…/channels.json` (`?q=tf1`, `?unmatched=1`) |
+| Tester la bascule d'une chaîne | `…/test/tf1` |
+| Forcer la relecture | `POST …/refresh` |
+
+M3U ou Xtream : même contenu. Xtream est plus confortable sur une application TV
+(catégories natives, guide rattaché tout seul, un seul couple serveur/mot de passe à
+saisir) ; la M3U est lue partout. La façade Xtream ne sert que le direct
+(`get_live_categories`, `get_live_streams`, `xmltv.php`, `get.php`, `/live/…`).
+
+```bash
+IPTV_ENABLED=true
+IPTV_TOKEN=$(openssl rand -hex 16)   # obligatoire : ces routes distribuent l'accès VIP
+```
+
+Deux lignes pour une seule chaîne dans `channels.json` ? Les deux écritures ne se
+ramènent pas à la même clé : ajouter un alias dans `KEY_ALIASES` (`src/iptv/names.js`).
 
 ### Addons (sources autonomes)
 

@@ -152,6 +152,39 @@ const config = {
   // Vide = tous ceux qu'il annonce -- ce qui fait beaucoup de rangees, une par pays.
   LIVETV_CATALOGS: readList('LIVETV_CATALOGS', null),
 
+  // --- Playlist IPTV ---------------------------------------------------------
+  // Les memes chaines, mais pour un LECTEUR IPTV plutot que pour Nuvio: tous les flux
+  // d'une chaine (Vavoo, IPTV VIP, playlists tierces) fusionnes en une entree, servis en
+  // M3U et en API Xtream, avec le guide des programmes. Independant de LIVETV_ENABLED.
+  IPTV_ENABLED: readBool('IPTV_ENABLED', false),
+  // Jeton d'acces, porte par l'URL (M3U) ou en mot de passe (Xtream). Obligatoire: ces
+  // routes donnent acces aux flux VIP du compte. `openssl rand -hex 16`.
+  IPTV_TOKEN: readEnv('IPTV_TOKEN', ''),
+  // Groupes Vavoo lus, tels que Movix les nomme sans le prefixe `vavoo_`. `none` = aucun.
+  IPTV_VAVOO_GROUPS: readList('IPTV_VAVOO_GROUPS', ['france', 'france-sport']).filter((g) => g !== 'none'),
+  // Categories du bouquet IPTV (VIP) retenues, par prefixe (`FR | KIDS TV`). `*` = toutes
+  // (167 categories, surtout arabophones), `none` = aucune.
+  IPTV_XTREAM_PREFIXES: readList('IPTV_XTREAM_PREFIXES', ['FR']).filter((p) => p !== 'none'),
+  // Playlists M3U tierces a fusionner: `Nom|https://.../liste.m3u|PREFIXE`, separees par
+  // des virgules. Le prefixe (optionnel) filtre sur `group-title` ou sur le nom.
+  IPTV_EXTRA_M3U: readList('IPTV_EXTRA_M3U', []),
+  // A definition egale, source preferee en premier.
+  IPTV_SOURCE_ORDER: readList('IPTV_SOURCE_ORDER', ['xtream', 'vavoo', 'm3u']),
+  // Definition maximale preferee (hauteur: 2160, 1080, 720). Les flux au-dessus passent
+  // en dernier recours -- utile quand l'appareil peine sur la 4K HEVC. 0 = pas de plafond.
+  IPTV_MAX_QUALITY: Number(readEnv('IPTV_MAX_QUALITY', 0)),
+  // Guide des programmes (XMLTV, .xml ou .xml.gz). Vide = pas de guide.
+  IPTV_EPG_URL: readEnv('IPTV_EPG_URL', 'https://xmltvfr.fr/xmltv/xmltv_fr.xml.gz'),
+  IPTV_EPG_REFRESH_MS: Number(readEnv('IPTV_EPG_REFRESH_MS', 12 * 60 * 60 * 1000)),
+  // Relecture des sources (nouvelles chaines, flux retires).
+  IPTV_REFRESH_MS: Number(readEnv('IPTV_REFRESH_MS', 60 * 60 * 1000)),
+  // Teste les flux au moment de zapper et bascule sur le suivant si le meilleur est mort.
+  // Desactive, la chaine redirige toujours vers son premier flux, sans verification.
+  IPTV_CHECK_STREAMS: readBool('IPTV_CHECK_STREAMS', true),
+  IPTV_CHECK_TIMEOUT_MS: Number(readEnv('IPTV_CHECK_TIMEOUT_MS', 4000)),
+  // Journalise le flux retenu a chaque zap.
+  IPTV_LOG: readBool('IPTV_LOG', false),
+
   // --- Catalogues ---
   // Rangees integrees affichees, dans l'ordre. Vide = l'ordre par defaut.
   // Pour renommer une rangee ou en creer de nouvelles, utiliser catalogs.json.

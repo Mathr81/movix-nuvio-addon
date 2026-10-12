@@ -11,6 +11,7 @@ const subsync = require('./src/streaming/subtitles/sync');
 const diagnostics = require('./src/diagnostics');
 const resolvedSources = require('./src/sources/resolved');
 const livetv = require('./src/livetv');
+const iptv = require('./src/iptv/routes');
 const { mainApi } = require('./src/integrations/movixClient');
 const streamProxy = require('./src/streaming/streamProxy');
 const addons = require('./src/addons');
@@ -427,6 +428,12 @@ app.get('/stream/tv/:id.json', async (req, res, next) => {
   res.json({ streams, cacheMaxAge: 0 });
 });
 
+// --- Playlist IPTV ---------------------------------------------------------
+// M3U + API Xtream pour lecteur IPTV (cf. src/iptv/routes.js). Avant le routeur du SDK:
+// la route de lecture Xtream (`/<identifiant>/<jeton>/<id>`) a la forme d'une route
+// Stremio a trois segments, et ne passe la main que si le jeton ne correspond pas.
+app.use(iptv.router);
+
 // Routes Stremio standard (manifest, catalog, meta, stream, subtitles).
 app.use(getRouter(addonInterface));
 
@@ -453,6 +460,14 @@ app.listen(config.PORT, () => {
     setInterval(() => {
       pushToTrakt().catch((err) => console.error(`[trakt-push] push periodique echoue: ${err.message}`));
     }, config.TRAKT_PUSH_INTERVAL_MS).unref();
+  }
+
+  iptv.start();
+  if (iptv.enabled()) {
+    // Le jeton n'est pas ecrit en clair: ce journal est lisible depuis la WebUI.
+    const base = config.PUBLIC_URL || `http://127.0.0.1:${config.PORT}`;
+    console.log(`Playlist IPTV  : ${base}/iptv/<IPTV_TOKEN>/playlist.m3u  (guide: .../epg.xml.gz)`);
+    console.log(`                 Xtream: serveur ${base}, identifiant libre, mot de passe = IPTV_TOKEN`);
   }
 
   hub.start();
