@@ -20,7 +20,7 @@ const QUALITY_RULES = [
 // Retires du nom une fois la definition lue. `HD+` laisserait sinon un `+` orphelin, lu
 // ensuite comme le "plus" de Canal+.
 const QUALITY_NOISE =
-  /\b(?:ULTRA\s*4K|8K|4K|UHD|FHD|FULL\s*HD|HD\b\+?|SD|2160P?|1080P?|720P?|HEVC|H\.?26[45]|50\s*FPS|RAW)(?![\w+])/gi;
+  /\b(?:ULTRA\s*4K|4K\s*ULTRA|8K|4K|UHD|FHD|FULL\s*HD|HD\b\+?|SD|2160P?|1080P?|720P?|HEVC|H\.?26[45]|50\s*FPS|RAW)(?![\w+])/gi;
 
 const QUALITY_LABELS = { 4320: '8K', 2160: '4K', 1080: 'FHD', 720: 'HD', 480: 'SD' };
 
@@ -60,6 +60,9 @@ const KEY_ALIASES = [
   [/^lequipe(?:tv|21)?$/, 'lequipe'],
   [/^bfm$/, 'bfmtv'],
   [/^franceinfotv$/, 'franceinfo'],
+  [/^canalpluspl$/, 'canalpluspremierleague'],
+  [/^cineplusestival$/, 'cineplusfestival'],
+  [/leauge/, 'league'],
   [/^equipe(?:21)?$/, 'lequipe'],
   [/^tfi$/, 'tf1'],
   [/^cina/, 'cine'],

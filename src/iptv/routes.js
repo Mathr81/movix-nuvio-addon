@@ -151,6 +151,7 @@ router.get('/iptv/:token/play/:key/:file', async (req, res) => {
  * Etat de la grille, pour comprendre une fusion ratee.
  *   ?q=tf1         filtre sur le nom
  *   ?unmatched=1   chaines sans guide (candidates a un alias dans names.js)
+ *   ?merged=1      chaines nees d'un rapprochement d'ecritures, pour le relire
  */
 router.get('/iptv/:token/channels.json', async (req, res) => {
   const { channels, builtAt } = await lineup.get();
@@ -158,7 +159,8 @@ router.get('/iptv/:token/channels.json', async (req, res) => {
   const query = names.keyOf(req.query.q || '');
   const rows = channels
     .filter((channel) => !query || channel.key.includes(query))
-    .filter((channel) => !req.query.unmatched || !channel.tvgId);
+    .filter((channel) => !req.query.unmatched || !channel.tvgId)
+    .filter((channel) => !req.query.merged || channel.aliases?.length);
   res.json({
     builtAt: new Date(builtAt).toISOString(),
     channels: channels.length,
@@ -172,6 +174,7 @@ router.get('/iptv/:token/channels.json', async (req, res) => {
       name: channel.name,
       group: channel.group,
       tvgId: channel.tvgId,
+      ...(channel.aliases?.length ? { aliases: channel.aliases } : {}),
       streams: channel.streams.map((stream) => ({
         sid: stream.sid,
         label: stream.label,

@@ -994,7 +994,7 @@ filtrée sur les chaînes de la playlist. Environ 290 chaînes ont un guide ; le
 | Playlist détaillée (une ligne par flux, `TF1 · FHD · IPTV`) | `…/playlist.m3u?sources=all` |
 | Guide XMLTV | `…/epg.xml.gz` ou `…/epg.xml` (déjà référencé dans la M3U) |
 | **Xtream Codes** | serveur `<PUBLIC_URL>`, identifiant libre, mot de passe `IPTV_TOKEN` |
-| État de la grille | `…/channels.json` (`?q=tf1`, `?unmatched=1`) |
+| État de la grille | `…/channels.json` (`?q=tf1`, `?unmatched=1`, `?merged=1`) |
 | Tester la bascule d'une chaîne | `…/test/tf1` |
 | Forcer la relecture | `POST …/refresh` |
 
@@ -1008,8 +1008,17 @@ IPTV_ENABLED=true
 IPTV_TOKEN=$(openssl rand -hex 16)   # obligatoire : ces routes distribuent l'accès VIP
 ```
 
-Deux lignes pour une seule chaîne dans `channels.json` ? Les deux écritures ne se
-ramènent pas à la même clé : ajouter un alias dans `KEY_ALIASES` (`src/iptv/names.js`).
+**Rapprochement des écritures** — la clé règle casse, accents et ponctuation, pas les
+fautes du catalogue (`CANAL DECALE` à côté de `CANAL+ DECALE`, `CINE+ FRISSION`,
+`CANAL+ CINEMAS`…). Une seconde passe (`unify` dans `lineup.js`) fusionne donc :
+`canalX` avec `canalplusX` (idem `cine`/`cineplus`) quand les deux existent ; deux clés
+longues à une lettre d'écart et aux mêmes chiffres ; deux clés rattachées au **même
+programme** du guide (chaînes renommées : Ciné+ Club/Festival, Boing/Cartoonito). Jamais
+deux clés qui ont chacune leur propre guide. `channels.json?merged=1` liste ce qui a été
+rapproché, pour relire.
+
+Deux lignes restent pour une seule chaîne ? Ajouter un alias dans `KEY_ALIASES`
+(`src/iptv/names.js`).
 
 ### Addons (sources autonomes)
 

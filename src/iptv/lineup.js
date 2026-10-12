@@ -64,6 +64,90 @@ function streamLabel(stream) {
     .join(' · ');
 }
 
+/** Vrai si une insertion, une suppression ou une substitution suffit a passer de `a` a `b`. */
+function oneEditApart(a, b) {
+  if (Math.abs(a.length - b.length) > 1) return false;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  let i = 0;
+  while (i < short.length && short[i] === long[i]) i += 1;
+  if (short.length === long.length) return short.slice(i + 1) === long.slice(i + 1);
+  return short.slice(i) === long.slice(i + 1);
+}
+
+// En dessous, une lettre d'ecart separe de vraies chaines distinctes (`ocsmax`/`ocsmix`).
+const TYPO_MIN_LENGTH = 9;
+
+/**
+ * Rapproche les chaines que la cle seule a laissees separees.
+ *
+ * La cle regle la casse, les accents et la ponctuation, pas les ECRITURES: Vavoo publie
+ * `CANAL DECALE` a cote de `CANAL+ DECALE`, `CINE+ FRISSION`, `CANAL+ CINEMAS`... Plutot
+ * qu'une liste d'alias a tenir a la main, trois regles qui s'appuient sur les donnees:
+ *
+ *   marque   `canalX` rejoint `canalplusX` (et `cineX` -> `cineplusX`) s'il existe: le
+ *            `+` oublie est la faute la plus frequente du catalogue.
+ *   faute    deux cles longues a une lettre d'ecart, memes chiffres (`...live1` et
+ *            `...live2` restent deux chaines), sont la meme chaine.
+ *   guide    deux cles rattachees au MEME programme sont la meme chaine, quel que soit
+ *            le nom (`Cine+ Club` renomme `Cine+ Festival`).
+ *
+ * Garde-fou commun: on ne fusionne jamais deux cles qui ont chacune leur propre guide.
+ * La cle la plus fournie en flux absorbe l'autre, pour garder un identifiant stable.
+ */
+function unify(groups, epgIndex) {
+  const aliases = new Map();
+  const guideId = (key) => epg.lookup(epgIndex, key)?.id || '';
+  const distinctGuides = (a, b) => guideId(a) && guideId(b) && guideId(a) !== guideId(b);
+
+  const absorb = (from, into) => {
+    if (from === into || !groups.has(from) || !groups.has(into)) return;
+    groups.get(into).push(...groups.get(from));
+    groups.delete(from);
+    aliases.set(into, [...(aliases.get(into) || []), from, ...(aliases.get(from) || [])]);
+    aliases.delete(from);
+  };
+  /** Fusionne dans la cle qui a un guide, sinon dans la plus fournie. */
+  const join = (a, b) => {
+    if (distinctGuides(a, b)) return;
+    const score = (key) => (guideId(key) ? 1000 : 0) + groups.get(key).length;
+    if (score(a) >= score(b)) absorb(b, a);
+    else absorb(a, b);
+  };
+
+  // marque
+  for (const key of [...groups.keys()]) {
+    const branded = key.replace(/^(canal|cine)(?!plus)/, '$1plus');
+    if (branded !== key && groups.has(key) && groups.has(branded)) join(key, branded);
+  }
+
+  // faute
+  const digits = (key) => key.replace(/\D+/g, '.');
+  const long = [...groups.keys()].filter((key) => key.length >= TYPO_MIN_LENGTH).sort();
+  for (let i = 0; i < long.length; i += 1) {
+    for (let j = i + 1; j < long.length; j += 1) {
+      const [a, b] = [long[i], long[j]];
+      if (!groups.has(a) || !groups.has(b)) continue;
+      if (digits(a) === digits(b) && oneEditApart(a, b)) join(a, b);
+    }
+  }
+
+  // guide
+  const byGuide = new Map();
+  for (const key of [...groups.keys()]) {
+    const id = guideId(key);
+    if (!id) continue;
+    if (byGuide.has(id) && groups.has(byGuide.get(id))) {
+      const kept = groups.get(byGuide.get(id)).length >= groups.get(key).length ? byGuide.get(id) : key;
+      absorb(kept === key ? byGuide.get(id) : key, kept);
+      byGuide.set(id, kept);
+    } else {
+      byGuide.set(id, key);
+    }
+  }
+
+  return aliases;
+}
+
 function merge(entriesBySource, epgIndex) {
   const groups = new Map();
   for (const entries of Object.values(entriesBySource)) {
@@ -75,6 +159,8 @@ function merge(entriesBySource, epgIndex) {
       groups.get(parsed.key).push(stream);
     }
   }
+
+  const aliases = unify(groups, epgIndex);
 
   const channels = [];
   for (const [key, streams] of groups) {
@@ -89,6 +175,8 @@ function merge(entriesBySource, epgIndex) {
       group,
       logo: streams.find((s) => s.logo)?.logo || guide?.icon || '',
       tvgId: guide?.id || '',
+      // Ecritures absorbees par la passe de rapprochement, pour relire une fusion douteuse.
+      aliases: aliases.get(key) || [],
       streams: streams.map((s) => ({
         sid: s.sid,
         source: s.source,
@@ -184,7 +272,8 @@ async function build() {
   reindex();
   saveToDisk();
   const withGuide = channels.filter((channel) => channel.tvgId).length;
-  console.log(`[iptv] grille: ${channels.length} chaines (${report.join(', ')}), ${withGuide} avec guide`);
+  const absorbed = channels.reduce((sum, channel) => sum + (channel.aliases?.length || 0), 0);
+  console.log(`[iptv] grille: ${channels.length} chaines (${report.join(', ')}), ${withGuide} avec guide, ${absorbed} ecriture(s) rapprochee(s)`);
   return state;
 }
 
