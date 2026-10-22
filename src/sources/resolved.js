@@ -58,8 +58,28 @@ function params(extra = {}) {
 const EMBED_URL_FIELDS = ['url', 'link', 'decoded_url'];
 const MAX_DEPTH = 8;
 
+// Uqload n'emet que ces langues (proxiesembed/uqload_utils.py); Nuvio attend du 639-2/B.
+const SUBTITLE_LANGS = { fr: 'fre', en: 'eng', es: 'spa', de: 'ger', it: 'ita', pt: 'por', ar: 'ara' };
+
 /**
- * Parcourt une reponse catalogue et renvoie la table `lien embed -> m3u8 resolue`.
+ * Sous-titres du lecteur hebergeur joints par le serveur au lien resolu (Uqload, depuis
+ * oct. 2026). Deja filtres par Mainapi (https, 8 pistes max): on ne fait que les mettre
+ * au format Stremio.
+ */
+function toSubtitles(raw) {
+  if (!Array.isArray(raw)) return undefined;
+  const out = raw
+    .filter((sub) => typeof sub?.url === 'string' && sub.url.startsWith('https://'))
+    .map((sub, index) => ({
+      id: `hoster-${index}`,
+      url: sub.url,
+      lang: SUBTITLE_LANGS[sub.lang] || 'und',
+    }));
+  return out.length > 0 ? out : undefined;
+}
+
+/**
+ * Parcourt une reponse catalogue et renvoie la table `lien embed -> { m3u8, subtitles }`.
  *
  * La forme exacte importe peu: le parcours est recursif et couvre les trois
  * arborescences en usage (`players` par langue, `episodes[n].languages`, tableaux
@@ -77,14 +97,16 @@ function collect(payload, table = new Map(), depth = 0) {
   if (typeof resolvedUrl === 'string' && resolvedUrl) {
     for (const field of EMBED_URL_FIELDS) {
       const embed = payload[field];
-      if (typeof embed === 'string' && embed) table.set(embed, resolvedUrl);
+      if (typeof embed === 'string' && embed) {
+        table.set(embed, { m3u8: resolvedUrl, subtitles: toSubtitles(payload.subtitles) });
+      }
     }
   }
 
   const byPlayer = payload.m3u8ByPlayer;
   if (byPlayer && typeof byPlayer === 'object' && !Array.isArray(byPlayer)) {
     for (const [embed, m3u8] of Object.entries(byPlayer)) {
-      if (typeof m3u8 === 'string' && m3u8) table.set(embed, m3u8);
+      if (typeof m3u8 === 'string' && m3u8) table.set(embed, { m3u8 });
     }
   }
 
@@ -100,9 +122,11 @@ function collect(payload, table = new Map(), depth = 0) {
  * laquelle le reste de l'addon deduplique.
  */
 function apply(item, table) {
-  const m3u8 = item.url ? table.get(item.url) : null;
-  if (!m3u8) return item;
-  return { ...item, url: m3u8, embedUrl: item.url, direct: true, resolvedByServer: true };
+  const hit = item.url ? table.get(item.url) : null;
+  if (!hit) return item;
+  const out = { ...item, url: hit.m3u8, embedUrl: item.url, direct: true, resolvedByServer: true };
+  if (hit.subtitles && !item.subtitles) out.subtitles = hit.subtitles;
+  return out;
 }
 
 /** Applique la table a toute une liste, et compte ce qui a ete resolu. */
