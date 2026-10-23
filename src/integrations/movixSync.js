@@ -54,6 +54,17 @@ function invalidate() {
   cache.del('sync:data');
 }
 
+/**
+ * Garantit `resolvedProfileId` avant une requete visant un profil. Une lecture servie par
+ * le cache (y compris celui repris du disque au demarrage) ne le renseigne pas: on force
+ * alors une vraie lecture.
+ */
+async function ensureProfile() {
+  if (resolvedProfileId) return;
+  invalidate();
+  await fetchSyncData();
+}
+
 async function fetchSyncData() {
   if (!config.MOVIX_JWT || !config.MOVIX_USER_ID) return null;
 
@@ -273,6 +284,44 @@ async function getAllProgress() {
 }
 
 /**
+ * Parmi des cles de progression du hub (`movie:<id>`, `series:<id>:<s>:<e>`), celles que
+ * l'historique serveur de Movix (GET /api/history/progress) connait encore.
+ *
+ * Au-dela de 600 cles par profil, Movix elague les plus vieilles `progress_*` de
+ * /api/sync mais les garde dans son historique: une cle absente de la synchro mais
+ * presente ici a ete elaguee, pas supprimee. Dans le doute (route en echec), la cle est
+ * tenue pour presente: mieux vaut rater une suppression que d'en inventer une.
+ */
+async function progressInHistory(keys) {
+  const kept = new Set();
+  const byTitle = new Map();
+  for (const key of keys) {
+    const [type, id] = key.split(':');
+    const title = `${type}:${id}`;
+    if (!byTitle.has(title)) byTitle.set(title, []);
+    byTitle.get(title).push(key);
+  }
+
+  await ensureProfile();
+  for (const [title, titleKeys] of byTitle) {
+    const [type, id] = title.split(':');
+    try {
+      const { data } = await mainApi.get('/api/history/progress', {
+        params: { profileId: resolvedProfileId || undefined, type: type === 'series' ? 'tv' : 'movie', id },
+        headers: { Authorization: `Bearer ${config.MOVIX_JWT}` },
+      });
+      // Un film n'a qu'une ligne (saison/episode 0/0).
+      const stored = new Set((data?.items || []).map((i) => (type === 'series' ? `${title}:${i.season}:${i.episode}` : title)));
+      for (const key of titleKeys) if (stored.has(key)) kept.add(key);
+    } catch (err) {
+      console.warn(`[sync] historique illisible pour ${title} (status ${err.response?.status ?? 'n/a'}): suppression ecartee`);
+      for (const key of titleKeys) kept.add(key);
+    }
+  }
+  return kept;
+}
+
+/**
  * Ecrit dans le compte Movix (POST /api/sync).
  *
  * Le serveur n'accepte que des operations sur une liste blanche de cles
@@ -286,7 +335,7 @@ async function writeSync(entries) {
 
   // Le profil doit etre celui de la derniere lecture: sans lecture prealable on ne sait
   // pas lequel viser, et ecrire dans le mauvais profil serait pire que ne rien faire.
-  if (!resolvedProfileId) await fetchSyncData();
+  await ensureProfile();
 
   // L'operation demandee fait foi. Forcer `set` partout transformait un `remove` en
   // `set` sans valeur: JSON.stringify(undefined) rend undefined, pas une chaine, et le
@@ -336,4 +385,5 @@ module.exports = {
   getWatched,
   getWatchedEpisodes,
   getAllProgress,
+  progressInHistory,
 };

@@ -53,6 +53,15 @@ async function resolveProfileId() {
   return config.NUVIO_PROFILE_INDEX || Number(profiles[0]?.profile_index) || 1;
 }
 
+/** Ecarte des disparitions Movix les progressions elaguees par le serveur (cf. progressInHistory). */
+async function withoutPrunedProgress(removals) {
+  if (removals.progress.length === 0) return removals;
+  const pruned = await movixSync.progressInHistory(removals.progress);
+  if (pruned.size === 0) return removals;
+  console.log(`[hub] ${pruned.size} progression(s) Movix elaguee(s) par le serveur, pas supprimee(s): ignoree(s)`);
+  return { ...removals, progress: removals.progress.filter((k) => !pruned.has(k)) };
+}
+
 async function runCycle({ dryRun = false } = {}) {
   if (running) return { ok: false, skipped: 'un cycle est deja en cours' };
   running = true;
@@ -113,7 +122,7 @@ async function runCycle({ dryRun = false } = {}) {
     const allAdditions = union(union(changes.movix, changes.nuvio), changes.simkl);
     const gone = config.HUB_PROPAGATE_DELETIONS
       ? {
-          movix: guardRemovals('Movix', removalsSince(movix, previous?.movix), movix, previous?.movix),
+          movix: guardRemovals('Movix', await withoutPrunedProgress(removalsSince(movix, previous?.movix)), movix, previous?.movix),
           nuvio: guardRemovals('Nuvio', removalsSince(nuvioModel, previous?.nuvio), nuvioModel, previous?.nuvio),
           simkl: simklModel ? guardRemovals('Simkl', simklRemovals(), simklModel, previous?.simkl) : emptyDelta(),
         }
