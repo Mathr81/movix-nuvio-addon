@@ -87,7 +87,7 @@ const config = {
   // Trakt limite les ecritures a ~1/s: delai minimal entre deux requetes d'ecriture.
   TRAKT_WRITE_DELAY_MS: Number(readEnv('TRAKT_WRITE_DELAY_MS', 1100)),
   TRAKT_PUSH_INTERVAL_MS: Number(readEnv('TRAKT_PUSH_INTERVAL_MS', 0)),
-  // Rangees "Recommandé pour vous" alimentees par l'algorithme Trakt.
+  // Rangee "Recommandé par Trakt" alimentee par l'algorithme Trakt.
   TRAKT_RECOMMENDATIONS: readBool('TRAKT_RECOMMENDATIONS', true),
 
   // --- Hub de synchronisation bidirectionnel ---
@@ -208,6 +208,9 @@ const config = {
   // Pour renommer une rangee ou en creer de nouvelles, utiliser catalogs.json.
   CATALOGS: readList('CATALOGS', null),
   CATALOGS_FILE: readEnv('CATALOGS_FILE', ''),
+  // Mise en page de l'accueil (dedoublonnage entre rangees, ordre du profil) refaite au
+  // plus tard tous les combien. Un titre regarde entre-temps peut y rester jusque-la.
+  CATALOG_REFRESH_MS: Number(readEnv('CATALOG_REFRESH_MS', 6 * 60 * 60 * 1000)),
 
   // --- Streams ---
   // Mesure du debit reel (BANDWIDTH d'un master HLS, ou taille/duree pour un fichier).

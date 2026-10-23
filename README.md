@@ -144,7 +144,7 @@ src/
 
 | Ressource | Détail |
 |-----------|--------|
-| `catalog` | Catalogues personnels (sync compte), recommandations, Tendances / Populaires / Mieux notés / Nouveautés, filtrables par genre, avec recherche |
+| `catalog` | Accueil façon Netflix : ~25 rangées par type (Ma liste, Recommandé pour toi, Tendances, Nouveautés, Sur Netflix / Prime / Disney+…, rangées thématiques), **sans aucun doublon entre rangées**, classées selon tes goûts, défilement sans fin ; recherche et filtre par genre |
 | `meta` | Fiches complètes, épisodes par saison, casting, genres |
 | `stream` | Agrégation des sources Movix + addons autonomes ; les m3u8 sont résolues par Movix (`?resolve=1`, clé VIP) et complétées par les extracteurs locaux |
 | `catalog`/`meta`/`stream` en `tv` | [TV en direct](#tv-en-direct) relayée depuis Movix (Vavoo, M3U locale, IPTV VIP) |
@@ -157,10 +157,14 @@ Trois niveaux, du plus simple au plus libre :
 
 1. **Choisir et ordonner** les rangées intégrées — `CATALOGS` dans `.env` :
    ```bash
-   CATALOGS=watchlist,reco,trending,popular
+   CATALOGS=watchlist,reco,trending,new,netflix,thriller,comedy
    ```
-   Ids disponibles : `watchlist`, `favorites`, `reco`, `trakt-reco`,
-   `trending`, `popular`, `toprated`, `new`. L'ordre de la liste est l'ordre d'affichage.
+   Ids disponibles : voir `src/catalog/rows.js` (ou `.env.example`). L'ordre de la liste
+   est l'ordre d'affichage **et** la priorité du dédoublonnage : un titre n'apparaît que
+   dans la première rangée qui le montre, les suivantes piochent plus loin. Ce qui est
+   déjà vu, en cours ou dans ta liste est écarté des rangées de découverte, et les genres
+   que tu regardes remontent en tête. Les rangées thématiques changent de mélange chaque
+   jour ; la mise en page est refaite toutes les 6 h (`CATALOG_REFRESH_MS`).
 
 2. **Renommer / créer des rangées** — copie `catalogs.example.json` en `catalogs.json`
    (il prend alors le pas sur `CATALOGS`). Une rangée personnalisée est un jeu de
@@ -408,7 +412,7 @@ Trois options, cumulables :
 
 | Option | Compte requis | Ce que ça donne |
 |--------|---------------|-----------------|
-| **Recommandations locales** | aucun | Rangée « Parce que tu as regardé », calculée depuis l'historique Movix. Activée par défaut. |
+| **Recommandations locales** | aucun | Rangée « Recommandé pour toi », calculée depuis l'historique Movix. Activée par défaut. |
 | **Simkl** *(recommandé sans VIP)* | Simkl (gratuit) | Historique + listes partagés, **pas de limite d'app**, intégré nativement par Nuvio depuis août 2026. |
 | **Trakt** | Trakt (gratuit) | Le plus large écosystème d'addons — mais un seul slot : voir l'import ponctuel ci-dessous. |
 
@@ -519,7 +523,7 @@ curl -X POST "http://localhost:8787/trakt/push?dryRun=1"
 Le jeton est enregistré dans `.trakt-token.json` (ignoré par git) et renouvelé
 automatiquement — l'autorisation n'est à faire qu'une fois.
 
-Une fois autorisé, **redémarre l'addon** : une rangée **« Movix · Recommandé pour vous »**
+Une fois autorisé, **redémarre l'addon** : une rangée **« Recommandé par Trakt »**
 apparaît, alimentée par l'algorithme Trakt. `TRAKT_PUSH_INTERVAL_MS` active un import
 périodique.
 
@@ -534,9 +538,9 @@ périodique.
 > `npm run trakt:push`, puis révoque-le dans
 > [tes réglages Trakt](https://trakt.tv/settings/applications) et connecte Nuvio à la
 > place. L'historique est stocké côté Trakt : il reste en place après la révocation, et
-> c'est Nuvio qui l'alimente ensuite. La rangée « Recommandé pour vous » de cet addon
+> c'est Nuvio qui l'alimente ensuite. La rangée « Recommandé par Trakt » de cet addon
 > disparaît alors (elle exige une connexion active) — la rangée locale
-> « Parce que tu as regardé » prend le relais.
+> « Recommandé pour toi » prend le relais.
 
 ### Sous-titres
 

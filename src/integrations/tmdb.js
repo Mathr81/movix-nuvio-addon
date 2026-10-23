@@ -7,6 +7,38 @@ const tmdb = axios.create({
   params: { api_key: config.TMDB_API_KEY, language: config.TMDB_LANGUAGE },
 });
 
+// Plafond d'appels simultanes. L'accueil fait partir d'un coup des centaines d'appels
+// (viviers des rangees, resolutions IMDb): sans file, TMDB repond 429 et des rangees
+// entieres sortent vides.
+const MAX_CONCURRENT = 16;
+let active = 0;
+const waiting = [];
+tmdb.interceptors.request.use(
+  (requestConfig) =>
+    new Promise((resolve) => {
+      const go = () => {
+        active += 1;
+        resolve(requestConfig);
+      };
+      if (active < MAX_CONCURRENT) go();
+      else waiting.push(go);
+    }),
+);
+const release = () => {
+  active -= 1;
+  waiting.shift()?.();
+};
+tmdb.interceptors.response.use(
+  (response) => {
+    release();
+    return response;
+  },
+  (error) => {
+    release();
+    throw error;
+  },
+);
+
 function mediaOf(type) {
   return type === 'series' ? 'tv' : 'movie';
 }

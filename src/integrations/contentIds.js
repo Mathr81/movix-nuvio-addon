@@ -18,7 +18,7 @@ const tmdbClient = require('./tmdb');
  *  - `imdb`  : `tt0903747`. Aligne sur Cinemeta et sur l'essentiel de l'ecosysteme
  *              Stremio/Nuvio, donc les fiches et la progression se recoupent avec les
  *              autres addons installes. Coute une resolution TMDB -> IMDb par titre
- *              (mise en cache 24 h, la correspondance ne changeant jamais).
+ *              (mise en cache 30 j, la correspondance ne changeant jamais).
  *  - `tmdb`  : `tmdb:1396`. Aucun appel supplementaire, mais isole des addons qui
  *              indexent par IMDb.
  *
@@ -51,7 +51,8 @@ async function contentIdFor(type, tmdbId) {
   } catch {
     imdb = null;
   }
-  cache.set(key, imdb, 24 * 60 * 60 * 1000);
+  // Une correspondance trouvee ne change jamais; un echec (ou une absence) se retente.
+  cache.set(key, imdb, imdb ? 30 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000);
   return imdb || `tmdb:${tmdbId}`;
 }
 

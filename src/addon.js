@@ -9,8 +9,9 @@ const { buildSubtitles } = require('./streaming/subtitles');
 const { genreId } = require('./catalog/genres');
 const movixSync = require('./integrations/movixSync');
 const trakt = require('./integrations/traktCloud');
-const { personalRecommendations } = require('./catalog/recommend');
 const catalogs = require('./catalog/catalogs');
+const feed = require('./catalog/feed');
+const { discoverFor, resolveDates } = require('./catalog/rows');
 const ids = require('./integrations/contentIds');
 
 const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500';
@@ -33,6 +34,8 @@ function toCatalogMeta(item, type) {
     type,
     name: item.title || item.name,
     poster: item.poster_path ? `${TMDB_POSTER_BASE}${item.poster_path}` : undefined,
+    // Les accueils a grande banniere (Nuvio) s'en servent pour le titre mis en avant.
+    background: item.backdrop_path ? `${TMDB_BACKDROP_BASE}${item.backdrop_path}` : undefined,
     releaseInfo: (item.release_date || item.first_air_date || '').slice(0, 4),
     description: item.overview,
   };
@@ -76,34 +79,32 @@ async function traktRecommendations(type, page) {
 }
 
 builder.defineCatalogHandler(async ({ type, id, extra }) => {
-  const page = extra?.skip ? Math.floor(Number(extra.skip) / 20) + 1 : 1;
+  const page = extra?.skip ? Math.floor(Number(extra.skip) / feed.PAGE_SIZE) + 1 : 1;
   const genre = extra?.genre;
   // ID_FORMAT fait partie de la cle: la rangee des recommandations Trakt est memoisee
   // DEJA mise en forme, donc un changement de format doit invalider ce qui est en cache
   // plutot que de continuer a servir des ids de l'ancienne forme.
   const cacheKey = `catalog:${ids.format()}:${type}:${id}:${extra?.search || ''}:${genre || ''}:${page}`;
   const def = catalogs.find(id);
-  const kind = def?.builtin;
 
   try {
-    // Les catalogues personnels ont leur propre cache (TTL sync) et ne sont pas memoises ici,
-    // sinon ajouter un film a sa liste sur le site mettrait 30 min a apparaitre.
-    if (kind === 'watchlist' || kind === 'favorites') {
-      return { metas: await personalCatalog(kind, type, page) };
-    }
-
-    // Recommandations locales: un calcul = 12 appels TMDB, a ne pas refaire a chaque
-    // ouverture de l'accueil.
-    if (kind === 'reco') {
+    if (extra?.search) {
       const items = await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
-        personalRecommendations(type),
+        tmdbClient.search(type, extra.search, page),
       );
       return { metas: await toCatalogMetas(items, type) };
+    }
+    if (!def) return { metas: [] };
+
+    // Les catalogues personnels ont leur propre cache (TTL sync) et ne sont pas memoises ici,
+    // sinon ajouter un film a sa liste sur le site mettrait 30 min a apparaitre.
+    if (def.source === 'watchlist' || def.source === 'favorites') {
+      return { metas: await personalCatalog(def.source, type, page) };
     }
 
     // Les recommandations changent lentement (Trakt les recalcule au fil de l'historique)
     // mais chaque appel coute un aller-retour Trakt + N fiches TMDB: on memoise la page.
-    if (kind === 'trakt-reco') {
+    if (def.source === 'trakt') {
       return {
         metas: await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
           traktRecommendations(type, page),
@@ -111,29 +112,18 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
       };
     }
 
-    const items = await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
-      if (extra?.search) return tmdbClient.search(type, extra.search, page);
+    // Filtre de genre (onglet Decouvrir): navigation libre dans la source de la rangee,
+    // hors de l'accueil et donc sans dedoublonnage.
+    const gid = genreId(type, genre);
+    if (gid) {
+      const params = resolveDates({ ...(discoverFor(def, type) || { sort_by: 'popularity.desc' }), with_genres: gid });
+      const items = await cache.wrap(cacheKey, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () =>
+        tmdbClient.discoverWith(type, params, page),
+      );
+      return { metas: await toCatalogMetas(items, type) };
+    }
 
-      // Rangee personnalisee (catalogs.json): les parametres Discover font foi, le genre
-      // choisi dans l'interface vient s'y ajouter sans les ecraser.
-      if (def && !kind) {
-        const gid = genreId(type, genre);
-        return tmdbClient.discoverWith(type, { ...def.discover, ...(gid ? { with_genres: gid } : {}) }, page);
-      }
-
-      const gid = genreId(type, genre);
-      if (gid) {
-        const sortBy = kind === 'toprated' ? 'vote_average.desc' : 'popularity.desc';
-        return tmdbClient.discover(type, { genreId: gid, page, sortBy });
-      }
-
-      if (kind === 'trending') return tmdbClient.trending(type, page);
-      if (kind === 'toprated') return tmdbClient.topRated(type, page);
-      if (kind === 'new') return tmdbClient.nowPlaying(type, page);
-      return tmdbClient.popular(type, page);
-    });
-
-    return { metas: await toCatalogMetas(items, type) };
+    return { metas: await toCatalogMetas(await feed.rowPage(type, def.id, page), type) };
   } catch (err) {
     // Une panne TMDB passagere ne doit pas faire echouer la rangee entiere cote Nuvio:
     // mieux vaut une ligne vide + un log explicite qu'une erreur opaque dans l'interface.

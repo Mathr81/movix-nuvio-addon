@@ -25,6 +25,7 @@ const { pushToSimkl } = require('./src/integrations/simklPush');
 const simkl = require('./src/integrations/simklCloud');
 const simklLibrary = require('./src/integrations/simklLibrary');
 const hub = require('./src/hub');
+const catalogFeed = require('./src/catalog/feed');
 const { startCodeAuth } = require('./src/webui/actions');
 const webui = require('./src/webui');
 
@@ -445,6 +446,10 @@ app.listen(config.PORT, () => {
   console.log(`                 /debug/subsync/movie/tmdb:157336?compute=1 (calage des sous-titres)`);
   console.log(`                 /debug/sync  |  /debug/addons  |  /health`);
   if (config.WEBUI_ENABLED) console.log(`WebUI          : http://127.0.0.1:${config.PORT}/ui/`);
+
+  // L'accueil (toutes les rangees, dedoublonnees) prend quelques secondes a construire:
+  // autant que ce ne soit pas a la premiere ouverture de Nuvio.
+  catalogFeed.warm();
 
   if (config.NUVIO_PUSH_INTERVAL_MS > 0 && config.NUVIO_EMAIL) {
     const minutes = Math.round(config.NUVIO_PUSH_INTERVAL_MS / 60000);
