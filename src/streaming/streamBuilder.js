@@ -475,9 +475,12 @@ async function buildStreams({ tmdbId, type, season, episode, refresh = false }) 
 
   // Elagage APRES le tri, et seulement ici: /debug/streams doit continuer a montrer TOUT
   // ce qui a ete resolu et mesure, sans quoi il ne servirait plus a diagnostiquer.
+  // Plancher avant l'elagage, pour qu'un 480p n'occupe pas une place de MAX_STREAMS_PER_SOURCE.
+  // Palier inconnu (0) = garde: on ne sait pas ce qu'il vaut.
+  const watchable = enriched.filter((r) => !(tierOf(r) > 0 && tierOf(r) < config.MIN_STREAM_QUALITY));
   const kept = config.keepAllStreams()
-    ? enriched
-    : capPerSource(pruneDominated(enriched), config.MAX_STREAMS_PER_SOURCE);
+    ? watchable
+    : capPerSource(pruneDominated(watchable), config.MAX_STREAMS_PER_SOURCE);
 
   if (kept.length < enriched.length) {
     console.log(`[streamBuilder] ${enriched.length - kept.length} lien(s) redondant(s) masque(s) (${kept.length} affiche(s))`);

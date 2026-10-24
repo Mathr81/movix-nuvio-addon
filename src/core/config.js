@@ -274,6 +274,9 @@ const config = {
   // En mode compact: au plus N liens par source. Garder plus d'un preserve un repli quand
   // un hebergeur est en panne. 0 = pas de limite (l'elagage des redondants s'applique quand meme).
   MAX_STREAMS_PER_SOURCE: Number(readEnv('MAX_STREAMS_PER_SOURCE', 2)),
+  // Definition minimale proposee (hauteur du palier: 720 ecarte 480p et moins). Un lien
+  // dont la definition est inconnue reste propose. 0 = aucun plancher.
+  MIN_STREAM_QUALITY: Number(readEnv('MIN_STREAM_QUALITY', 720)),
 
   // Sources activees (noms tels qu'exportes par src/sources/*.js).
   ENABLED_SOURCES: readList('ENABLED_SOURCES', null), // null = toutes
