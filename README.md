@@ -1340,9 +1340,16 @@ autant réintroduire les liens redondants.
 L'élagage est **purement un choix d'affichage** : `/debug/streams` montre dans tous les cas
 la totalité de ce qui a été résolu, avec `mode` et `affichesDansNuvio` pour comparer.
 
-Élagage et limite se font **par famille de langue** (VF / VOSTFR / VO) : une VO ne rend
-jamais une VOSTFR redondante, et deux 4K VO ne prennent pas la place de la VF d'une source.
+Élagage et limite se font **par langue** : une VO ne rend jamais une VOSTFR redondante,
+ni une VFQ une VFF. Un autre **hébergeur** de la même source n'est pas un doublon non plus
+(c'est le repli quand le premier tombe). Les places de `MAX_STREAMS_PER_SOURCE` vont dans
+cet ordre : le meilleur lien, puis une autre langue (VFF à côté de la VFQ), puis un autre
+hébergeur ou serveur, et seulement ensuite un palier inférieur du même.
 `MIN_STREAM_QUALITY` (720 par défaut) écarte en plus tout palier connu inférieur.
+
+Les langues sont normalisées à l'entrée (`vf`, `French` → `VF` ; `TRUEFRENCH` → `VFF` ;
+`Default`/`und` → rien). Pour un **film français** (langue originale TMDB `fr`), la VO et
+les liens de langue inconnue sont étiquetés `VF`.
 
 #### Une catégorie par langue (sous-addons)
 
@@ -1354,6 +1361,9 @@ addons de streams en plus du principal — à installer chacun dans Nuvio :
 <PUBLIC_URL>/vostfr/manifest.json   Movix VOSTFR
 <PUBLIC_URL>/vo/manifest.json       Movix VO      (VO et langue inconnue)
 ```
+
+Un lien **MULTI** (PurStream « pulse ») porte la VF et la VO : il apparaît dans les deux
+catégories — sauf pour un film français, où il reste en VF.
 
 L'addon principal garde catalogues et sous-titres mais ne rend plus de streams (sinon tout
 apparaîtrait deux fois). Les trois partagent la même résolution en cache : un seul scan.

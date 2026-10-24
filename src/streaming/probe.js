@@ -575,6 +575,9 @@ function resolutionOf(url, headers, timeoutMs) {
       // Une playlist HLS renvoie vers d'autres protocoles: sans liste blanche explicite,
       // ffprobe refuse de suivre ses propres segments.
       '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+      // Segments deguises en image (.PNG chez KissKH): ffmpeg >= 7 les refuse dans du HLS
+      // sauf a lever ce filtre. Sans effet sur une entree qui n'est pas du HLS.
+      '-extension_picky', '0',
       ...network,
       // Assez pour trouver la premiere image, pas de quoi telecharger le segment entier.
       '-probesize', '2000000',

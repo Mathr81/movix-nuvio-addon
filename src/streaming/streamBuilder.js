@@ -87,6 +87,42 @@ function langGroup(link) {
   return langScore(...labels) === 0 ? 'vf' : 'vo';
 }
 
+/**
+ * Sous-addons ou le lien apparait. Un MULTI porte la VF ET la VO: il est dans les deux --
+ * sauf pour un film francais, dont la VO est deja la VF.
+ */
+function langGroupsOf(link, originalLanguage) {
+  const group = langGroup(link);
+  if (group === 'vf' && originalLanguage !== 'fr' && /\bMULTI\b/i.test(`${link.lang} ${link.sourceName}`)) return ['vf', 'vo'];
+  return [group];
+}
+
+// Les sources ecrivent la meme langue de dix facons ("vf", "French", "TRUEFRENCH"...).
+// "Default" (FStream) et "und" ne disent rien: mieux vaut ne rien afficher.
+const LANG_ALIASES = [
+  [/^(vff|truefrench)$/i, 'VFF'],
+  [/^vfq$/i, 'VFQ'],
+  [/^(vf|fr|fre|fra|french|fran[cç]ais)$/i, 'VF'],
+  [/^(vostfr|vost|subfrench)$/i, 'VOSTFR'],
+  [/^(vo|original)$/i, 'VO'],
+  [/^multi$/i, 'MULTI'],
+  [/^(default|und|unknown)?$/i, undefined],
+];
+
+function normalizeLang(raw) {
+  const text = String(raw ?? '').trim();
+  const alias = LANG_ALIASES.find(([pattern]) => pattern.test(text));
+  return alias ? alias[1] : text;
+}
+
+/** Langue originale TMDB du titre ("fr", "en"...), null si inconnue. */
+async function originalLanguage(type, tmdbId) {
+  const details = await cache
+    .wrap(`meta:${type}:${tmdbId}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, () => tmdbClient.details(type, tmdbId))
+    .catch(() => null);
+  return details?.original_language || null;
+}
+
 // Paliers auxquels on pense en choisissant un stream, avec la LARGEUR de reference de
 // chacun. Les masters HLS annoncent des resolutions exotiques (1036, 468, 800) qui
 // n'apportent rien de plus que le palier et rendent la liste penible a parcourir.
@@ -150,8 +186,11 @@ function pruneDominated(streams) {
       // rend plusieurs par appel): deux fournisseurs differents ne sont pas des doublons,
       // ce sont deux replis.
       if (other.sourceName !== candidate.sourceName || other.variant !== candidate.variant) return false;
-      // Par famille de langue, pas seulement par rang: une VO ne rend pas une VOSTFR redondante.
-      if (langGroup(other) !== langGroup(candidate)) return false;
+      // Langue EXACTE, pas seulement sa famille: une VFQ ne rend pas une VFF redondante, et
+      // une VO pas une VOSTFR.
+      if (langGroup(other) !== langGroup(candidate) || other.lang !== candidate.lang) return false;
+      // Un autre hebergeur n'est pas un doublon: c'est le repli quand le premier tombe.
+      if ((other.hoster || other.player) !== (candidate.hoster || candidate.player)) return false;
 
       // Rien de mesure en face: aucune raison d'ecarter quoi que ce soit.
       if (!other.bitrate) return false;
@@ -194,17 +233,30 @@ function tidySourceName(sourceName) {
 /**
  * Au plus N liens par source ET par famille de langue, les meilleurs d'abord (la liste est
  * deja triee): sans la langue, les deux 4K VO d'une source prendraient la place de sa VF.
+ *
+ * Les places restantes vont d'abord a une AUTRE langue (la VFF a cote de la VFQ), puis a
+ * un autre hebergeur (un vrai repli), et seulement ensuite a un autre palier du meme.
  */
 function capPerSource(streams, max) {
   if (!max || max <= 0) return streams;
-  const kept = new Map();
-  return streams.filter((stream) => {
-    const key = `${stream.sourceName || 'source'}|${langGroup(stream)}`;
-    const count = kept.get(key) || 0;
-    if (count >= max) return false;
-    kept.set(key, count + 1);
-    return true;
-  });
+  const keyOf = (stream) => `${stream.sourceName || 'source'}|${langGroup(stream)}`;
+  const picked = new Set();
+  const count = new Map();
+  for (const facet of [(s) => s.lang || '', (s) => s.hoster || s.player || '', null]) {
+    const seen = new Set([...picked].map((s) => facet && `${keyOf(s)}|${facet(s)}`));
+    for (const stream of streams) {
+      const key = keyOf(stream);
+      if (picked.has(stream) || (count.get(key) || 0) >= max) continue;
+      if (facet) {
+        const mark = `${key}|${facet(stream)}`;
+        if (seen.has(mark)) continue;
+        seen.add(mark);
+      }
+      picked.add(stream);
+      count.set(key, (count.get(key) || 0) + 1);
+    }
+  }
+  return streams.filter((stream) => picked.has(stream));
 }
 
 /** Duree du titre en secondes, depuis TMDB (runtime film ou duree moyenne d'episode). */
@@ -217,7 +269,10 @@ async function runtimeSeconds(type, tmdbId) {
 }
 
 async function collectRawLinks({ tmdbId, type, season, episode }) {
-  const settled = await Promise.allSettled(sources.map((s) => s.getStreams({ tmdbId, type, season, episode })));
+  const [settled, original] = await Promise.all([
+    Promise.allSettled(sources.map((s) => s.getStreams({ tmdbId, type, season, episode }))),
+    originalLanguage(type, tmdbId),
+  ]);
 
   settled.forEach((r, i) => {
     if (r.status === 'rejected') {
@@ -225,7 +280,15 @@ async function collectRawLinks({ tmdbId, type, season, episode }) {
     }
   });
 
-  return settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+  // Langue normalisee des l'entree: tri, elagage, categories et affichage lisent la meme.
+  // Pour un film francais, la VO (ou une langue inconnue) EST la VF.
+  return settled
+    .flatMap((r) => (r.status === 'fulfilled' ? r.value : []))
+    .map((link) => {
+      const lang = normalizeLang(link.lang);
+      const out = lang === link.lang ? link : { ...link, lang };
+      return original === 'fr' && langGroup(out) === 'vo' ? { ...out, lang: 'VF' } : out;
+    });
 }
 
 /** Ce qui designe le FICHIER servi: la cible d'un lien proxifie, pas l'URL de proxy. */
@@ -393,8 +456,13 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false, ref
     // demande a la rafraichir, exactement l'inverse de ce qu'on cherchait.
     // Ils gardent leurs mesures, et disparaitront d'eux-memes a l'expiration du cache.
     // Meme cle que la deduplication: sinon un lien fusionne a ce scan reviendrait par ici.
+    //
+    // Seulement pour une source MUETTE ce tour-ci: une source qui a repondu a dit ce qu'elle
+    // a. Reprendre ses anciens liens accumulait des doublons a chaque rescan (une URL a jeton
+    // change d'un scan a l'autre) et gardait pour toujours ceux qu'elle ne sert plus.
     const found = new Set(deduped.map(sameFileKey));
-    const carried = (previous || []).filter((p) => !found.has(sameFileKey(p)));
+    const answered = new Set(deduped.map((r) => r.sourceName));
+    const carried = (previous || []).filter((p) => !found.has(sameFileKey(p)) && !answered.has(p.sourceName));
     if (carried.length > 0) {
       console.log(`[streamBuilder] ${carried.length} lien(s) conserve(s) du scan precedent`);
     }
@@ -479,12 +547,13 @@ async function buildStreams({ tmdbId, type, season, episode, refresh = false, gr
   // Les pistes sont cherchees EN PARALLELE de la resolution des liens: elles ne coutent
   // qu'un appel a un index deja memoise, mais l'attendre apres coup l'ajouterait tel quel
   // au temps d'ouverture d'une fiche, qui est deja ce qu'il est.
-  const [enriched, tracks, durationHint] = await Promise.all([
+  const [enriched, tracks, durationHint, original] = await Promise.all([
     resolveStreams({ tmdbId, type, season, episode, refresh }),
     perStreamTracks
       ? subtitles.collectTracks({ type, tmdbId, season, episode }).catch(() => [])
       : Promise.resolve([]),
     config.SUBTITLE_AUTOSYNC ? runtimeSeconds(type, tmdbId).catch(() => null) : Promise.resolve(null),
+    group ? originalLanguage(type, tmdbId) : null,
   ]);
   const content = contentKey(type, tmdbId, season, episode);
   const publicBaseUrl = config.PUBLIC_URL || `http://127.0.0.1:${config.PORT}`;
@@ -508,8 +577,17 @@ async function buildStreams({ tmdbId, type, season, episode, refresh = false, gr
     const label = tidySourceName(r.sourceName);
     // N'ajouter que ce qui n'est pas deja dans le libelle de la source (PurStream renvoie
     // par exemple "pulse | 1080p | MULTI", inutile de repeter la langue et la qualite).
-    const details = [r.lang, r.variant, r.hoster || r.player]
-      .filter((part) => part && !label.toLowerCase().includes(String(part).toLowerCase()))
+    // La definition est deja en gras au-dessus: on la retire des morceaux ("Lisbon 4K HDR"
+    // -> "Lisbon HDR"), puis on ecarte ceux qu'un autre contient deja ("Lisbon").
+    const parts = [r.lang, r.variant, r.hoster || r.player]
+      .map((part) => String(part || '').replace(/\b(4k|\d{3,4}p)\b/gi, '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    const details = parts
+      .filter((part, i) => {
+        const lower = part.toLowerCase();
+        if (label.toLowerCase().includes(lower)) return false;
+        return !parts.some((other, j) => j !== i && other.toLowerCase().includes(lower) && (other.length > part.length || j < i));
+      })
       .join(' · ');
     // Le debit mesure sur un fichier est une estimation (taille/duree): le "~" evite
     // de le faire passer pour une valeur annoncee par la source.
@@ -603,7 +681,7 @@ async function buildStreams({ tmdbId, type, season, episode, refresh = false, gr
 
   // Filtre en sortie seulement: l'enregistrement des flux (calage des sous-titres) et leur
   // ordre portent sur la liste entiere, quel que soit le sous-addon qui a demande.
-  return group ? built.filter((_, index) => langGroup(kept[index]) === group) : built;
+  return group ? built.filter((_, index) => langGroupsOf(kept[index], original).includes(group)) : built;
 }
 
 /**
@@ -648,3 +726,5 @@ function prefetchNextEpisode({ tmdbId, type, season, episode }) {
 }
 
 module.exports = { buildStreams, resolveStreams, collectRawLinks, prefetchNextEpisode };
+// Exposes pour les bancs d'essai: regles de langue et de limite, sans tout le pipeline.
+Object.assign(module.exports, { capPerSource, normalizeLang, langGroupsOf });

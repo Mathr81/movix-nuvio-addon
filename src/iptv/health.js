@@ -128,6 +128,9 @@ function measure(url) {
       '-show_entries', 'stream=codec_name,width,height',
       '-of', 'csv=p=0',
       '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+      // Segments deguises en image (.PNG chez KissKH): ffmpeg >= 7 les refuse dans du HLS
+      // sauf a lever ce filtre. Sans effet sur une entree qui n'est pas du HLS.
+      '-extension_picky', '0',
       '-user_agent', USER_AGENT,
       '-rw_timeout', String(FFPROBE_TIMEOUT_MS * 1000),
       '-probesize', '2000000',
