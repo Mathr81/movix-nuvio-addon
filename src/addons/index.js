@@ -28,7 +28,7 @@ const config = require('../core/config');
  *
  * Ajouter une source = deposer un fichier ici et l'ajouter a MODULES. Rien d'autre.
  */
-const MODULES = [require('./aether'), require('./obrigoz'), require('./cinejoy')];
+const MODULES = [require('./aether'), require('./obrigoz'), require('./cinejoy'), require('./movy')];
 
 function isEnabled(addon) {
   if (!config.ENABLED_ADDONS) return true;

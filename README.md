@@ -780,7 +780,7 @@ qui est réellement livré : `VOSTFR` quand une piste française est présente, 
 par `PREFERRED_LANGS`. Les pistes chiffrées (`cipher.mode` ≠ `none`) sont écartées,
 étant illisibles telles quelles.
 
-**Addons autonomes** — `Aether` (3 serveurs), `Obrigoz`, `Cinejoy`. Voir [Addons](#addons-sources-autonomes).
+**Addons autonomes** — `Aether` (3 serveurs), `Obrigoz`, `Cinejoy`, `Movy` (4K). Voir [Addons](#addons-sources-autonomes).
 
 #### Qui résout les flux (⚠️ tout a changé)
 
@@ -1070,6 +1070,7 @@ déclare les en-têtes que ses CDN exigent. C'est la voie d'ajout d'un site reve
 | `aether` | Films **et séries** | `aurora`, `lul`, `link` (VO), `gallic` (**VF**) | par id TMDB |
 | `obrigoz` | Films | — | par **titre** TMDB + année |
 | `cinejoy` | Films **et séries** | — | par id TMDB (+ imdb/année/titre) |
+| `movy` | Films **et séries**, jusqu'au **4K** | `miami`, `boise` (VO) | par id TMDB ; API via le tunnel NAS (`MOVY_PROXY_URL`) |
 
 > **Cinejoy** est un cas à part : son client de scellement est un module WebAssembly
 > (`src/addons/vendor/crush.wasm`, obtenu par rétro-ingénierie). Le canal *lumen-gate-v2*

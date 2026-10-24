@@ -333,6 +333,16 @@ const config = {
   CINEJOY_TIMEOUT_MS: Number(readEnv('CINEJOY_TIMEOUT_MS', '10000')),
   CINEJOY_LANG: readEnv('CINEJOY_LANG', 'VO'),
 
+  // --- Movy (movy.sx -- API api.wecollege.net, reponses chiffrees enc=2) ---------
+  MOVY_API: readEnv('MOVY_API', 'https://api.wecollege.net'),
+  MOVY_ORIGIN: readEnv('MOVY_ORIGIN', 'https://www.movy.sx'),
+  // Serveurs du site interroges en parallele; miami et boise sont ceux qui montent au 4K.
+  MOVY_SERVERS: readList('MOVY_SERVERS', ['miami', 'boise']),
+  // Cloudflare refuse l'IP du VPS sur l'API: SOCKS5 du tunnel NAS (seed + sources seulement).
+  MOVY_PROXY_URL: readEnv('MOVY_PROXY_URL', ''),
+  MOVY_TIMEOUT_MS: Number(readEnv('MOVY_TIMEOUT_MS', '10000')),
+  MOVY_LANG: readEnv('MOVY_LANG', 'VO'),
+
   // Langues de sous-titres proposees (codes ISO 639-2/B, ex: fre,eng).
   SUBTITLE_LANGS: readList('SUBTITLE_LANGS', ['fre', 'eng']),
   SUBTITLES_ENABLED: readBool('SUBTITLES_ENABLED', true),
