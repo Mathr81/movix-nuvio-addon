@@ -128,29 +128,38 @@ async function getStreams({ tmdbId, type, season, episode }) {
   };
 
   const headers = { accept: '*/*', referer: `${config.MOVY_ORIGIN}/`, 'user-agent': kit.BROWSER_UA };
-  const results = [];
-  await Promise.all(
-    config.MOVY_SERVERS.map(async (server) => {
-      try {
-        const data = await fetchSources(server, params, tmdbId);
-        for (const source of data.sources || []) {
-          if (!source?.url) continue;
-          results.push({
-            url: kit.proxied(source.url, { headers }),
-            direct: true,
-            sourceName: 'Movy',
-            player: server,
-            // Un lien par palier et par serveur : `variant` evite que l'elagage n'en garde qu'un.
-            variant: `${server} ${source.quality}`,
-            quality: source.quality,
-            lang: config.MOVY_LANG || undefined,
-          });
-        }
-      } catch (err) {
-        log.fail('Movy', `${label} (${server})`, err);
-      }
-    }),
+  // Interroges en parallele, mais lus dans l'ordre de MOVY_SERVERS : miami et boise servent
+  // le meme fichier (meme id, /vd vs /vdb), on ne garde donc qu'un lien par qualite, celui
+  // du premier serveur qui l'a -- le suivant ne sert que de repli.
+  const answers = await Promise.all(
+    config.MOVY_SERVERS.map((server) =>
+      fetchSources(server, params, tmdbId).then(
+        (data) => ({ server, sources: data.sources || [] }),
+        (err) => {
+          log.fail('Movy', `${label} (${server})`, err);
+          return { server, sources: [] };
+        },
+      ),
+    ),
   );
+  const byQuality = new Map();
+  for (const { server, sources } of answers) {
+    for (const source of sources) {
+      if (!source?.url || byQuality.has(source.quality)) continue;
+      byQuality.set(source.quality, {
+        url: kit.proxied(source.url, { headers }),
+        direct: true,
+        sourceName: 'Movy',
+        player: server,
+        // Chaque palier est garde (le plus haut passe devant au tri) : utile quand le debit
+        // de la connexion ne suit pas la 4K.
+        variant: source.quality,
+        quality: source.quality,
+        lang: config.MOVY_LANG || undefined,
+      });
+    }
+  }
+  const results = [...byQuality.values()];
   log.ok('Movy', label, `${results.length} lien(s) sur ${config.MOVY_SERVERS.join(', ')}`);
   return results;
 }

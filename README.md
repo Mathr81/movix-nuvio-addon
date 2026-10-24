@@ -1340,6 +1340,24 @@ autant réintroduire les liens redondants.
 L'élagage est **purement un choix d'affichage** : `/debug/streams` montre dans tous les cas
 la totalité de ce qui a été résolu, avec `mode` et `affichesDansNuvio` pour comparer.
 
+Élagage et limite se font **par famille de langue** (VF / VOSTFR / VO) : une VO ne rend
+jamais une VOSTFR redondante, et deux 4K VO ne prennent pas la place de la VF d'une source.
+`MIN_STREAM_QUALITY` (720 par défaut) écarte en plus tout palier connu inférieur.
+
+#### Une catégorie par langue (sous-addons)
+
+Nuvio range les streams par addon. Avec `STREAM_SPLIT_BY_LANG=true`, le serveur expose trois
+addons de streams en plus du principal — à installer chacun dans Nuvio :
+
+```
+<PUBLIC_URL>/vf/manifest.json       Movix VF      (VFF, VFQ, VF, MULTI, TRUEFRENCH…)
+<PUBLIC_URL>/vostfr/manifest.json   Movix VOSTFR
+<PUBLIC_URL>/vo/manifest.json       Movix VO      (VO et langue inconnue)
+```
+
+L'addon principal garde catalogues et sous-titres mais ne rend plus de streams (sinon tout
+apparaîtrait deux fois). Les trois partagent la même résolution en cache : un seul scan.
+
 ### Débit affiché
 
 Chaque stream annonce son **débit** à côté de la résolution. L'objectif est que deux liens

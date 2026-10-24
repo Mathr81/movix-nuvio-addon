@@ -435,6 +435,33 @@ app.get('/stream/tv/:id.json', async (req, res, next) => {
 // Stremio a trois segments, et ne passe la main que si le jeton ne correspond pas.
 app.use(iptv.router);
 
+// --- Sous-addons par langue ------------------------------------------------
+// Nuvio range les streams par addon: un manifest par famille de langue donne une
+// categorie par langue dans l'ecran de choix, au lieu d'une seule longue liste. Ils ne
+// servent que des streams (catalogues et sous-titres restent sur l'addon principal) et
+// partagent la meme resolution, mise en cache: les trois installes ne coutent qu'un scan.
+const LANG_ADDONS = { vf: 'VF', vostfr: 'VOSTFR', vo: 'VO' };
+for (const [group, label] of Object.entries(LANG_ADDONS)) {
+  const { manifest } = addonInterface;
+  app.get(`/${group}/manifest.json`, (_req, res) =>
+    res.json({
+      id: `${manifest.id}.${group}`,
+      version: manifest.version,
+      name: `Movix ${label}`,
+      description: `Flux ${label} de Movix (perso) -- a installer avec l'addon principal.`,
+      logo: manifest.logo,
+      resources: ['stream'],
+      types: ['movie', 'series'],
+      idPrefixes: manifest.idPrefixes,
+      catalogs: [],
+      behaviorHints: manifest.behaviorHints,
+    }),
+  );
+  app.get(`/${group}/stream/:type/:id.json`, async (req, res) => {
+    res.json(await addonInterface.streamsFor({ type: req.params.type, id: req.params.id, group }));
+  });
+}
+
 // Routes Stremio standard (manifest, catalog, meta, stream, subtitles).
 app.use(getRouter(addonInterface));
 

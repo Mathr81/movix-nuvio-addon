@@ -218,11 +218,16 @@ function wantsRescan(key) {
   return false;
 }
 
-builder.defineStreamHandler(async ({ type, id }) => {
+/**
+ * Streams d'un titre, tous ou ceux d'une famille de langue (`group`, cf. les sous-addons
+ * de server.js). Le compteur de rescan est tenu par famille: les trois sous-addons
+ * interrogent en meme temps, et ce ne sont pas trois demandes de l'utilisateur.
+ */
+async function streamsFor({ type, id, group = null }) {
   try {
     const { tmdbId, season, episode } = await resolveId(type, id);
-    const refresh = wantsRescan(`${type}:${id}`);
-    const streams = await buildStreams({ tmdbId, type, season, episode, refresh });
+    const refresh = wantsRescan(`${group || 'all'}:${type}:${id}`);
+    const streams = await buildStreams({ tmdbId, type, season, episode, refresh, group });
     // Apres avoir repondu, pas avant: c'est du confort pour la suite, jamais un delai ici.
     prefetchNextEpisode({ tmdbId, type, season, episode });
     return { streams };
@@ -230,7 +235,14 @@ builder.defineStreamHandler(async ({ type, id }) => {
     console.error('[stream] erreur:', err.message);
     return { streams: [] };
   }
-});
+}
+
+// Avec les sous-addons par langue, l'addon principal ne rend plus rien: sinon chaque lien
+// apparaitrait deux fois dans Nuvio. La resource reste declaree (le SDK exige un handler
+// pour chaque resource) -- un manifest inchange evite aussi de reinstaller l'addon.
+builder.defineStreamHandler(async ({ type, id }) =>
+  config.STREAM_SPLIT_BY_LANG ? { streams: [] } : streamsFor({ type, id }),
+);
 
 builder.defineSubtitlesHandler(async ({ type, id }) => {
   try {
@@ -254,3 +266,4 @@ module.exports = builder.getInterface();
 // Expose pour les bancs d'essai: la regle de declenchement d'un rescan se verifie sans
 // avoir a simuler tout le protocole Stremio.
 module.exports.wantsRescan = wantsRescan;
+module.exports.streamsFor = streamsFor;

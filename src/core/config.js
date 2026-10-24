@@ -277,6 +277,9 @@ const config = {
   // Definition minimale proposee (hauteur du palier: 720 ecarte 480p et moins). Un lien
   // dont la definition est inconnue reste propose. 0 = aucun plancher.
   MIN_STREAM_QUALITY: Number(readEnv('MIN_STREAM_QUALITY', 720)),
+  // Sous-addons par langue (/vf, /vostfr, /vo): l'addon principal ne rend alors plus de
+  // streams, pour ne pas doubler la liste. A n'activer qu'une fois les trois installes.
+  STREAM_SPLIT_BY_LANG: readBool('STREAM_SPLIT_BY_LANG', false),
 
   // Sources activees (noms tels qu'exportes par src/sources/*.js).
   ENABLED_SOURCES: readList('ENABLED_SOURCES', null), // null = toutes

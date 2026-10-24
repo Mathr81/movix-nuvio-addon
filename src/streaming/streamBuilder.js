@@ -75,6 +75,18 @@ function langScore(...labels) {
   return config.PREFERRED_LANGS.some((lang) => haystack.includes(lang.toUpperCase())) ? 0 : 1;
 }
 
+/**
+ * Famille de langue d'un lien, celle des sous-addons (cf. STREAM_SPLIT_BY_LANG): "vostfr"
+ * avant tout (son libelle ne contient pas de langue privilegiee mais doit sortir de la VO),
+ * puis "vf" pour les langues privilegiees (MULTI compris: il porte une piste francaise),
+ * "vo" pour le reste -- inconnu compris, faute de mieux.
+ */
+function langGroup(link) {
+  const labels = [link.lang, link.sourceName, link.quality, link.player];
+  if (/VOSTFR|\bVOST\b|SUBFRENCH/i.test(labels.filter(Boolean).join(' '))) return 'vostfr';
+  return langScore(...labels) === 0 ? 'vf' : 'vo';
+}
+
 // Paliers auxquels on pense en choisissant un stream, avec la LARGEUR de reference de
 // chacun. Les masters HLS annoncent des resolutions exotiques (1036, 468, 800) qui
 // n'apportent rien de plus que le palier et rendent la liste penible a parcourir.
@@ -138,7 +150,8 @@ function pruneDominated(streams) {
       // rend plusieurs par appel): deux fournisseurs differents ne sont pas des doublons,
       // ce sont deux replis.
       if (other.sourceName !== candidate.sourceName || other.variant !== candidate.variant) return false;
-      if (other.langRank !== candidate.langRank) return false;
+      // Par famille de langue, pas seulement par rang: une VO ne rend pas une VOSTFR redondante.
+      if (langGroup(other) !== langGroup(candidate)) return false;
 
       // Rien de mesure en face: aucune raison d'ecarter quoi que ce soit.
       if (!other.bitrate) return false;
@@ -178,12 +191,15 @@ function tidySourceName(sourceName) {
     .join(' · ');
 }
 
-/** Au plus N liens par source, les meilleurs d'abord (la liste est deja triee). */
+/**
+ * Au plus N liens par source ET par famille de langue, les meilleurs d'abord (la liste est
+ * deja triee): sans la langue, les deux 4K VO d'une source prendraient la place de sa VF.
+ */
 function capPerSource(streams, max) {
   if (!max || max <= 0) return streams;
   const kept = new Map();
   return streams.filter((stream) => {
-    const key = stream.sourceName || 'source';
+    const key = `${stream.sourceName || 'source'}|${langGroup(stream)}`;
     const count = kept.get(key) || 0;
     if (count >= max) return false;
     kept.set(key, count + 1);
@@ -456,7 +472,7 @@ function contentKey(type, tmdbId, season, episode) {
   return `${type}:${tmdbId}:${season ?? ''}:${episode ?? ''}`;
 }
 
-async function buildStreams({ tmdbId, type, season, episode, refresh = false }) {
+async function buildStreams({ tmdbId, type, season, episode, refresh = false, group = null }) {
   const bind = config.SUBTITLE_AUTOSYNC_BIND;
   const perStreamTracks = config.SUBTITLES_ENABLED && config.SUBTITLE_AUTOSYNC && (bind === 'stream' || bind === 'both');
 
@@ -585,7 +601,9 @@ async function buildStreams({ tmdbId, type, season, episode, refresh = false }) 
     }, config.PREFETCH_DELAY_MS).unref();
   }
 
-  return built;
+  // Filtre en sortie seulement: l'enregistrement des flux (calage des sous-titres) et leur
+  // ordre portent sur la liste entiere, quel que soit le sous-addon qui a demande.
+  return group ? built.filter((_, index) => langGroup(kept[index]) === group) : built;
 }
 
 /**
