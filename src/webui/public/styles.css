@@ -1092,6 +1092,8 @@ details[open] > summary .json-caret {
   inset: 0;
   z-index: 50;
   display: grid;
+  /* Piste bornee a l'ecran: sinon un tableau large etire la modale hors du telephone. */
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   padding: 16px;
   background: rgba(5, 6, 12, 0.55);
@@ -2090,4 +2092,94 @@ details[open] > summary .json-caret {
   border-radius: 999px;
   background: var(--surface-2);
   border: 1px solid var(--border);
+}
+
+.share-link {
+  display: grid;
+  gap: 6px;
+}
+.share-link .url {
+  min-width: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* --- Telephone: modale en feuille du bas, tableaux replies -------------------------------- */
+@media (max-width: 600px) {
+  .hide-sm {
+    display: none;
+  }
+  .channels-toolbar .search-input {
+    flex: 1 1 100%;
+  }
+  .channels-table td.nowrap {
+    white-space: normal;
+  }
+  .channel-cell {
+    min-width: 0;
+  }
+  .modal-backdrop {
+    padding: 0;
+    align-items: end;
+  }
+  .modal,
+  .modal-wide {
+    width: 100%;
+    max-height: 92dvh;
+    border-radius: 18px 18px 0 0;
+    border-bottom: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .modal-head,
+  .modal-body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .edit-field {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 8px;
+  }
+  .edit-field > span {
+    grid-column: 1 / -1;
+  }
+  .edit-field select {
+    grid-column: 1 / -1;
+  }
+  /* Une carte par flux: n° a gauche, actions a droite, details empiles au milieu. */
+  .streams-table thead {
+    display: none;
+  }
+  .streams-table tr {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    column-gap: 8px;
+    row-gap: 2px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .streams-table tr:last-child {
+    border-bottom: 0;
+  }
+  .streams-table td {
+    grid-column: 2;
+    padding: 0;
+    border: 0;
+  }
+  .streams-table td:first-child {
+    grid-column: 1;
+    grid-row: 1 / span 4;
+  }
+  .streams-table td:nth-child(3) {
+    font-size: 12px;
+  }
+  .streams-table td:last-child {
+    grid-column: 3;
+    grid-row: 1 / span 4;
+    align-self: center;
+    display: flex;
+    flex-direction: column;
+  }
+  .streams-table td:last-child .btn span {
+    display: none;
+  }
 }

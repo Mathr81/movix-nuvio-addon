@@ -21,6 +21,8 @@ function publicUrls() {
     m3u: `${base}/iptv/${token}/playlist.m3u`,
     m3uAll: `${base}/iptv/${token}/playlist.m3u?sources=all`,
     epg: `${base}/iptv/${token}/epg.xml.gz`,
+    // + `/<cle>.m3u8` (chaine, bascule auto) ou `/<cle>/<sid>.m3u8` (un flux precis)
+    play: `${base}/iptv/${token}/play`,
     xtream: { server: base, username: 'movix', password: token },
   };
 }

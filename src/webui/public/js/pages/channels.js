@@ -57,6 +57,7 @@ function ChannelModal({ channel, data, act, onClose }) {
   const others = useMemo(() => data.rows.filter((c) => c.key !== channel.key), [data, channel.key]);
   const targetKey = others.find((c) => c.name === target)?.key;
   const detached = data.edits.splits.includes(channel.key);
+  const link = data.urls && `${data.urls.play}/${channel.key}.m3u8`;
   const mergedInto = data.edits.merges[channel.key];
 
   const test = async () => {
@@ -85,6 +86,16 @@ function ChannelModal({ channel, data, act, onClose }) {
       </${Button}>
     </div>
 
+    ${link && html`<div class="share-link top-gap">
+      <span class="muted small">Lien de la chaîne, à ouvrir dans VLC ou un lecteur IPTV : il bascule seul sur un flux vivant.</span>
+      <div class="row gap-sm">
+        <code class="url grow">${link}</code>
+        <${CopyButton} text=${link} label="Copier" />
+        ${navigator.share && html`<${Button} size="sm" variant="ghost" icon="external"
+          onClick=${() => navigator.share({ title: channel.name, url: link }).catch(() => {})}>Partager</${Button}>`}
+      </div>
+    </div>`}
+
     ${result && html`<${Callout} tone=${result.chosen ? 'ok' : 'error'} title=${result.chosen ? `Flux retenu : ${result.chosen.label}` : 'Aucun flux ne répond'}>
       ${result.ms} ms${result.host ? ` · ${result.host}` : ''} · essais :
       ${result.tried.map((t) => html` <span class=${t.ok ? 'tone-ok' : 'muted'}>${t.ok ? '✓' : '✗'} ${t.label}${t.trusted ? ' (déjà vérifié)' : ''}</span>`)}
@@ -92,7 +103,7 @@ function ChannelModal({ channel, data, act, onClose }) {
 
     <h4 class="subhead top-gap">Flux, dans l'ordre où ils sont essayés</h4>
     <div class="table-wrap">
-      <table class="table table-compact">
+      <table class="table table-compact streams-table">
         <thead><tr><th>#</th><th>Flux</th><th>Nom d'origine</th><th>Définition</th><th>État</th><th></th></tr></thead>
         <tbody>
           ${channel.streams.map((s, i) => html`<tr key=${s.sid}>
@@ -102,10 +113,11 @@ function ChannelModal({ channel, data, act, onClose }) {
             <td><${Definition} stream=${s} /></td>
             <td><${StreamState} stream=${s} />${s.checkedAt && html`<div class="muted small">${timeAgo(s.checkedAt)}</div>`}</td>
             <td class="nowrap">
-              <${Button} size="sm" variant="ghost" icon="star"
+              <${Button} size="sm" variant="ghost" icon="star" title=${s.preferred ? 'Ne plus forcer' : 'Forcer en premier'}
                 onClick=${() => act('prefer', { key: channel.key, sid: s.preferred ? null : s.sid })}>
                 ${s.preferred ? 'Ne plus forcer' : 'Forcer en premier'}
               </${Button}>
+              ${link && html`<${CopyButton} text=${`${data.urls.play}/${channel.key}/${s.sid}.m3u8`} />`}
             </td>
           </tr>`)}
         </tbody>
@@ -271,7 +283,7 @@ export function ChannelsPage({ params }) {
         ? html`<${Empty} icon="tv" title="Aucune chaîne ne correspond" />`
         : html`<div class="table-wrap table-flush">
           <table class="table table-compact channels-table">
-            <thead><tr><th>N°</th><th>Chaîne</th><th>Thème</th><th>Guide</th><th>Flux</th><th>Premier flux</th><th></th></tr></thead>
+            <thead><tr><th>N°</th><th>Chaîne</th><th class="hide-sm">Thème</th><th class="hide-sm">Guide</th><th>Flux</th><th class="hide-sm">Premier flux</th><th></th></tr></thead>
             <tbody>
               ${shown.slice(0, limit).map((c) => {
                 const alive = aliveCount(c);
@@ -289,13 +301,13 @@ export function ChannelsPage({ params }) {
                       </span>
                     </div>
                   </td>
-                  <td class="muted nowrap">${c.group}</td>
-                  <td>${c.tvgId ? html`<${Dot} tone="ok" />` : html`<span class="muted">—</span>`}</td>
+                  <td class="muted nowrap hide-sm">${c.group}</td>
+                  <td class="hide-sm">${c.tvgId ? html`<${Dot} tone="ok" />` : html`<span class="muted">—</span>`}</td>
                   <td class="nowrap">
                     ${c.streams.length}
                     ${tested > 0 && html`<span class=${alive === 0 ? 'err-line' : 'muted'}> · ${plural(alive, 'vivant')}</span>`}
                   </td>
-                  <td class="nowrap">${first?.label}${first?.preferred && html` <${Badge} tone="accent">forcé</${Badge}>`}</td>
+                  <td class="nowrap hide-sm">${first?.label}${first?.preferred && html` <${Badge} tone="accent">forcé</${Badge}>`}</td>
                   <td class="nowrap" onClick=${(e) => e.stopPropagation()}>
                     <button class="icon-btn icon-btn-sm" title=${c.hidden === 'user' ? 'Remettre dans la playlist' : 'Masquer'}
                       onClick=${() => act('hideChannel', { key: c.key, hidden: c.hidden !== 'user' })}>
