@@ -96,10 +96,10 @@ async function extraction(type, id) {
 // Ce que la sonde a REELLEMENT obtenu par lien, avant mise en forme. C'est la difference
 // entre "aucune mesure" et "mesure aberrante", que le libelle affiche dans Nuvio ne
 // permet plus de distinguer.
-async function streams(type, id) {
+async function streams(type, id, { refresh = false } = {}) {
   const { tmdbId, season, episode } = await resolveId(type, id);
   // `wait`: on veut l'etat FINAL des mesures, pas celui de la premiere reponse.
-  const resolved = await resolveStreams({ tmdbId, type, season, episode, wait: true });
+  const resolved = await resolveStreams({ tmdbId, type, season, episode, wait: true, refresh });
 
   return {
     tmdbId,

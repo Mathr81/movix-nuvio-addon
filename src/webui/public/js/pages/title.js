@@ -132,8 +132,8 @@ function EpisodePicker({ tmdbId, seasons, season, episode, onPick }) {
 }
 
 // --- Diagnostic ------------------------------------------------------------------------
-function useDiagnostic(path, enabled) {
-  return useResource(() => (enabled ? api(path) : Promise.resolve(null)), [path, enabled]);
+function useDiagnostic(path, enabled, query) {
+  return useResource(() => (enabled ? api(path, { query }) : Promise.resolve(null)), [path, enabled, JSON.stringify(query)]);
 }
 
 function tierTone(tier) {
@@ -144,7 +144,7 @@ function tierTone(tier) {
   return 'neutral';
 }
 
-function StreamsTab({ state }) {
+function StreamsTab({ state, onRescan }) {
   const { data, error, loading, reload } = state;
   if (error) return html`<${ErrorBox} error=${error} onRetry=${reload} />`;
   if (!data) return html`<div class="loading-block"><${Spinner} /> Résolution et mesure des flux… (peut prendre une trentaine de secondes)</div>`;
@@ -158,7 +158,7 @@ function StreamsTab({ state }) {
       <${Badge}>mode ${data.mode}</${Badge}>
       ${Object.keys(data.ecartes || {}).length > 0 && html`<${Badge} tone="warn">sonde : ${Object.keys(data.ecartes).join(', ')} écarté(s)</${Badge}>`}
       <span class="grow"></span>
-      <${Button} size="sm" variant="ghost" icon="refresh" loading=${loading} onClick=${reload}>Relancer</${Button}>
+      <${Button} size="sm" variant="ghost" icon="refresh" loading=${loading} onClick=${onRescan}>Relancer</${Button}>
     </div>
     <div class="table-wrap">
       <table class="table">
@@ -356,7 +356,9 @@ function SubtitlesTab({ state }) {
 
 function Diagnostic({ type, id }) {
   const encoded = encodeURIComponent(id);
-  const streams = useDiagnostic(`title/${type}/${encoded}/streams`, true);
+  // Relancer = nouveau scan complet, cache de resolution ignore (sinon on relirait le meme).
+  const [rescan, setRescan] = useState(0);
+  const streams = useDiagnostic(`title/${type}/${encoded}/streams`, true, rescan ? { refresh: rescan } : undefined);
   const links = useDiagnostic(`title/${type}/${encoded}/links`, true);
   const extract = useDiagnostic(`title/${type}/${encoded}/extract`, true);
   const subs = useDiagnostic(`title/${type}/${encoded}/subtitles`, true);
@@ -373,7 +375,7 @@ function Diagnostic({ type, id }) {
       ]} />
     </div>
     <div class="tab-body">
-      ${tab === 'streams' && html`<${StreamsTab} state=${streams} />`}
+      ${tab === 'streams' && html`<${StreamsTab} state=${streams} onRescan=${() => setRescan((n) => n + 1)} />`}
       ${tab === 'links' && html`<${LinksTab} state=${links} />`}
       ${tab === 'extract' && html`<${ExtractTab} state=${extract} />`}
       ${tab === 'subs' && html`<${SubtitlesTab} state=${subs} />`}

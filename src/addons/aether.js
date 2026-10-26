@@ -248,7 +248,7 @@ function selectedServers() {
 // Un .env ecrit avant l'ajout d'un serveur fige AETHER_SERVERS sur une liste plus courte
 // que ce qui est installe. Le serveur manquant disparait alors sans qu'aucune erreur ne le
 // signale -- c'est exactement le cas de la source VF, qui se voit seulement a l'usage.
-const unlisted = Object.keys(SERVERS).filter(
+const unlisted = Object.keys(SERVERS).filter((name) => name !== 'love').filter(
   (name) => !config.AETHER_SERVERS.some((listed) => listed.toLowerCase() === name),
 );
 if (unlisted.length > 0) {

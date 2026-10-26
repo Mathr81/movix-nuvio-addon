@@ -258,7 +258,9 @@ function router() {
   api.get('/title/:type/:id/extract', (req, res) =>
     send(res, diagnostics.extraction(req.params.type, req.params.id)),
   );
-  api.get('/title/:type/:id/streams', (req, res) => send(res, diagnostics.streams(req.params.type, req.params.id)));
+  api.get('/title/:type/:id/streams', (req, res) =>
+    send(res, diagnostics.streams(req.params.type, req.params.id, { refresh: !!req.query.refresh })),
+  );
   api.get('/title/:type/:id/subtitles', (req, res) =>
     send(res, diagnostics.subtitleReport(req.params.type, req.params.id)),
   );

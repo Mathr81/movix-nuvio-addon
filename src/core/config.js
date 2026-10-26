@@ -306,7 +306,9 @@ const config = {
   // Domaines tournants: les a-jour sont listes sur https://rentry.co/aetherdomains.
   AETHER_SITE_ORIGIN: readEnv('AETHER_SITE_ORIGIN', 'https://aether.ist'),
   AETHER_API_DOMAIN: readEnv('AETHER_API_DOMAIN', 'raccoonunbutteredbagel.zip'),
-  AETHER_SERVERS: readList('AETHER_SERVERS', ['aurora', 'love', 'lul', 'link', 'gallic']),
+  // "love" existe mais n'est pas dans le defaut: son CDN (c.ravenflix.st) repond 403 a tout
+  // ce qui n'est pas l'extension navigateur du site, lien frais et en-tetes du site compris.
+  AETHER_SERVERS: readList('AETHER_SERVERS', ['aurora', 'lul', 'link', 'gallic']),
   // Origin/Referer exiges par le CDN tiers du serveur "link".
   AETHER_LINK_ORIGIN: readEnv('AETHER_LINK_ORIGIN', 'https://nextgencloudfabric.com'),
   // Gallic n'est pas sur le domaine d'API des autres serveurs: il a sa propre base.
