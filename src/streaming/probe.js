@@ -111,11 +111,7 @@ function throughProxy(url) {
 function makeClient(headers) {
   return axios.create({
     timeout: config.PROBE_TIMEOUT_MS,
-    // Marque les requetes de la sonde. Quand un repli la fait passer par NOTRE proxy, celui-ci
-    // ne doit pas les confondre avec le debut d'une lecture: il declencherait le calage des
-    // sous-titres de chaque lien de la liste, pour des flux que personne ne regarde
-    // (cf. streaming/playback.js).
-    headers: { ...headers, 'X-Movix-Probe': '1' },
+    headers,
     httpsAgent: insecureAgent,
     validateStatus: () => true,
     maxRedirects: 5,
@@ -556,7 +552,7 @@ function ffprobeReady() {
 function resolutionOf(url, headers, timeoutMs) {
   return new Promise((resolve) => {
     // Options PRIVEES du protocole http: sur une entree qui n'en est pas une, elles font
-    // echouer l'ouverture (cf. subtitles/speech.js, meme piege).
+    // echouer l'ouverture.
     const network = /^https?:\/\//i.test(String(url))
       ? [
           '-user_agent', DEFAULT_UA,

@@ -1,7 +1,5 @@
 const config = require('./core/config');
 const subtitles = require('./streaming/subtitles');
-const subsync = require('./streaming/subtitles/sync');
-const playback = require('./streaming/playback');
 const streamProxy = require('./streaming/streamProxy');
 const { resolveId } = require('./catalog/idResolver');
 const { collectRawLinks, resolveStreams, buildStreams } = require('./streaming/streamBuilder');
@@ -139,51 +137,56 @@ async function streams(type, id) {
   };
 }
 
-// Quels flux sont connus pour ce titre, lequel est (ou a ete) lu, et ce que le calage a
-// trouve. `compute` force le calcul au lieu de se contenter de ce qui est deja en cache --
-// c'est la facon de le tester sans lancer Nuvio.
-async function subtitleSync(type, id, { compute = false } = {}) {
+// Sous-titres d'un titre: ce que rend chaque fournisseur (interroge sans cache: c'est un
+// test), ce que Nuvio recoit -- chaque piste reellement telechargee et convertie -- et ce
+// que les sources livrent avec leurs flux (Movy, KissKH).
+async function subtitleReport(type, id) {
   const { tmdbId, season, episode } = await resolveId(type, id);
-  const content = `${type}:${tmdbId}:${season ?? ''}:${episode ?? ''}`;
+  const publicBaseUrl = config.PUBLIC_URL || `http://127.0.0.1:${config.PORT}`;
 
-  // Construire la liste garantit que les flux sont enregistres: sans ouverture de fiche
-  // prealable, le registre serait vide et le diagnostic ne montrerait rien.
-  await buildStreams({ tmdbId, type, season, episode });
-  const [tracks, ffmpeg] = await Promise.all([
+  const [fournisseurs, tracks, resolved] = await Promise.all([
+    Promise.all(
+      subtitles.PROVIDERS.map(async (provider) => {
+        const startedAt = Date.now();
+        const base = { id: provider.id, nom: provider.name, actif: config.SUBTITLE_PROVIDERS.includes(provider.id) };
+        try {
+          const found = await provider.search({ type, tmdbId, season, episode, langs: config.SUBTITLE_LANGS });
+          return { ...base, ok: true, ms: Date.now() - startedAt, pistes: found.length, langues: [...new Set(found.map((f) => f.lang))] };
+        } catch (err) {
+          return { ...base, ok: false, ms: Date.now() - startedAt, erreur: err.message };
+        }
+      }),
+    ),
     subtitles.collectTracks({ type, tmdbId, season, episode }),
-    subsync.enabled(),
+    resolveStreams({ tmdbId, type, season, episode }).catch(() => []),
   ]);
 
-  const known = playback.forContent(content);
-  const playing = playback.current(content, { fallbackToFirst: true });
+  const pistes = await Promise.all(
+    tracks.map(async (track) => {
+      const row = { lang: track.lang, fournisseur: track.provider, url: subtitles.subtitleUrl(publicBaseUrl, track.url) };
+      try {
+        const vtt = await subtitles.fetchAsVtt(track.url);
+        return { ...row, repliques: (vtt.match(/-->/g) || []).length };
+      } catch (err) {
+        return { ...row, erreur: err.message };
+      }
+    }),
+  );
 
-  let calage = null;
-  if (compute && playing && tracks.length > 0) {
-    const vtt = await subtitles.fetchAsVtt(tracks[0].url);
-    const plan = await subsync.planFor({
-      streamUrl: playing.record.url,
-      streamKey: playing.record.key,
-      subtitleKey: tracks[0].url,
-      vtt,
-      refererUrl: playing.record.refererUrl,
-      durationHint: playing.record.durationHint,
-    });
-    calage = { piste: tracks[0].lang, resume: subsync.describe(plan), plan };
+  const parSource = new Map();
+  for (const link of resolved) {
+    for (const sub of link.subtitles || []) {
+      if (!parSource.has(link.sourceName)) parSource.set(link.sourceName, new Set());
+      parSource.get(link.sourceName).add(sub.lang);
+    }
   }
 
   return {
-    content,
-    actif: config.SUBTITLE_AUTOSYNC,
-    ffmpegDisponible: ffmpeg,
-    liaison: config.SUBTITLE_AUTOSYNC_BIND,
-    seuilConfiance: config.SUBTITLE_AUTOSYNC_MIN_CONFIDENCE,
-    fluxConnus: known.map((r) => ({ id: r.id, libelle: r.label, cle: r.key, dureeTmdb: r.durationHint })),
-    // `certain: false` = rien n'a ete observe par le proxy, c'est le mieux classe qui est
-    // propose. Le calage ne s'appuie dessus que si SUBTITLE_AUTOSYNC_GUESS_STREAM est actif.
-    fluxRetenu: playing ? { libelle: playing.record.label, certain: playing.certain } : null,
-    pistes: tracks.map((t) => ({ lang: t.lang, fournisseur: t.provider })),
-    calage,
+    langues: config.SUBTITLE_LANGS,
+    fournisseurs,
+    pistes,
+    sources: [...parSource].map(([source, langs]) => ({ source, langues: [...langs] })),
   };
 }
 
-module.exports = { rawLinks, extraction, streams, subtitleSync };
+module.exports = { rawLinks, extraction, streams, subtitleReport };

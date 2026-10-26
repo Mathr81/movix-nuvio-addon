@@ -305,55 +305,53 @@ function hostOf(url) {
   }
 }
 
-function SubtitlesTab({ type, id, state }) {
+function SubtitlesTab({ state }) {
   const { data, error, reload } = state;
-  const [computed, setComputed] = useState(null);
-  const [computing, setComputing] = useState(false);
-  const [computeError, setComputeError] = useState(null);
   if (error) return html`<${ErrorBox} error=${error} onRetry=${reload} />`;
-  if (!data) return html`<div class="loading-block"><${Spinner} /> Recherche des pistes…</div>`;
+  if (!data) return html`<div class="loading-block"><${Spinner} /> Interrogation des fournisseurs…</div>`;
 
-  const compute = async () => {
-    setComputing(true);
-    setComputeError(null);
-    try {
-      setComputed(await api(`title/${type}/${encodeURIComponent(id)}/subsync`, { query: { compute: 1 } }));
-    } catch (err) {
-      setComputeError(err);
-    } finally {
-      setComputing(false);
-    }
-  };
-  const shown = computed || data;
   return html`
     <div class="grid grid-tight">
-      <${Card} title="Pistes" icon="captions">
-        ${shown.pistes.length
-          ? html`<div class="chips">${shown.pistes.map((p) => html`<${Badge} tone="accent">${p.lang} <span class="muted">· ${p.fournisseur}</span></${Badge}>`)}</div>`
-          : html`<${Empty} title="Aucune piste trouvée" />`}
-      </${Card}>
-      <${Card} title="Calage automatique" icon="gauge">
-        <${KeyValue} rows=${[
-          ['Activé', html`<${Badge} tone=${shown.actif ? 'ok' : 'neutral'}>${shown.actif ? 'oui' : 'non'}</${Badge}>`],
-          ['ffmpeg', html`<${Badge} tone=${shown.ffmpegDisponible ? 'ok' : 'warn'}>${shown.ffmpegDisponible ? 'disponible' : 'absent'}</${Badge}>`],
-          ['Liaison', html`<code>${String(shown.liaison)}</code>`],
-          ['Seuil de confiance', html`<code>${String(shown.seuilConfiance)}</code>`],
-          ['Flux retenu', shown.fluxRetenu ? html`${shown.fluxRetenu.libelle} ${!shown.fluxRetenu.certain && html`<${Badge} tone="warn">supposé</${Badge}>`}` : '—'],
-        ]} />
-        <div class="row gap top-gap">
-          <${Button} icon="zap" loading=${computing} disabled=${!shown.pistes.length} onClick=${compute}>Calculer le calage</${Button}>
+      <${Card} title="Fournisseurs" icon="server">
+        <div class="link-rows">
+          ${data.fournisseurs.map((f) => html`<div class="link-row">
+            <strong>${f.nom}</strong>
+            ${f.ok
+              ? html`<${Badge} tone="ok">${plural(f.pistes, 'piste')}</${Badge}>`
+              : html`<${Badge} tone="error">échec</${Badge}>`}
+            ${!f.actif && html`<${Badge}>hors SUBTITLE_PROVIDERS</${Badge}>`}
+            <span class="muted small nowrap">${f.ms} ms</span>
+            ${f.ok
+              ? html`<span class="muted small">${f.langues.join(', ') || 'aucune langue reconnue'}</span>`
+              : html`<span class="muted small">${f.erreur}</span>`}
+          </div>`)}
         </div>
-        ${computeError && html`<${ErrorBox} error=${computeError} />`}
-        ${computed?.calage && html`<${Callout} tone="ok" title=${`Piste ${computed.calage.piste}`}><pre class="pre-wrap">${computed.calage.resume}</pre></${Callout}>`}
-        ${computed && !computed.calage && html`<${Callout} tone="warn">Aucun calage calculé (pas de flux ou de piste exploitable).</${Callout}>`}
+      </${Card}>
+      <${Card} title="Envoyées à Nuvio" icon="captions">
+        ${data.pistes.length
+          ? html`<div class="link-rows">
+              ${data.pistes.map((p) => html`<div class="link-row">
+                <${Badge} tone="accent">${p.lang}</${Badge}>
+                <span class="muted small">${p.fournisseur}</span>
+                ${p.erreur
+                  ? html`<${Badge} tone="error">${p.erreur}</${Badge}>`
+                  : html`<${Badge} tone="ok">${plural(p.repliques, 'réplique')}</${Badge}>`}
+                <a class="small" href=${p.url} target="_blank" rel="noopener">ouvrir</a>
+              </div>`)}
+            </div>`
+          : html`<${Empty} title="Aucune piste">Aucun fournisseur n'a de piste en ${data.langues.join(', ')}.</${Empty}>`}
       </${Card}>
     </div>
-    ${shown.fluxConnus.length > 0 && html`<${Card} title="Flux connus pour ce contenu" icon="layers">
+    ${data.sources.length > 0 && html`<${Card} title="Fournies par les sources" icon="layers" class="top-gap">
+      <p class="muted small">Attachées aux flux eux-mêmes : même fichier que la vidéo, donc calées.</p>
       <div class="link-rows">
-        ${shown.fluxConnus.map((f) => html`<div class="link-row"><${Badge}>${f.id}</${Badge}><span>${f.libelle}</span></div>`)}
+        ${data.sources.map((s) => html`<div class="link-row">
+          <strong>${s.source}</strong>
+          <div class="chips">${s.langues.map((l) => html`<${Badge}>${l}</${Badge}>`)}</div>
+        </div>`)}
       </div>
     </${Card}>`}
-    <${JsonView} data=${shown} />`;
+    <${JsonView} data=${data} />`;
 }
 
 function Diagnostic({ type, id }) {
@@ -361,7 +359,7 @@ function Diagnostic({ type, id }) {
   const streams = useDiagnostic(`title/${type}/${encoded}/streams`, true);
   const links = useDiagnostic(`title/${type}/${encoded}/links`, true);
   const extract = useDiagnostic(`title/${type}/${encoded}/extract`, true);
-  const subs = useDiagnostic(`title/${type}/${encoded}/subsync`, true);
+  const subs = useDiagnostic(`title/${type}/${encoded}/subtitles`, true);
   const [tab, setTab] = useState('streams');
 
   const count = (state, pick) => (state.data ? pick(state.data) : state.error ? '!' : '…');
@@ -378,7 +376,7 @@ function Diagnostic({ type, id }) {
       ${tab === 'streams' && html`<${StreamsTab} state=${streams} />`}
       ${tab === 'links' && html`<${LinksTab} state=${links} />`}
       ${tab === 'extract' && html`<${ExtractTab} state=${extract} />`}
-      ${tab === 'subs' && html`<${SubtitlesTab} type=${type} id=${id} state=${subs} />`}
+      ${tab === 'subs' && html`<${SubtitlesTab} state=${subs} />`}
     </div>
   </${Card}>`;
 }

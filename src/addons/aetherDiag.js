@@ -136,7 +136,7 @@ async function diagnose(tmdbId, season, episode) {
   console.log(`\n=== Aether / link -- tmdbId=${tmdbId}${isSeries ? ` S${season}E${episode}` : ''} ===`);
   console.log(`Page du media : ${referer}\n`);
 
-  console.log('1) API link.aether.cx');
+  console.log(`1) API link.${config.AETHER_API_DOMAIN}`);
   const api = await timed(`GET ${path}`, () =>
     http.get(`https://link.${config.AETHER_API_DOMAIN}${path}`, {
       headers: {

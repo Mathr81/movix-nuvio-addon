@@ -6,8 +6,6 @@ const config = require('../core/config');
 const cache = require('../core/cache');
 const tmdbClient = require('../integrations/tmdb');
 const streamProxy = require('./streamProxy');
-const playback = require('./playback');
-const subtitles = require('./subtitles');
 const { probe, formatBitrate, formatSize } = require('./probe');
 
 const MAX_CONCURRENT_EXTRACTIONS = config.EXTRACT_CONCURRENCY;
@@ -535,28 +533,11 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false, ref
   return first;
 }
 
-/** Cle de contenu, telle que la porte l'URL des sous-titres (cf. playback.js). */
-function contentKey(type, tmdbId, season, episode) {
-  return `${type}:${tmdbId}:${season ?? ''}:${episode ?? ''}`;
-}
-
 async function buildStreams({ tmdbId, type, season, episode, refresh = false, group = null }) {
-  const bind = config.SUBTITLE_AUTOSYNC_BIND;
-  const perStreamTracks = config.SUBTITLES_ENABLED && config.SUBTITLE_AUTOSYNC && (bind === 'stream' || bind === 'both');
-
-  // Les pistes sont cherchees EN PARALLELE de la resolution des liens: elles ne coutent
-  // qu'un appel a un index deja memoise, mais l'attendre apres coup l'ajouterait tel quel
-  // au temps d'ouverture d'une fiche, qui est deja ce qu'il est.
-  const [enriched, tracks, durationHint, original] = await Promise.all([
+  const [enriched, original] = await Promise.all([
     resolveStreams({ tmdbId, type, season, episode, refresh }),
-    perStreamTracks
-      ? subtitles.collectTracks({ type, tmdbId, season, episode }).catch(() => [])
-      : Promise.resolve([]),
-    config.SUBTITLE_AUTOSYNC ? runtimeSeconds(type, tmdbId).catch(() => null) : Promise.resolve(null),
     group ? originalLanguage(type, tmdbId) : null,
   ]);
-  const content = contentKey(type, tmdbId, season, episode);
-  const publicBaseUrl = config.PUBLIC_URL || `http://127.0.0.1:${config.PORT}`;
 
   // Elagage APRES le tri, et seulement ici: /debug/streams doit continuer a montrer TOUT
   // ce qui a ete resolu et mesure, sans quoi il ne servirait plus a diagnostiquer.
@@ -571,7 +552,6 @@ async function buildStreams({ tmdbId, type, season, episode, refresh = false, gr
     console.log(`[streamBuilder] ${enriched.length - kept.length} lien(s) redondant(s) masque(s) (${kept.length} affiche(s))`);
   }
 
-  const registered = [];
   const built = kept.map((r) => {
     const quality = formatQuality(tierOf(r));
     const label = tidySourceName(r.sourceName);
@@ -618,69 +598,14 @@ async function buildStreams({ tmdbId, type, season, episode, refresh = false, gr
       stream.behaviorHints.notWebReady = true;
     }
 
-    // Sous-titres fournis par la source elle-meme (KissKH en livre avec chaque episode).
-    // Ils ne passent pas par la resource `subtitles` de l'addon, qui interroge
-    // OpenSubtitles: celui-ci couvre mal les dramas asiatiques, alors que la source
-    // connait ses propres pistes -- dont, souvent, la seule VF disponible.
-    const own = Array.isArray(r.subtitles) ? r.subtitles : [];
-
-    // Le flux est enregistre pour pouvoir etre RETROUVE au moment de caler les sous-titres:
-    // ni la ressource `subtitles` ni la route /subtitle ne savent, autrement, lequel des dix
-    // liens de la liste est en train d'etre lu (cf. playback.js).
-    if (config.SUBTITLE_AUTOSYNC && stream.url) {
-      const streamId = playback.register({
-        content,
-        // Cle VOLONTAIREMENT stable d'un scan a l'autre: une URL d'hebergeur porte souvent
-        // un jeton qui expire, alors que "cette source, a cette qualite, pour cet episode"
-        // designe le meme release demain. C'est ce qui fait qu'une serie reprise le
-        // lendemain ne repaye pas son calage.
-        key: `${content}|${r.sourceName || '?'}|${r.variant || ''}|${tierOf(r) || 0}`,
-        url: stream.url,
-        target: streamProxy.sourceOf(stream.url) || stream.url,
-        refererUrl: r.embedUrl,
-        durationHint,
-        label: [label, quality].filter(Boolean).join(' '),
-      });
-      registered.push(streamId);
-
-      if (perStreamTracks) {
-        // Une piste de la source prime sur la notre pour la meme langue: elle vient du
-        // meme fichier que la video, elle est donc calee par construction.
-        const langs = new Set(own.map((sub) => sub.lang));
-        const mine = subtitles.toStremio(
-          tracks.filter((track) => !langs.has(track.lang)),
-          publicBaseUrl,
-          { kind: 's', ref: streamId },
-        );
-        if (mine.length > 0) stream.subtitles = [...own, ...mine];
-      }
-    }
-
-    if (!stream.subtitles && own.length > 0) stream.subtitles = own;
+    // Sous-titres fournis par la source elle-meme (KissKH, Movy): ils viennent du meme
+    // fichier que la video, donc cales par construction, et couvrent souvent des langues
+    // qu'OpenSubtitles n'a pas pour ce titre.
+    if (Array.isArray(r.subtitles) && r.subtitles.length > 0) stream.subtitles = r.subtitles;
 
     return stream;
   });
 
-  // L'ordre compte: c'est celui du tri par qualite, donc celui de la vraisemblance quand
-  // aucun flux n'a encore ete observe en lecture.
-  if (config.SUBTITLE_AUTOSYNC) playback.setOrder(content, registered);
-
-  // Prechauffage: le flux le mieux classe est celui qu'on lancera le plus souvent, et le
-  // calage prend quelques dizaines de secondes. Le declenchement le plus utile reste
-  // toutefois celui de la premiere requete du proxy (cf. subtitles/index.js): la, on ne
-  // suppose plus rien.
-  if (config.SUBTITLE_AUTOSYNC && config.SUBTITLE_AUTOSYNC_PREFETCH > 0) {
-    setTimeout(async () => {
-      const candidates = playback.forContent(content).slice(0, config.SUBTITLE_AUTOSYNC_PREFETCH);
-      const chosen = tracks.length > 0 ? tracks : await subtitles.collectTracks({ type, tmdbId, season, episode }).catch(() => []);
-      for (const candidate of candidates) {
-        await subtitles.prepareSync(candidate, chosen);
-      }
-    }, config.PREFETCH_DELAY_MS).unref();
-  }
-
-  // Filtre en sortie seulement: l'enregistrement des flux (calage des sous-titres) et leur
-  // ordre portent sur la liste entiere, quel que soit le sous-addon qui a demande.
   return group ? built.filter((_, index) => langGroupsOf(kept[index], original).includes(group)) : built;
 }
 

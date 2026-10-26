@@ -250,11 +250,7 @@ builder.defineSubtitlesHandler(async ({ type, id }) => {
     // Les sous-titres sont servis par notre propre route /subtitle.vtt (conversion .gz -> .vtt),
     // il faut donc une URL que l'appareil de lecture sait joindre.
     const publicBaseUrl = config.PUBLIC_URL || `http://127.0.0.1:${config.PORT}`;
-    // La cle de contenu voyage dans l'URL de chaque piste: c'est elle qui permettra, au
-    // moment ou le lecteur ira chercher le fichier, de savoir QUEL flux est en cours et
-    // donc sur quoi caler (cf. streaming/playback.js). Le protocole, lui, ne le dit pas.
-    const bind = config.SUBTITLE_AUTOSYNC ? { kind: 'c', ref: `${type}:${tmdbId}:${season ?? ''}:${episode ?? ''}` } : null;
-    const subtitles = await buildSubtitles({ type, tmdbId, season, episode, publicBaseUrl, bind });
+    const subtitles = await buildSubtitles({ type, tmdbId, season, episode, publicBaseUrl });
     return { subtitles };
   } catch (err) {
     console.error('[subtitles] erreur:', err.message);
@@ -267,3 +263,5 @@ module.exports = builder.getInterface();
 // avoir a simuler tout le protocole Stremio.
 module.exports.wantsRescan = wantsRescan;
 module.exports.streamsFor = streamsFor;
+// Sous-addons de flux par famille de langue (routes dans server.js, liens dans la WebUI).
+module.exports.LANG_ADDONS = { vf: 'VF', vostfr: 'VOSTFR', vo: 'VO' };

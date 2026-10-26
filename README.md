@@ -100,18 +100,12 @@ src/
 │   ├── hosterVoe.js           Résolution spécifique aux domaines tournants Voe
 │   ├── hosterVeev.js          Veev : défi LZW + API player_api (portage de proxiesembed)
 │   ├── probe.js               Sonde le débit/la taille réels d'un flux
-│   ├── playback.js             Quel flux est en cours de lecture (le protocole ne le dit pas)
-│   └── subtitles/              Sous-titres : cascade de fournisseurs, conversion VTT, calage
+│   └── subtitles/              Sous-titres : cascade de fournisseurs, conversion VTT
 │       ├── index.js             Cascade par langue, route de conversion, liste blanche
 │       ├── vdrk.js               Fournisseur par défaut (déjà en VTT, indexé TMDB)
 │       ├── opensubtitles.js       Fournisseur de repli
 │       ├── langs.js                Libellés vdrk → codes ISO 639-2/B
-│       ├── vtt.js                   SRT→VTT, encodage, retrait des publicités
-│       ├── cues.js                   Bornes des répliques, application d'une correction
-│       ├── audio.js                   Voie la moins chère vers la bande son d'un flux
-│       ├── speech.js                   Où l'on parle dans le flux (enveloppe ffmpeg)
-│       ├── align.js                     Corrélation croisée → décalage et dérive
-│       └── sync.js                       Orchestration, mémoire, seuil de refus
+│       └── vtt.js                   SRT→VTT, encodage, retrait des publicités
 │
 ├── integrations/        Clients des services externes
 │   ├── movixClient.js      Client HTTP vers Mainapi (Movix)
@@ -586,183 +580,17 @@ par`, `traduction :`…).
 > hôtes des fournisseurs déclarés — la liste est **dérivée** d'eux, sans quoi ajouter un
 > fournisseur se solderait par un 403 sans rapport apparent.
 
-#### Les sous-titres sont calés sur le flux
+#### Les pistes des sources
 
-Le problème est structurel : les flux viennent de sources diverses, les sous-titres d'un
-index qui ne les connaît pas. Rien ne garantit qu'ils décrivent le même montage ni la même
-cadence, et le résultat se répartit en deux cas :
+Movy et KissKH livrent leurs propres sous-titres avec chaque flux (Movy : souvent une
+vingtaine de langues). Ils sont attachés au flux lui-même (`stream.subtitles`) : même
+fichier que la vidéo, donc calés par construction. Nuvio recale lui-même les autres.
 
-| Symptôme | Cause | Le réglage de délai du lecteur suffit-il ? |
-|---|---|---|
-| Décalage constant de quelques secondes | Habillage de source, logo de distributeur, montage différent | Oui, mais il faut le retrouver à la main |
-| Calé au début, faux de plusieurs minutes à la fin | **Conversion PAL** : la piste vient d'un master à 25 im/s appliqué à un flux à 23,976 (rapport 1,0427) | **Non** — le décalage change en permanence |
+#### Vérifier
 
-L'addon règle les deux. Il écoute quelques fenêtres du flux avec ffmpeg, relève **quand on
-y prend la parole**, compare ces instants à ceux des répliques, et en déduit la correction
-`t_flux = scale × t_sous-titre + offset`.
-
-##### Trois décisions qui font que ça marche
-
-**On compare les DÉBUTS, pas les durées.** C'est le point qui a tout changé à la mesure.
-Corréler les intervalles entiers revient à comparer des durées — or une réplique ne dure
-pas ce que dure la phrase : elle reste affichée après, elle en regroupe parfois deux, une
-traduction condense. Les débuts, eux, coïncident : le sous-titre apparaît quand l'acteur
-ouvre la bouche. Sur deux longs-métrages de test, passer aux débuts fait passer l'un de
-« aucun calage trouvé » à *six fenêtres sur six d'accord*, et ramène à zéro les faux calages
-sur des paires de films sans rapport.
-
-**Le seuil de parole est relatif au HAUT de la dynamique, et il GLISSE** (`p95 − 8 dB`,
-recalculé sur ±15 s). Un seuil absolu façon `silencedetect` ne marche pas : un film mixé
-fort n'a aucun silence, un film mixé bas n'a que ça. Un seuil à mi-hauteur ne marchait pas
-beaucoup mieux — sur un film où la musique ne s'arrête jamais, il marquait 60 à 80 % du
-temps comme « parlé », un signal presque constant dont on ne tire rien. Et un seuil calculé
-une fois pour toute la fenêtre échoue encore autrement : une fenêtre d'une minute et demie
-couvre souvent une scène calme *et* une scène d'action, et le même seuil noie la première ou
-vide la seconde. En le recalculant en continu, **le nombre de pistes calées passe de 5 à 11
-sur le banc d'essai** (voir plus bas), sans un seul faux calage de plus. La bande est en
-outre limitée à 200–3000 Hz : les basses d'une explosion ne comptent plus pour de la voix.
-
-**Le modèle qui n'affirme rien gagne les cas douteux.** Une dérive est une affirmation
-forte — elle déplace la fin du film de plusieurs minutes. À qualité comparable, une pente de
-0,1 % s'ajuste toujours un peu mieux qu'une droite plate sans rien décrire de réel : sur un
-épisode de 45 minutes elle vaut 2,7 s en tout, alors que les fenêtres se dispersaient déjà de
-3 s. Une dérive n'est donc retenue que si elle bat nettement le modèle sans dérive **et**
-qu'elle dépasse trois fois la dispersion des mesures. Les vraies conversions PAL, qui
-déplacent la fin du film de cinq minutes, passent ce critère sans difficulté ; les pentes
-inventées, non. Si vous ne rencontrez jamais que des décalages constants,
-`SUBTITLE_AUTOSYNC_DRIFT=false` supprime la question.
-
-**La dérive n'est pas cherchée comme une pente libre.** Une conversion PAL multiplie
-*exactement* par 25 / (24000/1001) : seuls les rapports d'images/seconde réels sont essayés
-(`1`, `25/23,976`, `25/24`, `24/23,976`, et leurs inverses). Chacun l'est à fond — répliques
-ramenées à sa cadence, puis **une courbe de corrélation complète par fenêtre**, ce qui
-permet de juger chaque candidat à la même aune. Une version antérieure remesurait chaque
-fenêtre dans une bande étroite autour du décalage attendu, là où il n'y a plus de rival à
-battre : deux fenêtres tombant d'accord sur un faux décalage y paraissaient irréprochables
-et l'emportaient sur quatre fenêtres justes.
-
-**Ce que ça coûte.** Presque rien, parce que l'addon ne télécharge jamais la vidéo entière :
-il prend la piste audio séparée du master (`EXT-X-MEDIA:TYPE=AUDIO`) quand il y en a une, et
-sinon la variante **la moins bien encodée** — la bande son y est la même, c'est la même
-diffusion.
-
-Et il va chercher **les segments de la fenêtre lui-même**, au lieu de demander à ffmpeg de
-s'y positionner. Ce n'est pas de la coquetterie : sur une playlist en segments fragmentés
-(fMP4, `EXT-X-MAP`), ffmpeg refuse de chercher et relit tout depuis le début — mesuré sur un
-flux réel, *84 secondes pour lire 20 secondes d'audio situées à la huitième minute*. Comme
-la playlist a déjà été lue, les frontières de segments sont connues : les prendre soi-même
-ne télécharge que la fenêtre, donne l'instant exact où elle commence, et ne dépend plus du
-format des segments. Sur une source à piste audio séparée, le relevé complet d'un film de
-2 h 35 tombe ainsi à **9 secondes**.
-
-**Une deuxième piste peut confirmer la première.** Quand le français et l'anglais d'un même
-titre, calés séparément sur le même flux, tombent sur la *même* correspondance à une
-demi-seconde près d'un bout à l'autre du film, le verrou de confiance est abaissé pour les
-deux. Avec une réserve qui s'est révélée décisive à la mesure : les deux pistes doivent être
-**réellement indépendantes**. Beaucoup de traductions sont deux textes posés sur un seul
-fichier de minutage — elles rendent alors exactement la même mesure, au centième près, et
-les faire se confirmer revient à compter deux fois la même chose. L'addon compare donc les
-*débuts de réplique* des deux pistes : des pistes écrites séparément en partagent 0 à 26 %,
-des pistes issues du même minutage 79 à 92 %. Sans ce garde-fou, Dune 2 sortait « calé » à
-−91 s sur la foi de deux pistes jumelles, alors que sa fenêtre la plus franche disait tout
-autre chose.
-
-##### Quand un calage est refusé
-
-Trois verrous, et il faut les passer tous les trois. En dessous, la piste est servie **telle
-quelle** — c'est voulu : un calage approximatif est pire que pas de calage, il est faux
-*partout* au lieu d'être faux d'une quantité constante, que l'œil corrige tout seul.
-
-| Verrou | Défaut | Ce qu'il écarte |
-|---|---|---|
-| `SUBTITLE_AUTOSYNC_MIN_WINDOWS` | 3 | Deux fenêtres d'accord ne démontrent rien : sur une recherche de ±120 s il existe toujours des paires de faux sommets qui s'accordent par hasard |
-| `SUBTITLE_AUTOSYNC_MIN_REACH` | 0,6 | Un modèle vérifié sur les deux premiers tiers seulement — signature d'un **montage différent** (version longue, coupure), qu'aucune correction affine ne peut décrire |
-| `SUBTITLE_AUTOSYNC_MIN_CONFIDENCE` | 0,20 | Corrélations molles, sommets qui ne se détachent pas du fond (0,08 si une piste indépendante confirme) |
-| `SUBTITLE_AUTOSYNC_DRIFT_EVIDENCE` | 3 | Une dérive plus petite que trois fois la dispersion des mesures : du bruit ajusté, pas une cadence |
-
-Les seuils sont calibrés sur de l'audio de **film**, pas sur un signal de laboratoire : la
-musique et les ambiances y sont continues, une corrélation juste y vaut 0,3–0,5 là où un
-signal propre donne 0,8.
-
-##### Banc d'essai
-
-Mesuré sur **16 titres** (films récents et anciens, séries), soit 22 pistes de sous-titres,
-avec les vraies sources de l'addon. Le protocole ne suppose aucune vérité extérieure : on
-**décale la piste d'une quantité connue** et on vérifie que le calage la retrouve, on
-**injecte une conversion PAL** et on vérifie qu'il retrouve le rapport exact, et on
-confronte chaque flux aux sous-titres des 15 autres titres, qui doivent tous être refusés.
-
-| Mesure | Résultat |
-|---|---|
-| Pistes calées | **11 / 20** (2 pistes étaient tronquées par le fournisseur) |
-| Faux calages (piste d'un autre titre) | **0 / 180** |
-| Précision — décalage connu réinjecté | médiane **1 ms**, p90 11 ms, max 17 ms |
-| Précision — dérive PAL réinjectée | médiane **0 ms**, max 2 ms (cadence exacte à chaque fois) |
-| Validation croisée (chaque fenêtre prédite par les autres) | médiane **196 ms**, p90 1,7 s |
-| Coût par titre | ~87 Mo sur une variante vidéo, **~10 Mo et 10 s** sur une piste audio séparée |
-
-Ce que le banc a mis au jour, et qui dit l'intérêt de la chose :
-
-- **Un habillage de +19 s en tête des flux d'une source** : Pulp Fiction ressort à +19,69 s
-  et Oppenheimer à +19,00 s sur les mêmes serveurs. Ce sont exactement les minutes de
-  recalage manuel que ce mécanisme supprime.
-- **De vraies pistes PAL**, détectées comme telles : la piste anglaise d'Avengers et la
-  française de Matrix sortent toutes deux à 1,0427. La preuve est jolie — une fois corrigée,
-  la dernière réplique anglaise d'Avengers (7815 s) retombe sur la même seconde que la
-  dernière réplique française (8149 s).
-- **Des pistes déjà justes**, reconnues comme telles : Breaking Bad S01E01 en anglais sort à
-  −0,02 s. Le calage ne touche alors à rien.
-- Les échecs restants ne viennent pas du calcul : 4 titres n'ont eu **aucun flux audio
-  lisible** (CDN muet ou variante sans piste audio) et 2 pistes étaient **tronquées à la
-  source** (37 répliques pour tout Interstellar).
-
-> **Selon la source, le calage ne coûte pas la même chose.** Une source qui diffuse sa bande
-> son en rendition séparée (Cinejoy) est le cas idéal : la vidéo n'est jamais touchée,
-> comptez une dizaine de mégaoctets et autant de secondes. Une source qui ne propose que des
-> variantes muxées coûte la variante la moins définie, soit quelques dizaines de mégaoctets.
-> Et une source qui livre **ses propres** sous-titres avec le flux (PurStream, KissKH) n'a
-> besoin de rien : ces pistes viennent du même fichier que l'image, elles sont calées par
-> construction, et l'addon les fait passer avant les siennes pour une même langue.
-
-##### Savoir quel flux caler
-
-Le protocole ne le dit pas. La ressource `subtitles` reçoit un type et un id de contenu,
-jamais le flux choisi — or le décalage n'existe pas dans l'absolu, il dépend du release
-qu'on regarde. Trois façons de retrouver l'information (`SUBTITLE_AUTOSYNC_BIND`) :
-
-| Mode | Comment | Limite |
-|---|---|---|
-| `playback` *(défaut)* | Le proxy de flux **vient de servir** la playlist du flux choisi : ce n'est pas une supposition, c'est une observation | Aveugle aux liens qui ne passent pas par le proxy (extraction directe) |
-| `stream` | Les pistes sont rattachées à chaque flux (`stream.subtitles`), chacune portant l'identifiant du sien | Suppose que le lecteur lise ces pistes-là ; elles peuvent apparaître **en double** avec celles de la ressource `subtitles` |
-| `both` | Les deux | Le doublon ci-dessus |
-
-Le calage a lieu **au moment où le lecteur réclame le fichier**, pas quand la liste est
-construite : à cet instant la lecture a déjà commencé, donc le flux est connu. Et il est
-préparé encore avant : la **première requête du proxy** marque le début de la lecture, ce
-qui laisse les quelques dizaines de secondes nécessaires avant que quiconque ouvre le menu
-des pistes. (La sonde de débit emprunte parfois la même route ; elle marque ses requêtes,
-sans quoi elle déclencherait le calage de chaque lien de la liste.) Si le calcul n'est pas
-fini au bout de `SUBTITLE_AUTOSYNC_WAIT_MS`, la piste brute est servie — le calcul, lui,
-continue, et la piste ressort calée si on la resélectionne.
-
-Un calage trouvé est mémorisé une semaine sous une clé volontairement stable (*cette source,
-à cette qualité, pour cet épisode*) plutôt que sous l'URL du flux, qui porte souvent un jeton
-expirant : reprendre une série le lendemain ne le repaye pas.
-
-##### Vérifier
-
-```bash
-curl "http://localhost:8787/debug/subsync/movie/tmdb:157336?compute=1"   # calcule et détaille
-curl -I "http://localhost:8787/subtitle/<...>.vtt"                       # en-tête X-Movix-Subsync
-```
-
-La console dit toujours *pourquoi* une piste n'a pas été calée : piste trop courte, aucun
-flux observé, variante sans piste audio, ou lequel des trois verrous a bloqué.
-
-> **ffmpeg est requis** — présent dans l'image Docker, à installer à côté sinon
-> (`apt install ffmpeg`, `brew install ffmpeg`, ou `FFMPEG_PATH=/chemin/vers/ffmpeg`). S'il
-> manque, l'addon le signale une fois au démarrage, désactive le calage et sert les pistes
-> telles quelles : **rien d'autre n'en dépend**.
+WebUI → *Titre* → onglet **Sous-titres** : chaque fournisseur interrogé sans cache (pistes,
+langues, temps de réponse, erreur), chaque piste envoyée à Nuvio réellement téléchargée et
+convertie (nombre de répliques), et les langues fournies par les sources.
 
 ### Sources agrégées
 
@@ -1612,8 +1440,8 @@ Un tableau de bord est servi sur **`/ui/`** (la racine `/` y redirige) :
 
 | Page | Contenu |
 |---|---|
-| **Santé** | Verdict global et points à corriger (clé VIP, services injoignables, disjoncteurs ouverts, Simkl en pause, cycle du hub en échec…), joignabilité TMDB/Movix, sources et addons, lecture (proxy, sous-titres, calage, TV), trackers, stockage. URL du manifest à copier ou à ouvrir dans Stremio. |
-| **Testeur** | Recherche TMDB (ou id `tt…` / `tmdb:…`), choix de l'épisode pour une série, puis les quatre diagnostics de `/debug` présentés côte à côte : flux mesurés, liens bruts par source, extraction par hébergeur, sous-titres (avec calcul du calage à la demande). |
+| **Santé** | Verdict global et points à corriger (clé VIP, services injoignables, disjoncteurs ouverts, Simkl en pause, cycle du hub en échec…), joignabilité TMDB/Movix, sources et addons, lecture (proxy, sous-titres, TV), trackers, stockage. URLs des manifests (principal + VF / VOSTFR / VO) à copier ou à ouvrir dans Stremio. |
+| **Testeur** | Recherche TMDB (ou id `tt…` / `tmdb:…`), choix de l'épisode pour une série, puis les quatre diagnostics de `/debug` présentés côte à côte : flux mesurés, liens bruts par source, extraction par hébergeur, sous-titres (état de chaque fournisseur, pistes envoyées testées, pistes des sources). |
 | **Synchro** | Dernier cycle du hub (comptes, flux entre services, erreurs), Nuvio / Simkl / Trakt avec leurs actions — push, fusion des ids, relecture Simkl, connexion par code —, et le journal par cycle avec **restauration des retraits** d'un cycle précis. |
 | **Logs** | Console du serveur en direct (SSE), filtres par niveau, par tag (`[simkl]`, `[hub]`…) et par texte. |
 
@@ -1641,7 +1469,6 @@ curl http://localhost:8787/debug/movie/tmdb:157336     # ce que chaque source a 
 curl http://localhost:8787/debug/addons                # addons chargés / écartés, état du proxy
 curl http://localhost:8787/debug/extract/movie/tmdb:157336   # sort de chaque embed, et pourquoi
 curl http://localhost:8787/debug/streams/movie/tmdb:157336   # débit mesuré par lien, et son origine
-curl "http://localhost:8787/debug/subsync/movie/tmdb:157336?compute=1"  # calage des sous-titres
 ```
 
 Côté synchronisation :

@@ -6,8 +6,7 @@ const express = require('express');
 const { getRouter } = require('stremio-addon-sdk');
 const addonInterface = require('./src/addon');
 const config = require('./src/core/config');
-const { servedVtt, readPayload, isAllowedHost } = require('./src/streaming/subtitles');
-const subsync = require('./src/streaming/subtitles/sync');
+const { fetchAsVtt, readPayload, isAllowedHost } = require('./src/streaming/subtitles');
 const diagnostics = require('./src/diagnostics');
 const resolvedSources = require('./src/sources/resolved');
 const livetv = require('./src/livetv');
@@ -65,12 +64,7 @@ async function serveSubtitle(payload, res) {
   }
 
   try {
-    // C'est ICI que le calage a lieu, et pas au moment ou la liste est construite: quand le
-    // lecteur reclame le fichier, la lecture a deja commence, donc le flux a caler n'est
-    // plus une supposition (cf. src/streaming/playback.js).
-    const { vtt, plan } = await servedVtt(payload);
-    // En-tete de diagnostic: `curl -I` sur l'URL d'une piste dit ce qui lui a ete applique.
-    res.setHeader('X-Movix-Subsync', plan ? subsync.describe(plan).replace(/\s+/g, ' ') : 'aucun calage');
+    const vtt = await fetchAsVtt(src);
     return res.type('text/vtt').send(vtt);
   } catch (err) {
     console.error(`[subtitle] echec pour ${src.slice(0, 120)}: ${err.message}`);
@@ -189,13 +183,6 @@ app.get('/debug/extract/:type/:id', (req, res) =>
 app.get('/debug/streams/:type/:id', (req, res) =>
   sendDiagnostic(res, diagnostics.streams(req.params.type, req.params.id)),
 );
-
-// Diagnostic du calage des sous-titres. `?compute=1` force le calcul au lieu de se
-// contenter de ce qui est deja en cache -- c'est la facon de le tester sans lancer Nuvio.
-app.get('/debug/subsync/:type/:id', (req, res) => {
-  const compute = req.query.compute === '1' || req.query.compute === 'true';
-  sendDiagnostic(res, diagnostics.subtitleSync(req.params.type, req.params.id, { compute }));
-});
 
 // Etat du registre d'addons: lesquels sont charges, lesquels sont ecartes et pourquoi.
 app.get('/debug/addons', (_req, res) => {
@@ -357,7 +344,6 @@ app.get('/health', async (_req, res) => {
     // la liste de streams est vide.
     serverResolve: resolvedSources.enabled(),
     subtitlesEnabled: config.SUBTITLES_ENABLED,
-    subtitleAutosync: config.SUBTITLE_AUTOSYNC && (await subsync.enabled()),
     publicUrl: config.PUBLIC_URL || null,
     streamProxy: {
       enabled: config.STREAM_PROXY_ENABLED,
@@ -440,8 +426,7 @@ app.use(iptv.router);
 // categorie par langue dans l'ecran de choix, au lieu d'une seule longue liste. Ils ne
 // servent que des streams (catalogues et sous-titres restent sur l'addon principal) et
 // partagent la meme resolution, mise en cache: les trois installes ne coutent qu'un scan.
-const LANG_ADDONS = { vf: 'VF', vostfr: 'VOSTFR', vo: 'VO' };
-for (const [group, label] of Object.entries(LANG_ADDONS)) {
+for (const [group, label] of Object.entries(addonInterface.LANG_ADDONS)) {
   const { manifest } = addonInterface;
   app.get(`/${group}/manifest.json`, (_req, res) =>
     res.json({
@@ -470,7 +455,6 @@ app.listen(config.PORT, () => {
   console.log(`Manifest local : http://127.0.0.1:${config.PORT}/manifest.json`);
   if (config.PUBLIC_URL) console.log(`Manifest public : ${config.PUBLIC_URL}/manifest.json`);
   console.log(`Diagnostic     : /debug/movie/tmdb:157336  |  /debug/extract/movie/tmdb:157336  |  /debug/streams/...`);
-  console.log(`                 /debug/subsync/movie/tmdb:157336?compute=1 (calage des sous-titres)`);
   console.log(`                 /debug/sync  |  /debug/addons  |  /health`);
   if (config.WEBUI_ENABLED) console.log(`WebUI          : http://127.0.0.1:${config.PORT}/ui/`);
 

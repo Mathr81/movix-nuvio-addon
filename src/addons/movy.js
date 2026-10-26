@@ -108,6 +108,32 @@ async function fetchSources(server, params, tmdbId) {
   return decrypt(body, seed, tmdbId);
 }
 
+// A langue egale, la piste complete d'abord, SDH (bruitages en plus) ensuite.
+const KIND_RANK = { '': 0, sdh: 1 };
+
+/**
+ * Pistes livrees avec le fichier ("eng", "kor (forced)", "chi (2)"...), donc calees par
+ * construction. Une par langue: Nuvio n'affiche que le nom de la langue, deux "English"
+ * seraient indiscernables. Les langues de SUBTITLE_LANGS passent devant.
+ */
+function toSubtitles(raw, headers) {
+  const best = new Map();
+  for (const sub of Array.isArray(raw) ? raw : []) {
+    const [, lang, kind = ''] = /^([a-z]{3})(?:\s*\(([^)]*)\))?/i.exec(String(sub?.lang || '')) || [];
+    // "forced" ne sous-titre que les passages en langue etrangere: affiche "Francais", il
+    // passerait pour une piste complete.
+    if (!lang || !sub.url || /forced/i.test(kind)) continue;
+    const rank = KIND_RANK[kind.toLowerCase()] ?? 2;
+    const code = lang.toLowerCase();
+    if (!best.has(code) || rank < best.get(code).rank) best.set(code, { rank, url: sub.url });
+  }
+  const order = (code) => (config.SUBTITLE_LANGS.includes(code) ? config.SUBTITLE_LANGS.indexOf(code) : Infinity);
+  return [...best]
+    .sort(([a], [b]) => order(a) - order(b))
+    // Le CDN exige le Referer du site, comme pour la video: le proxy de flux le rejoue.
+    .map(([lang, { url }]) => ({ id: `movy-${lang}`, lang, url: kit.proxied(url, { headers }) }));
+}
+
 async function getStreams({ tmdbId, type, season, episode }) {
   if (type === 'series' && (season == null || episode == null)) return [];
   const label = type === 'series' ? `${tmdbId} S${season}E${episode}` : String(tmdbId);
@@ -134,16 +160,16 @@ async function getStreams({ tmdbId, type, season, episode }) {
   const answers = await Promise.all(
     config.MOVY_SERVERS.map((server) =>
       fetchSources(server, params, tmdbId).then(
-        (data) => ({ server, sources: data.sources || [] }),
+        (data) => ({ server, sources: data.sources || [], subtitles: toSubtitles(data.subtitles, headers) }),
         (err) => {
           log.fail('Movy', `${label} (${server})`, err);
-          return { server, sources: [] };
+          return { server, sources: [], subtitles: [] };
         },
       ),
     ),
   );
   const byQuality = new Map();
-  for (const { server, sources } of answers) {
+  for (const { server, sources, subtitles } of answers) {
     for (const source of sources) {
       if (!source?.url || byQuality.has(source.quality)) continue;
       byQuality.set(source.quality, {
@@ -156,11 +182,13 @@ async function getStreams({ tmdbId, type, season, episode }) {
         variant: source.quality,
         quality: source.quality,
         lang: config.MOVY_LANG || undefined,
+        subtitles: subtitles.length > 0 ? subtitles : undefined,
       });
     }
   }
   const results = [...byQuality.values()];
-  log.ok('Movy', label, `${results.length} lien(s) sur ${config.MOVY_SERVERS.join(', ')}`);
+  const langs = results[0]?.subtitles?.length || 0;
+  log.ok('Movy', label, `${results.length} lien(s) sur ${config.MOVY_SERVERS.join(', ')}, ${langs} langue(s) de sous-titres`);
   return results;
 }
 
@@ -170,6 +198,7 @@ module.exports = {
   supports: { movie: true, series: true },
   getStreams,
   decrypt,
+  toSubtitles,
   settings: () => ({
     api: config.MOVY_API,
     serveurs: config.MOVY_SERVERS,

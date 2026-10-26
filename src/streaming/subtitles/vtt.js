@@ -35,7 +35,7 @@ function decodeSubtitle(buffer) {
  * extension: chercher `.fr` ou `.tv` nu suffirait a emporter du dialogue legitime.
  */
 const PROMO_PATTERNS = [
-  /\b[a-z0-9][a-z0-9-]*\.(com|net|org|ru|fr|tv|site|app|io|co|me|info|biz|xyz)\b/i,
+  /\b[a-z0-9][a-z0-9-]*\.(com|net|org|ru|fr|tv|site|app|io|co|me|info|biz|xyz|link)\b/i,
   /https?:\/\//i,
   /\b(opensubtitles|addic7ed|sub-?way|forom|hoofoot|tryray|subscene|yify|podnapisi)\b/i,
   /\b(subtitles?\s+(by|par)|sous-?titr(es?|age)\s*(par|:)|traduction\s*:|synchro(nisation)?\s*:|correction\s*:|relu\s+par)/i,

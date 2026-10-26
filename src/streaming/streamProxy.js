@@ -3,7 +3,6 @@ const https = require('https');
 const { Transform } = require('stream');
 const axios = require('axios');
 const config = require('../core/config');
-const playback = require('./playback');
 
 /**
  * Proxy de flux interne -- l'equivalent local de proxiesembed, mais pilote par les addons.
@@ -189,8 +188,7 @@ function headersOf(url) {
  * URL AMONT que ce lien de proxy represente, playlists synthetiques comprises.
  *
  * `targetOf` ne repond rien pour un mini-master fabrique par un addon -- il n'a pas d'amont,
- * son corps est fourni. Sa base, elle, designe bien le master d'origine, ce qui suffit a
- * reconnaitre le flux (cf. playback.js). Fonction distincte a dessein: `targetOf` sert a
+ * son corps est fourni. Sa base, elle, designe bien le master d'origine. Fonction distincte a dessein: `targetOf` sert a
  * COURT-CIRCUITER le proxy (probe.js), et rediriger la sonde d'un mini-master vers le master
  * complet lui ferait mesurer une autre variante que celle qu'on sert.
  */
@@ -554,16 +552,10 @@ async function handle(req, res) {
 
   const { target, spec, inline, base, error, message } = readRequest(req);
   if (error) return res.status(error).type('text/plain').send(message);
-  // La sonde de debit emprunte parfois cette route: ce n'est pas une lecture.
-  const measuring = req.get('x-movix-probe') === '1';
-  if (target && !measuring) playback.note(target);
 
   // Playlist synthetique fournie par l'addon: on la reecrit (enfants proxifies) et on la
   // sert telle quelle, sans requete amont.
   if (inline !== undefined) {
-    // La lecture de ce flux vient de commencer (ou se poursuit): c'est ce que la ressource
-    // `subtitles` n'a aucun moyen de savoir par elle-meme.
-    if (!measuring) playback.note(base);
     const rewritten = rewritePlaylist(inline, base || publicBase(), spec);
     const body = Buffer.from(rewritten, 'utf8');
     trace(req, '(inline)', `mini-master reecrit (${body.length} o)`);

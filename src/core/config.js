@@ -302,14 +302,15 @@ const config = {
   // de la meme facon. Verbeux -- a n'activer que le temps d'un diagnostic.
   STREAM_PROXY_LOG: readBool('STREAM_PROXY_LOG', false),
 
-  // --- Aether (aether.bar -- serveurs aurora/lul/link/gallic) --------------
-  AETHER_SITE_ORIGIN: readEnv('AETHER_SITE_ORIGIN', 'https://aether.bar'),
-  AETHER_API_DOMAIN: readEnv('AETHER_API_DOMAIN', 'aether.cx'),
-  AETHER_SERVERS: readList('AETHER_SERVERS', ['aurora', 'lul', 'link', 'gallic']),
+  // --- Aether (aether.ist -- serveurs aurora/love/lul/link/gallic) ---------
+  // Domaines tournants: les a-jour sont listes sur https://rentry.co/aetherdomains.
+  AETHER_SITE_ORIGIN: readEnv('AETHER_SITE_ORIGIN', 'https://aether.ist'),
+  AETHER_API_DOMAIN: readEnv('AETHER_API_DOMAIN', 'raccoonunbutteredbagel.zip'),
+  AETHER_SERVERS: readList('AETHER_SERVERS', ['aurora', 'love', 'lul', 'link', 'gallic']),
   // Origin/Referer exiges par le CDN tiers du serveur "link".
   AETHER_LINK_ORIGIN: readEnv('AETHER_LINK_ORIGIN', 'https://nextgencloudfabric.com'),
   // Gallic n'est pas sur le domaine d'API des autres serveurs: il a sa propre base.
-  AETHER_GALLIC_API: readEnv('AETHER_GALLIC_API', 'https://api.pope-walrus-spiffy.workers.dev'),
+  AETHER_GALLIC_API: readEnv('AETHER_GALLIC_API', 'https://api.subl2cw8mg.workers.dev'),
   // Aucune des API n'annonce la langue de la piste: on l'etiquette a la main pour que le
   // tri par PREFERRED_LANGS reste coherent. Gallic est la source VF du site, les autres
   // servent la version originale.
@@ -322,11 +323,10 @@ const config = {
   KISSKH_LANG: readEnv('KISSKH_LANG', 'VO'),
   KISSKH_LANG_VOSTFR: readEnv('KISSKH_LANG_VOSTFR', 'VOSTFR'),
 
-  // --- Obrigoz (obrigoz.com) ------------------------------------------------
-  OBRIGOZ_BASE_URL: readEnv('OBRIGOZ_BASE_URL', 'https://obrigoz.com'),
-  // Segment de chemin volatil du site (https://obrigoz.com/<prefix>/home/obrigoz).
-  // A mettre a jour ici quand le site le fait tourner, sans toucher au code.
-  OBRIGOZ_PATH_PREFIX: readEnv('OBRIGOZ_PATH_PREFIX', '2662df1'),
+  // --- Obrigoz (domaine tournant) -------------------------------------------
+  // URL de la page d'accueil, telle que le navigateur l'affiche: domaine, prefixe et nom du
+  // site en changent, tout se deduit d'elle (cf. src/addons/obrigoz.js).
+  OBRIGOZ_URL: readEnv('OBRIGOZ_URL', 'https://dokimov.com/174e409/home/dokimov'),
   OBRIGOZ_LANG: readEnv('OBRIGOZ_LANG', 'VF'),
 
   // --- Cinejoy (cinejoy.to -- canal scelle lumen-gate-v2 pilote via crush.wasm) ---
@@ -359,7 +359,7 @@ const config = {
   SUBTITLE_PROVIDERS: readList('SUBTITLE_PROVIDERS', ['vdrk', 'opensubtitles']),
   VDRK_BASE_URL: readEnv('VDRK_BASE_URL', 'https://sub.vdrk.site'),
   // Origin/Referer attendus par l'index vdrk (le site qui l'utilise).
-  VDRK_ORIGIN: readEnv('VDRK_ORIGIN', 'https://aether.bar'),
+  VDRK_ORIGIN: readEnv('VDRK_ORIGIN', 'https://aether.ist'),
   // Pistes proposees par langue (les plus telechargees d'abord). Au-dela de 1, elles
   // portent toutes le meme nom de langue -- le protocole ne les distingue que par leur id.
   SUBTITLES_PER_LANG: Number(readEnv('SUBTITLES_PER_LANG', 1)),
@@ -367,103 +367,6 @@ const config = {
   // libre soit affiche tel quel, mais Nuvio normalise ce champ et rend "inconnu" tout ce
   // qui n'est pas un code ISO 639-2. A n'activer que si ton lecteur suit la specification.
   SUBTITLE_PROVIDER_LABEL: readBool('SUBTITLE_PROVIDER_LABEL', false),
-
-  // --- Calage automatique des sous-titres ----------------------------------
-  // Les flux viennent de sources diverses, les sous-titres d'un index qui ne les connait
-  // pas: rien ne garantit qu'ils decrivent le meme montage ni la meme cadence. L'addon
-  // ecoute quelques fenetres du flux avec ffmpeg, compare les instants de parole a ceux
-  // des repliques, et en deduit le decalage -- et la derive, quand la piste vient d'une
-  // conversion PAL (25 im/s au lieu de 23,976: cinq minutes d'ecart en fin de film, que
-  // le reglage de delai d'un lecteur ne rattrape pas).
-  //
-  // Sans ffmpeg installe, tout ceci se desactive tout seul et les pistes sont servies
-  // telles quelles: aucune autre partie de l'addon n'en depend.
-  SUBTITLE_AUTOSYNC: readBool('SUBTITLE_AUTOSYNC', true),
-  FFMPEG_PATH: readEnv('FFMPEG_PATH', 'ffmpeg'),
-  // Fenetres d'ecoute reparties dans le film, et leur duree. Il en faut aux DEUX bouts:
-  // c'est l'ecart entre elles qui revele une derive. Moins de 3 rend le calage possible
-  // mais peu sur; au-dela de 5 on paye du telechargement pour une precision deja atteinte.
-  SUBTITLE_AUTOSYNC_WINDOWS: Number(readEnv('SUBTITLE_AUTOSYNC_WINDOWS', 6)),
-  SUBTITLE_AUTOSYNC_WINDOW_SECONDS: Number(readEnv('SUBTITLE_AUTOSYNC_WINDOW_SECONDS', 90)),
-  // Nombre MINIMAL de fenetres qui doivent s'accorder pour qu'un calage soit applique.
-  // Deux ne demontrent rien: sur une recherche large, il existe toujours des paires de faux
-  // sommets qui tombent d'accord par hasard. Mesure sur des films reels: un calage juste
-  // rassemble 4 a 6 fenetres sur 6, un faux n'en rassemble jamais plus de deux.
-  SUBTITLE_AUTOSYNC_MIN_WINDOWS: Number(readEnv('SUBTITLE_AUTOSYNC_MIN_WINDOWS', 3)),
-  // Etendue minimale, en fraction du film, entre la premiere et la derniere fenetre qui
-  // s'accordent. Un calage verifie sur les deux premiers tiers seulement n'est pas "un peu
-  // moins sur": il est faux dans le tiers restant. C'est la signature d'un montage
-  // different (version longue, coupure), qu'aucune correction affine ne peut decrire.
-  SUBTITLE_AUTOSYNC_MIN_REACH: Number(readEnv('SUBTITLE_AUTOSYNC_MIN_REACH', 0.6)),
-  // Fenetres ecoutees en parallele. Chacune ouvre un ffmpeg et tire des segments: monter
-  // ce nombre accelere le calage et charge d'autant le CDN (et le disjoncteur des hosters).
-  SUBTITLE_AUTOSYNC_CONCURRENCY: Number(readEnv('SUBTITLE_AUTOSYNC_CONCURRENCY', 2)),
-  SUBTITLE_AUTOSYNC_WINDOW_TIMEOUT_MS: Number(readEnv('SUBTITLE_AUTOSYNC_WINDOW_TIMEOUT_MS', 60000)),
-  // Decalage maximal cherche. Au-dela, ce n'est plus un decalage: c'est une autre piste.
-  SUBTITLE_AUTOSYNC_MAX_SHIFT: Number(readEnv('SUBTITLE_AUTOSYNC_MAX_SHIFT', 120)),
-  // Chercher aussi une DERIVE de cadence (conversion PAL), en plus du decalage constant.
-  // A laisser actif: cela ne coute que du calcul, et une derive non corrigee est le seul
-  // defaut qu'un reglage de delai ne rattrape pas. A couper si l'on ne rencontre jamais que
-  // des decalages constants et qu'on prefere ecarter tout risque de derive inventee.
-  SUBTITLE_AUTOSYNC_DRIFT: readBool('SUBTITLE_AUTOSYNC_DRIFT', true),
-  // De combien une derive doit l'emporter sur "aucune derive" pour etre retenue. Une derive
-  // est une affirmation forte -- elle deplace la fin du film de plusieurs minutes -- donc a
-  // qualite comparable le modele qui n'affirme rien gagne.
-  SUBTITLE_AUTOSYNC_DRIFT_MARGIN: Number(readEnv('SUBTITLE_AUTOSYNC_DRIFT_MARGIN', 0.25)),
-  // Combien de fois la dispersion des mesures une derive doit representer pour etre affirmee.
-  // Une derive de 0,1 % sur un episode de 45 min vaut 2,7 s en tout: si les fenetres se
-  // dispersent deja de 3 s, ce n'est pas une mesure mais du bruit ajuste. Une vraie
-  // conversion PAL deplace la fin du film de plusieurs minutes et passe sans difficulte.
-  SUBTITLE_AUTOSYNC_DRIFT_EVIDENCE: Number(readEnv('SUBTITLE_AUTOSYNC_DRIFT_EVIDENCE', 3)),
-  // Seuil de confiance. EN DESSOUS, LA PISTE EST SERVIE TELLE QUELLE -- c'est voulu: un
-  // calage approximatif est pire que pas de calage, il est faux partout au lieu d'etre faux
-  // d'une quantite constante, que l'oeil corrige tout seul.
-  //
-  // Calibre sur de l'audio de FILM, pas sur un signal de laboratoire: la musique et les
-  // ambiances y sont continues, une correlation juste y vaut 0,3-0,5 la ou un signal propre
-  // donne 0,8. Sur deux longs-metrages de reference, un calage juste sort a 0,40-0,42, et
-  // les faux calages fabriques pour l'occasion (sous-titres d'un autre film) plafonnent a
-  // 0,16 -- d'ou ce seuil, place entre les deux.
-  SUBTITLE_AUTOSYNC_MIN_CONFIDENCE: Number(readEnv('SUBTITLE_AUTOSYNC_MIN_CONFIDENCE', 0.2)),
-  // Seuil abaisse quand DEUX pistes du meme titre (le francais et l'anglais, par exemple),
-  // calees separement sur le meme flux, tombent sur la MEME correspondance a une demi-
-  // seconde pres d'un bout a l'autre du film. Ce sont deux fichiers differents, traduits
-  // differemment: qu'ils se trompent tous les deux au meme endroit ne s'explique pas. Sur
-  // le banc d'essai, cet accord ne s'est jamais produit entre pistes d'un AUTRE titre.
-  SUBTITLE_AUTOSYNC_MIN_CONFIDENCE_PAIR: Number(readEnv('SUBTITLE_AUTOSYNC_MIN_CONFIDENCE_PAIR', 0.08)),
-  // Ecart tolere entre les deux correspondances pour parler d'accord, aux deux bouts du film.
-  SUBTITLE_AUTOSYNC_PAIR_TOLERANCE: Number(readEnv('SUBTITLE_AUTOSYNC_PAIR_TOLERANCE', 0.5)),
-  // Part maximale de repliques dont les deux pistes partagent le minutage pour qu'on les
-  // considere INDEPENDANTES. Au-dela, ce sont deux traductions du meme fichier de temps:
-  // elles donnent la meme mesure, et leur accord ne demontre rien. Mesure sur douze paires
-  // reelles: pistes ecrites separement 0-26 %, pistes issues du meme minutage 79-92 %.
-  SUBTITLE_AUTOSYNC_PAIR_MAX_SHARED: Number(readEnv('SUBTITLE_AUTOSYNC_PAIR_MAX_SHARED', 0.4)),
-  // Pistes trop courtes pour porter une correlation (chansons, pancartes).
-  SUBTITLE_AUTOSYNC_MIN_CUES: Number(readEnv('SUBTITLE_AUTOSYNC_MIN_CUES', 60)),
-  // Un calage trouve reste valable tant que la source sert le meme release: on le garde
-  // une semaine, pour que reprendre une serie demain ne le repaye pas.
-  SUBTITLE_AUTOSYNC_TTL_MS: Number(readEnv('SUBTITLE_AUTOSYNC_TTL_MS', 7 * 24 * 60 * 60 * 1000)),
-  // Delai que la route /subtitle accepte d'attendre quand le calage n'est pas encore pret.
-  // Au-dela elle sert la piste brute: un lecteur qui attend une minute abandonne.
-  SUBTITLE_AUTOSYNC_WAIT_MS: Number(readEnv('SUBTITLE_AUTOSYNC_WAIT_MS', 20000)),
-  // Lancer le calage en arriere-plan des l'affichage de la liste des flux, pour les N
-  // premiers. Quand on ouvre le menu des sous-titres, le travail est deja fait.
-  SUBTITLE_AUTOSYNC_PREFETCH: Number(readEnv('SUBTITLE_AUTOSYNC_PREFETCH', 1)),
-  // Comment l'addon identifie le flux a caler:
-  //   playback  observe: le proxy de flux vient de servir la playlist du flux choisi, donc
-  //             on sait lequel c'est. Sans risque, mais aveugle aux liens qui ne passent
-  //             pas par le proxy (extraction directe) -- ceux-la ne sont pas cales.
-  //   stream    les pistes sont rattachees a CHAQUE flux (`stream.subtitles`): identification
-  //             exacte, y compris hors proxy. Suppose que le lecteur lise ces pistes-la, et
-  //             elles peuvent apparaitre EN DOUBLE avec celles de la ressource `subtitles`.
-  //   both      les deux, pour les lecteurs qui ignorent l'une ou l'autre.
-  SUBTITLE_AUTOSYNC_BIND: readEnv('SUBTITLE_AUTOSYNC_BIND', 'playback').trim().toLowerCase(),
-  // Delai au-dela duquel un flux servi par le proxy n'est plus considere comme "en cours".
-  SUBTITLE_AUTOSYNC_PLAYBACK_WINDOW_MS: Number(readEnv('SUBTITLE_AUTOSYNC_PLAYBACK_WINDOW_MS', 30 * 60 * 1000)),
-  // Caler d'apres le flux le MIEUX CLASSE quand aucun n'a ete observe (lien hors proxy).
-  // Desactive par defaut: se tromper de release applique un decalage faux partout, ce qui
-  // est plus penible a rattraper que l'absence de calage.
-  SUBTITLE_AUTOSYNC_GUESS_STREAM: readBool('SUBTITLE_AUTOSYNC_GUESS_STREAM', false),
 
   // Motifs de detection supplementaires, au format "hebergeur:motif" (regex, insensible a
   // la casse). Voe renouvelle ses domaines de sortie environ tous les mois, avec des noms

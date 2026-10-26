@@ -17,7 +17,7 @@ const resolvedSources = require('../sources/resolved');
 const livetv = require('../livetv');
 const iptvAdmin = require('../iptv/admin');
 const streamProxy = require('../streaming/streamProxy');
-const subsync = require('../streaming/subtitles/sync');
+const { LANG_ADDONS } = require('../addon');
 const { breakerState: extractBreakerState } = require('../streaming/hosterExtract');
 const { breakerState: probeBreakerState } = require('../streaming/probe');
 const logBuffer = require('./logBuffer');
@@ -86,7 +86,8 @@ async function liveTvSummary() {
 }
 
 async function overview() {
-  const [services, liveTv, ffmpeg] = await Promise.all([upstream(), liveTvSummary(), subsync.enabled()]);
+  const [services, liveTv] = await Promise.all([upstream(), liveTvSummary()]);
+  const base = (config.PUBLIC_URL || `http://127.0.0.1:${config.PORT}`).replace(/\/+$/, '');
   const memory = process.memoryUsage();
 
   return {
@@ -100,7 +101,20 @@ async function overview() {
     },
     config: {
       publicUrl: config.PUBLIC_URL || null,
-      manifestUrl: `${(config.PUBLIC_URL || `http://127.0.0.1:${config.PORT}`).replace(/\/+$/, '')}/manifest.json`,
+      // L'addon principal, puis un addon de flux par langue (cf. server.js).
+      manifests: [
+        {
+          name: 'Movix',
+          role: config.STREAM_SPLIT_BY_LANG ? 'catalogues, sous-titres, TV' : 'catalogues, flux, sous-titres, TV',
+          url: `${base}/manifest.json`,
+        },
+        ...Object.entries(LANG_ADDONS).map(([group, label]) => ({
+          name: `Movix ${label}`,
+          role: `flux ${label}`,
+          url: `${base}/${group}/manifest.json`,
+        })),
+      ],
+      splitByLang: config.STREAM_SPLIT_BY_LANG,
       idFormat: config.ID_FORMAT,
       streamList: config.STREAM_LIST,
       tmdbLanguage: config.TMDB_LANGUAGE,
@@ -126,8 +140,7 @@ async function overview() {
     subtitles: {
       enabled: config.SUBTITLES_ENABLED,
       providers: config.SUBTITLE_PROVIDERS,
-      autosync: config.SUBTITLE_AUTOSYNC,
-      ffmpeg,
+      langs: config.SUBTITLE_LANGS,
     },
     liveTv,
     trackers: trackers(),
@@ -246,8 +259,8 @@ function router() {
     send(res, diagnostics.extraction(req.params.type, req.params.id)),
   );
   api.get('/title/:type/:id/streams', (req, res) => send(res, diagnostics.streams(req.params.type, req.params.id)));
-  api.get('/title/:type/:id/subsync', (req, res) =>
-    send(res, diagnostics.subtitleSync(req.params.type, req.params.id, { compute: req.query.compute === '1' })),
+  api.get('/title/:type/:id/subtitles', (req, res) =>
+    send(res, diagnostics.subtitleReport(req.params.type, req.params.id)),
   );
 
   api.get('/sync', (req, res) =>

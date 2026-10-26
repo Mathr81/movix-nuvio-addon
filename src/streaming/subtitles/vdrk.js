@@ -3,7 +3,7 @@ const config = require('../../core/config');
 const { parseLabel } = require('./langs');
 
 /**
- * vdrk -- l'index de sous-titres utilise par aether.bar.
+ * vdrk -- l'index de sous-titres utilise par aether.ist.
  *
  * Trois avantages concrets sur OpenSubtitles, qui en font le fournisseur par defaut:
  *  - les pistes sont deja en **WebVTT**: plus de .gz a decompresser, plus de SRT a

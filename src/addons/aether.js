@@ -3,10 +3,11 @@ const log = require('../core/log');
 const kit = require('./kit');
 
 /**
- * Aether (aether.bar) -- plusieurs serveurs derriere le meme site, chacun avec sa propre
- * facon de rendre le flux:
+ * Aether (aether.ist, ex aether.bar) -- plusieurs serveurs derriere le meme site, chacun
+ * avec sa propre facon de rendre le flux:
  *
- *  - aurora (nebula.<domaine>) : renvoie directement l'URL m3u8 dans son JSON;
+ *  - aurora (tik.<domaine>)    : liste `streams` (m3u8), comme gallic;
+ *  - love   (love.<domaine>)   : renvoie une URL de fichier mp4 (c.ravenflix.st);
  *  - lul    (lul.<domaine>)    : renvoie une URL intermediaire qui repond 302 vers le master;
  *  - link   (link.<domaine>)   : renvoie une URL brute qu'il faut encapsuler dans le
  *                                m3u8-proxy officiel du site (le CDN d'origine refuse tout
@@ -15,11 +16,11 @@ const kit = require('./kit');
  *                                domaine d'API des autres, et seul a rendre PLUSIEURS flux
  *                                d'un coup, un par fournisseur.
  *
- * Point commun aux trois: les segments ne sortent que si la requete porte l'Origin du site
+ * Point commun: les segments ne sortent que si la requete porte l'Origin du site
  * et le Referer de la page du media. C'est le proxy de flux qui s'en charge.
  *
  * Films ET series: la seule difference est la forme de l'URL, `/movie/<tmdbId>` d'un cote,
- * `/tv/<tmdbId>/<saison>/<episode>` de l'autre -- les trois serveurs partagent ce schema.
+ * `/tv/<tmdbId>/<saison>/<episode>` de l'autre -- tous les serveurs partagent ce schema.
  */
 
 const API_TIMEOUT_MS = 10000;
@@ -125,33 +126,43 @@ function providerOf(stream) {
   return hostLabel(stream.url);
 }
 
+/** Liste `streams` commune a gallic et aurora: `{success, streams:[{url, title, provider}]}`. */
+function streamList(data) {
+  if (!data?.success || !Array.isArray(data.streams)) return null;
+  return data.streams
+    .filter((stream) => typeof stream?.url === 'string' && /^https?:\/\//i.test(stream.url))
+    .map((stream) => ({
+      url: stream.url,
+      variant: providerOf(stream),
+      // Le libelle annonce parfois la resolution: elle sert de repli si la mesure de debit
+      // n'aboutit pas (elle est sinon lue dans le master HLS, plus sure).
+      quality: resolutionIn(stream.title),
+    }));
+}
+
 const SERVERS = {
   aurora: {
     label: 'Aurora',
     lang: () => config.AETHER_LANG,
     async resolve({ http, path, refererUrl }) {
-      // Le site essaie `ser=tik` puis `ser=cf` (deux fournisseurs derriere la meme route):
-      // on fait pareil, le second rattrape les titres absents du premier.
-      for (const ser of ['tik', 'cf']) {
-        const { data, status } = await http.get(`https://nebula.${config.AETHER_API_DOMAIN}${path}`, {
-          params: { ser },
-          headers: apiHeaders(refererUrl),
-          validateStatus: () => true,
-          // Le repli par regex a besoin du corps tel quel, pas d'un objet deja parse.
-          transformResponse: (body) => body,
-        });
-        if (status !== 200) continue;
+      const { data, status } = await http.get(`https://tik.${config.AETHER_API_DOMAIN}${path}`, {
+        headers: apiHeaders(refererUrl),
+        validateStatus: () => true,
+      });
+      // Un seul flux, nomme "TIK" par l'API: le nom du serveur suffit.
+      return status === 200 ? streamList(data)?.map(({ url }) => url) : null;
+    },
+  },
 
-        let parsed = {};
-        try {
-          parsed = JSON.parse(data);
-        } catch {
-          // Reponse non-JSON: la regex sur le corps brut reste valable.
-        }
-        const found = findM3u8(parsed, data);
-        if (found) return found;
-      }
-      return null;
+  love: {
+    label: 'Love',
+    lang: () => config.AETHER_LANG,
+    async resolve({ http, path, refererUrl }) {
+      const { data, status } = await http.get(`https://love.${config.AETHER_API_DOMAIN}${path}`, {
+        headers: apiHeaders(refererUrl),
+        validateStatus: () => true,
+      });
+      return status === 200 && typeof data?.stream === 'string' ? data.stream : null;
     },
   },
 
@@ -218,19 +229,9 @@ const SERVERS = {
         },
         validateStatus: () => true,
       });
-      if (status !== 200 || !data?.success || !Array.isArray(data.streams)) return null;
-
       // Un seul appel, plusieurs fournisseurs: on les rend tous et on laisse le tri et
       // l'elagage communs decider lesquels valent la peine d'etre affiches.
-      return data.streams
-        .filter((stream) => typeof stream?.url === 'string' && /^https?:\/\//i.test(stream.url))
-        .map((stream) => ({
-          url: stream.url,
-          variant: providerOf(stream),
-          // Le libelle annonce parfois la resolution: elle sert de repli si la mesure
-          // de debit n'aboutit pas (elle est sinon lue dans le master HLS, plus sure).
-          quality: resolutionIn(stream.title),
-        }));
+      return status === 200 ? streamList(data) : null;
     },
   },
 };
@@ -288,7 +289,7 @@ async function getStreams({ tmdbId, type, season, episode }) {
     }
     // Un resolveur rend une URL seule (en-tetes communs), un {url, headers} quand SON CDN
     // en attend d'autres -- c'est le cas de "link", dont le flux vient d'un tiers et n'a
-    // rien a faire des en-tetes d'aether.bar -- ou une LISTE quand un seul appel rapporte
+    // rien a faire des en-tetes du site -- ou une LISTE quand un seul appel rapporte
     // plusieurs fournisseurs, comme chez gallic.
     const found = [].concat(outcome.value).filter(Boolean);
     if (found.length === 0) {

@@ -929,6 +929,11 @@ mark {
   display: flex;
   gap: 4px;
 }
+.manifest-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 110px;
+}
 
 /* --- Etats: vide, squelette, encarts ------------------------------------------------- */
 .empty {

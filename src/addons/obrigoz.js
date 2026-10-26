@@ -3,7 +3,7 @@ const log = require('../core/log');
 const kit = require('./kit');
 
 /**
- * Obrigoz (obrigoz.com) -- source sans API d'identifiants: elle ne connait ni TMDB ni
+ * Obrigoz (obrigoz.com, puis dokimov.com...) -- source sans API d'identifiants: elle ne connait ni TMDB ni
  * IMDB, seulement des titres. La resolution se fait donc en trois temps:
  *
  *   1. TMDB donne le titre francais et l'annee du tmdbId demande;
@@ -21,12 +21,19 @@ const kit = require('./kit');
 
 const HTTP_TIMEOUT_MS = 8000;
 
-function baseUrl() {
-  return config.OBRIGOZ_BASE_URL.replace(/\/+$/, '');
+/**
+ * Le site change de domaine, de prefixe ET de nom: `https://dokimov.com/174e409/home/dokimov`
+ * a remplace `https://obrigoz.com/2662df1/home/obrigoz`. Tout se deduit donc de l'URL de
+ * l'accueil, a recopier telle quelle dans OBRIGOZ_URL.
+ */
+function site() {
+  const url = new URL(config.OBRIGOZ_URL);
+  const [prefix, , name] = url.pathname.split('/').filter(Boolean);
+  return { origin: url.origin, home: url.toString(), prefix, name };
 }
 
-function sitePath(suffix) {
-  return `${baseUrl()}/${config.OBRIGOZ_PATH_PREFIX}/${suffix}`;
+function baseUrl() {
+  return site().origin;
 }
 
 /**
@@ -94,7 +101,7 @@ function parseJwPlayerSources(html) {
 
 async function search(http, query) {
   const { data, status } = await http.post(
-    sitePath('home/obrigoz'),
+    site().home,
     new URLSearchParams({ searchword: query }).toString(),
     {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -106,7 +113,8 @@ async function search(http, query) {
 }
 
 async function extractSources(http, videoId) {
-  const page = await http.get(sitePath(`b/obrigoz/${videoId}`), { validateStatus: () => true });
+  const { origin, prefix, name } = site();
+  const page = await http.get(`${origin}/${prefix}/b/${name}/${videoId}`, { validateStatus: () => true });
   if (page.status !== 200 || typeof page.data !== 'string') return [];
 
   const iframeUrl = /<iframe\s+[^>]*src=["']([^"']+)["']/i.exec(page.data)?.[1];
@@ -183,6 +191,6 @@ module.exports = {
   id: 'obrigoz',
   name: 'Obrigoz',
   supports: { movie: true, series: false },
-  available: () => !!config.OBRIGOZ_BASE_URL && !!config.OBRIGOZ_PATH_PREFIX,
+  available: () => !!config.OBRIGOZ_URL,
   getStreams,
 };

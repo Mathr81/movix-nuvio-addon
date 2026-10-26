@@ -35,9 +35,6 @@ function checksOf(o) {
       add('warn', `Addon ${addon.name} inactif`, 'Configuration incomplète dans .env.');
     }
   }
-  if (o.subtitles.enabled && o.subtitles.autosync && !o.subtitles.ffmpeg) {
-    add('warn', 'ffmpeg introuvable', 'Le calage automatique des sous-titres est désactivé de fait.');
-  }
   if (o.liveTv.enabled && o.liveTv.error) add('warn', 'TV en direct indisponible', o.liveTv.error);
 
   const { simkl, trakt } = o.trackers;
@@ -181,15 +178,21 @@ export function OverviewPage() {
 
     <div class="grid">
       <${Card} title="Installation" icon="link" class="span-2">
-        <div class="manifest">
-          <code>${data.config.manifestUrl}</code>
+        <p class="muted small">
+          ${data.config.splitByLang
+            ? 'Installer les quatre dans Nuvio : le principal pour les catalogues et les sous-titres, puis un addon de flux par langue (une catégorie chacun).'
+            : 'Le principal suffit (STREAM_SPLIT_BY_LANG=false) : les addons par langue doubleraient ses flux.'}
+        </p>
+        ${data.config.manifests.map((m) => html`<div class="manifest">
+          <div class="manifest-name"><strong>${m.name}</strong><span class="muted small">${m.role}</span></div>
+          <code>${m.url}</code>
           <div class="manifest-actions">
-            <${CopyButton} text=${data.config.manifestUrl} label="Copier" />
-            <a class="btn btn-ghost btn-sm" href=${data.config.manifestUrl.replace(/^https?:/, 'stremio:')}>
-              <${Icon} name="external" size=${15} /><span>Ouvrir dans Stremio</span>
+            <${CopyButton} text=${m.url} label="Copier" />
+            <a class="btn btn-ghost btn-sm" href=${m.url.replace(/^https?:/, 'stremio:')}>
+              <${Icon} name="external" size=${15} /><span>Stremio</span>
             </a>
           </div>
-        </div>
+        </div>`)}
         <${KeyValue} rows=${[
           ['Format des ids', html`<code>${data.config.idFormat}</code>`],
           ['Liste des flux', html`<code>${data.config.streamList}</code>`],
@@ -219,7 +222,7 @@ export function OverviewPage() {
           ['Proxy de flux', yesNo(data.streamProxy.enabled, { yes: 'actif', no: 'inactif' })],
           data.streamProxy.enabled && ['Secret du proxy', yesNo(data.streamProxy.secretConfigured, { yes: 'fixe', no: 'éphémère', noTone: 'warn' })],
           ['Sous-titres', yesNo(data.subtitles.enabled, { yes: data.subtitles.providers.join(', '), no: 'désactivés' })],
-          ['Calage auto', yesNo(data.subtitles.autosync && data.subtitles.ffmpeg, { yes: 'actif', no: data.subtitles.autosync ? 'ffmpeg absent' : 'désactivé', noTone: data.subtitles.autosync ? 'warn' : 'neutral' })],
+          data.subtitles.enabled && ['Langues', html`<code>${data.subtitles.langs.join(', ')}</code>`],
           ['TV en direct', data.liveTv.enabled
             ? data.liveTv.error
               ? html`<${Badge} tone="warn">${data.liveTv.error}</${Badge}>`
