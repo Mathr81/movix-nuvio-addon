@@ -34,6 +34,9 @@ function checksOf(o) {
     if (!addon.enabled && addon.reason === 'configuration incomplete') {
       add('warn', `Addon ${addon.name} inactif`, 'Configuration incomplète dans .env.');
     }
+    if (addon.health?.silent) {
+      add('warn', `Addon ${addon.name} muet`, `Aucun lien sur les ${addon.health.streak} dernières demandes (dernier lien : ${timeAgo(addon.health.lastLinkAt)}). Site changé ?`);
+    }
   }
   if (o.liveTv.enabled && o.liveTv.error) add('warn', 'TV en direct indisponible', o.liveTv.error);
 
@@ -115,9 +118,10 @@ function Sources({ data }) {
           <${Dot} tone=${a.enabled ? 'ok' : a.reason === 'configuration incomplete' ? 'warn' : 'neutral'} />
           <div class="addon-text">
             <strong>${a.name}</strong>
-            <span class="muted small">${a.enabled ? supportsOf(a.supports) : a.reason}</span>
+            <span class="muted small">${a.enabled ? supportsOf(a.supports) : a.reason}${a.health ? ` · dernier lien ${timeAgo(a.health.lastLinkAt)}${a.health.streak ? `, ${a.health.streak} demande(s) vide(s) d'affilée` : ''}` : ''}</span>
+            ${a.health?.lastError && html`<span class="muted small" title=${a.health.lastError}>dernière erreur : ${a.health.lastError}</span>`}
           </div>
-          <${Badge} tone=${a.enabled ? 'ok' : 'neutral'}>${a.enabled ? 'actif' : 'inactif'}</${Badge}>
+          <${Badge} tone=${!a.enabled ? 'neutral' : a.health?.silent ? 'warn' : 'ok'}>${!a.enabled ? 'inactif' : a.health?.silent ? 'muet' : 'actif'}</${Badge}>
         </div>`,
       )}
     </div>`;

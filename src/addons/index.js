@@ -62,6 +62,26 @@ if (active.length > 0) {
 }
 
 /**
+ * Sante par addon. Les addons avalent leurs propres erreurs et rendent `[]` quand leur
+ * site change: un disjoncteur ne voit rien passer. On compte donc les demandes d'affilee
+ * sans aucun lien -- un titre absent en produit aussi, d'ou un seuil large et un simple
+ * avertissement plutot qu'une mise de cote.
+ */
+const SILENT_STREAK = 15;
+const health = new Map();
+
+function noteResult(id, links, error) {
+  const h = health.get(id) || { calls: 0, streak: 0, lastLinkAt: null, lastError: null };
+  h.calls += 1;
+  if (links > 0) {
+    h.streak = 0;
+    h.lastLinkAt = new Date().toISOString();
+  } else h.streak += 1;
+  if (error) h.lastError = error;
+  health.set(id, h);
+}
+
+/**
  * Adapte les addons a la forme attendue par le streamBuilder ({name, getStreams}).
  * L'adaptateur porte deux garanties que chaque addon n'a alors plus a redire:
  * on n'interroge pas une source pour un type qu'elle ne gere pas, et une source qui
@@ -73,9 +93,12 @@ function asSources() {
     async getStreams(query) {
       if (addon.supports && addon.supports[query.type] === false) return [];
       try {
-        return (await addon.getStreams(query)) || [];
+        const links = (await addon.getStreams(query)) || [];
+        noteResult(addon.id, links.length);
+        return links;
       } catch (err) {
         console.warn(`[addons] "${addon.id}" a echoue: ${err.message}`);
+        noteResult(addon.id, 0, err.message);
         return [];
       }
     },
@@ -90,6 +113,7 @@ function describe() {
     supports: addon.supports,
     enabled: active.includes(addon),
     settings: typeof addon.settings === 'function' ? addon.settings() : undefined,
+    health: health.has(addon.id) ? { ...health.get(addon.id), silent: health.get(addon.id).streak >= SILENT_STREAK } : null,
     reason: active.includes(addon)
       ? undefined
       : !isEnabled(addon)
