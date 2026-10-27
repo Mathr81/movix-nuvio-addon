@@ -76,4 +76,18 @@ function snapshot(model, additions, removals, readable = ['library', 'watched', 
   return { library: [...library], watched: [...watched], progress };
 }
 
-module.exports = { STATE_FILE, loadState, saveState, clearState, snapshot };
+/**
+ * Remet dans un instantane les cles disparues dont la suppression a ete ecartee, avec leur
+ * valeur precedente: tant qu'elles ne sont ni propagees ni revenues, le tour suivant doit
+ * les voir comme "toujours la", pas comme nouvelles.
+ */
+function keepHeld(snap, held, previous) {
+  const library = new Set(snap.library);
+  const watched = new Set(snap.watched);
+  for (const key of held.library) library.add(key);
+  for (const key of held.watched) watched.add(key);
+  for (const key of held.progress) if (previous?.progress?.[key] !== undefined) snap.progress[key] = previous.progress[key];
+  return { ...snap, library: [...library], watched: [...watched] };
+}
+
+module.exports = { STATE_FILE, loadState, saveState, clearState, snapshot, keepHeld };

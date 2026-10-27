@@ -1,10 +1,16 @@
 import { html, useState } from '../../vendor/preact-htm.js';
-import { api, useResource, useTick, timeAgo, formatDate, formatInterval, plural } from '../lib.js';
+import { api, useResource, useTick, timeAgo, formatDate, formatInterval, plural, navigate } from '../lib.js';
 import { Card, Badge, Dot, Button, Skeleton, ErrorBox, Empty, KeyValue, Callout, Icon, Spinner, JsonView, Segmented } from '../ui.js';
 import { useActions } from '../actions.js';
 
 const KINDS = { library: 'Bibliothèque', watched: 'Vus', progress: 'Reprises', listeDejaVus: 'Liste, déjà vus' };
 const TARGETS = { movix: 'Movix', nuvio: 'Nuvio', simkl: 'Simkl' };
+
+/** Le push periodique double le hub: inutile (et volontairement coupe) quand celui-ci tourne. */
+function pushLabel(intervalMs, hubEnabled) {
+  if (!intervalMs && hubEnabled) return html`<span title="Le hub synchronise déjà en continu ; le push périodique ferait doublon">assuré par le hub</span>`;
+  return formatInterval(intervalMs);
+}
 
 function sumOf(counts) {
   return Object.values(counts || {}).reduce((n, v) => n + (typeof v === 'number' ? v : 0), 0);
@@ -75,6 +81,10 @@ function CycleSummary({ summary }) {
       <${Flow} label="→ Simkl" delta=${summary.versSimkl} />
       ${summary.retraits && Object.entries(summary.retraits).map(([side, delta]) => html`<${Flow} label=${`✕ ${TARGETS[side] || side}`} delta=${delta} tone="warn" />`)}
     </div>
+    ${summary.retraitsRetenus && html`<${Callout} tone="warn" title="Retraits retenus">
+      Disparitions non propagées (plafond HUB_MAX_REMOVALS_PER_CYCLE ou reprises élaguées par Movix), gardées en mémoire au lieu d'être oubliées :
+      ${Object.entries(summary.retraitsRetenus).filter(([, d]) => sumOf(d)).map(([side, d]) => ` ${TARGETS[side]} ${sumOf(d)}`).join(' ·')}
+    </${Callout}>`}
     ${errors.length > 0 && html`<${Callout} tone="error" title="Erreurs">
       ${errors.map(([step, message]) => html`<div class="err-line"><code>${step}</code> ${message}</div>`)}
     </${Callout}>`}
@@ -104,6 +114,82 @@ function TrackerCard({ name, icon, status, rows, actionNames, actions, runner, n
     ${note}
     ${status.configured && html`<${ActionRows} names=${actionNames} actions=${actions} runner=${runner} />`}
   </${Card}>`;
+}
+
+// --- Bibliotheques comparees -------------------------------------------------------------
+const COMPARE_KINDS = [
+  { value: 'library', label: 'Bibliothèque' },
+  { value: 'watched', label: 'Vus' },
+  { value: 'progress', label: 'Reprises' },
+];
+const SHOWN = 200;
+
+function openTitle(key) {
+  const [type, id, s, e] = key.split(':');
+  navigate('/titre', { type, id: `tmdb:${id}`, s, e });
+}
+
+/** Une case: présence (bibliothèque), nombre d'épisodes (vus) ou pourcentage (reprises). */
+function Presence({ kind, row, side }) {
+  const value = row[side];
+  if (value === null || value === undefined) return html`<span class="muted small">—</span>`;
+  if (kind === 'library') {
+    if (value === 'ailleurs') return html`<${Badge} tone="info" title="Présent dans une autre liste Simkl (terminé, en cours…)">autre liste</${Badge}>`;
+    return value ? html`<${Badge} tone="ok">✓</${Badge}>` : html`<${Badge} tone="warn">absent</${Badge}>`;
+  }
+  if (kind === 'progress') return value === false ? html`<${Badge} tone="warn">absent</${Badge}>` : html`<span>${value} %</span>`;
+  const missing = row.missing?.[side];
+  return html`<span title=${missing ? `Manque : ${missing.join(', ')}` : ''}>
+    <${Badge} tone=${value === row.total ? 'ok' : 'warn'}>${row.total > 1 || row.key.startsWith('series') ? `${value}/${row.total}` : value ? '✓' : 'absent'}</${Badge}>
+  </span>`;
+}
+
+function Compare() {
+  const { data, error, loading, reload } = useResource(() => api('sync/compare'), []);
+  const [kind, setKind] = useState('library');
+  const [onlyDiff, setOnlyDiff] = useState('diff');
+  const [query, setQuery] = useState('');
+  if (error) return html`<${ErrorBox} error=${error} onRetry=${reload} />`;
+  if (loading && !data) return html`<div class="loading-block"><${Spinner} /> Lecture des titres…</div>`;
+  if (!data) return html`<${Empty} icon="clock" title="Pas encore de cycle">La comparaison s'appuie sur ce qu'a lu le dernier cycle du hub.</${Empty}>`;
+
+  const sides = kind === 'progress' ? ['movix', 'nuvio'] : ['movix', 'nuvio', 'simkl'];
+  const all = data[kind];
+  const needle = query.trim().toLowerCase();
+  const rows = all.filter((r) => (onlyDiff === 'all' || r.diff) && (!needle || r.label.toLowerCase().includes(needle)));
+  return html`<div class="compare">
+    <div class="row gap wrap">
+      <${Segmented} size="sm" value=${kind} onChange=${setKind}
+        options=${COMPARE_KINDS.map((k) => ({ ...k, count: data[k.value].length }))} />
+      <${Segmented} size="sm" value=${onlyDiff} onChange=${setOnlyDiff} options=${[
+        { value: 'diff', label: 'Différences', count: all.filter((r) => r.diff).length },
+        { value: 'all', label: 'Tout' },
+      ]} />
+      <div class="search-input search-sm">
+        <${Icon} name="search" size=${15} />
+        <input value=${query} onInput=${(e) => setQuery(e.target.value)} placeholder="Chercher un titre…" aria-label="Chercher un titre" />
+      </div>
+      <span class="grow"></span>
+      <span class="muted small">lu ${timeAgo(data.at)}${data.simkl ? '' : ' · Simkl indisponible à ce cycle'}</span>
+      <${Button} size="sm" variant="ghost" icon="refresh" loading=${loading} onClick=${reload}>Actualiser</${Button}>
+    </div>
+    ${kind === 'progress' && html`<p class="muted small">Simkl ne rend pas les reprises en lecture : elles n'y partent qu'en scrobble.</p>`}
+    ${rows.length === 0
+      ? html`<${Empty} icon="check" title=${onlyDiff === 'diff' ? 'Aucune différence' : 'Rien ici'}>${onlyDiff === 'diff' ? 'Les trois sources sont alignées pour cette catégorie.' : ''}</${Empty}>`
+      : html`<div class="table-wrap">
+        <table class="table table-compact">
+          <thead><tr><th>Titre</th>${sides.map((side) => html`<th>${TARGETS[side]}</th>`)}</tr></thead>
+          <tbody>
+            ${rows.slice(0, SHOWN).map((row) => html`<tr>
+              <td><a href="#" onClick=${(e) => { e.preventDefault(); openTitle(row.key); }}>${row.label}</a>
+                ${row.key.startsWith('movie') ? '' : html` <span class="muted small">série</span>`}</td>
+              ${sides.map((side) => html`<td><${Presence} kind=${kind} row=${row} side=${side} /></td>`)}
+            </tr>`)}
+          </tbody>
+        </table>
+      </div>
+      ${rows.length > SHOWN && html`<p class="muted small">${SHOWN} premiers sur ${rows.length} : affine avec la recherche.</p>`}`}
+  </div>`;
 }
 
 // --- Journal -----------------------------------------------------------------------------
@@ -138,7 +224,7 @@ function CycleEntries({ cycle }) {
               <td><${Badge} tone=${e.action === 'remove' ? 'warn' : 'ok'}>${e.action === 'remove' ? 'retrait' : 'ajout'}</${Badge}></td>
               <td>${TARGETS[e.target] || e.target}</td>
               <td>${KINDS[e.kind] || e.kind}</td>
-              <td><code>${e.key}</code>${e.item?.position ? html` <span class="muted small">${Math.round((e.item.position / (e.item.duration || 1)) * 100)} %</span>` : ''}</td>
+              <td title=${e.key}>${e.label || html`<code>${e.key}</code>`}${e.item?.position ? html` <span class="muted small">${Math.round((e.item.position / (e.item.duration || 1)) * 100)} %</span>` : ''}</td>
             </tr>`,
           )}
         </tbody>
@@ -203,11 +289,15 @@ export function SyncPage() {
     <div class="grid">
       <${HubCard} hub=${data.hub} actions=${actions} runner=${runner} />
 
+      <${Card} title="Bibliothèques comparées" icon="layers" class="span-full">
+        <${Compare} />
+      </${Card}>
+
       <${TrackerCard} name="Nuvio" icon="tv" status=${nuvio} actions=${actions} runner=${runner}
         actionNames=${['nuvio-push', 'nuvio-merge']}
         rows=${[
           ['Compte', html`<${Badge} tone=${nuvio.configured ? 'ok' : 'neutral'}>${nuvio.configured ? 'configuré' : 'NUVIO_EMAIL vide'}</${Badge}>`],
-          ['Push auto', formatInterval(nuvio.pushIntervalMs)],
+          ['Push auto', pushLabel(nuvio.pushIntervalMs, data.hub.enabled)],
           ['Format des ids', html`<code>${nuvio.idFormat}</code>`],
         ]} />
 
@@ -216,7 +306,7 @@ export function SyncPage() {
         rows=${[
           ['Application', html`<${Badge} tone=${simkl.configured ? 'ok' : 'neutral'}>${simkl.configured ? 'configurée' : 'SIMKL_CLIENT_ID vide'}</${Badge}>`],
           ['Connexion', html`<${Badge} tone=${simkl.authenticated ? 'ok' : 'warn'}>${simkl.authenticated ? 'connecté' : 'non connecté'}</${Badge}>`],
-          ['Push auto', formatInterval(simkl.pushIntervalMs)],
+          ['Push auto', pushLabel(simkl.pushIntervalMs, data.hub.enabled)],
           simkl.viaProxy && ['Sortie', html`<code>${simkl.viaProxy}</code>`],
           simkl.paused && ['Pause', html`jusqu'à ${formatDate(simkl.pausedUntil)}`],
         ]}

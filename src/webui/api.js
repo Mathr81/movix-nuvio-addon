@@ -11,6 +11,7 @@ const { mainApi } = require('../integrations/movixClient');
 const trakt = require('../integrations/traktCloud');
 const simkl = require('../integrations/simklCloud');
 const hub = require('../hub');
+const { titlesFor, labelOf } = require('../hub/compare');
 const addons = require('../addons');
 const sources = require('../sources');
 const resolvedSources = require('../sources/resolved');
@@ -278,8 +279,17 @@ function router() {
     ),
   );
 
+  api.get('/sync/compare', (_req, res) => send(res, hub.compareLibraries()));
+
+  // Chaque ligne porte son titre TMDB ("Dark · S02E05"): la cle seule est illisible.
   api.get('/journal/:cycle', (req, res) =>
-    send(res, journalIndex.entries(req.params.cycle, { limit: Math.min(Number(req.query.limit) || 500, 5000) })),
+    send(
+      res,
+      journalIndex.entries(req.params.cycle, { limit: Math.min(Number(req.query.limit) || 500, 5000) }).then(async (data) => {
+        const titles = await titlesFor(data.entries.map((e) => e.key));
+        return { ...data, entries: data.entries.map((e) => ({ ...e, label: labelOf(e.key, titles) })) };
+      }),
+    ),
   );
 
   api.post('/actions/:name', (req, res) => {

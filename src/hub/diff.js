@@ -124,6 +124,12 @@ function valuesFor(model, removals) {
   return before;
 }
 
+/** Les cles de `a` absentes de `b` (b peut manquer: tout est alors garde). */
+function withoutKeys(a, b) {
+  const drop = (kind) => new Set(b?.[kind] || []);
+  return Object.fromEntries(['library', 'watched', 'progress'].map((kind) => [kind, a[kind].filter((k) => !drop(kind).has(k))]));
+}
+
 function mergeRemovals(a, b) {
   return {
     library: [...new Set([...a.library, ...b.library])],
@@ -155,5 +161,6 @@ module.exports = {
   withoutContested,
   valuesFor,
   mergeRemovals,
+  withoutKeys,
   union,
 };
