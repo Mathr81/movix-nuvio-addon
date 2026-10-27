@@ -3,7 +3,7 @@ import { api, useResource, useTick, timeAgo, formatDate, formatInterval, plural,
 import { Card, Badge, Dot, Button, Skeleton, ErrorBox, Empty, KeyValue, Callout, Icon, Spinner, JsonView, Segmented } from '../ui.js';
 import { useActions } from '../actions.js';
 
-const KINDS = { library: 'Bibliothèque', watched: 'Vus', progress: 'Reprises', listeDejaVus: 'Liste, déjà vus' };
+const KINDS = { library: 'Bibliothèque', watched: 'Vus', progress: 'Reprises', listeDejaVus: 'Rangés en « terminé »' };
 const TARGETS = { movix: 'Movix', nuvio: 'Nuvio', simkl: 'Simkl' };
 
 /** Le push periodique double le hub: inutile (et volontairement coupe) quand celui-ci tourne. */
@@ -71,7 +71,7 @@ function CycleSummary({ summary }) {
           <div class="side-name">${TARGETS[side]}</div>
           ${typeof summary[side] === 'string'
             ? html`<div class="muted small">${summary[side]}</div>`
-            : Object.entries(summary[side]).map(([k, v]) => html`<div class="side-row"><span class="muted">${KINDS[k] || k}</span><strong>${v}</strong></div>`)}
+            : Object.entries(summary[side]).map(([k, v]) => html`<div class="side-row"><span class="muted" title=${k === 'listeDejaVus' ? 'Titres de ta bibliothèque Movix que Simkl range en « terminé » plutôt qu\'en « à voir » (une liste Simkl est exclusive) : ils expliquent l\'écart de bibliothèque, rien n\'est perdu.' : ''}>${KINDS[k] || k}</span><strong>${v}</strong></div>`)}
         </div>`,
       )}
     </div>
@@ -153,7 +153,7 @@ function Compare() {
   if (loading && !data) return html`<div class="loading-block"><${Spinner} /> Lecture des titres…</div>`;
   if (!data) return html`<${Empty} icon="clock" title="Pas encore de cycle">La comparaison s'appuie sur ce qu'a lu le dernier cycle du hub.</${Empty}>`;
 
-  const sides = kind === 'progress' ? ['movix', 'nuvio'] : ['movix', 'nuvio', 'simkl'];
+  const sides = ['movix', 'nuvio', 'simkl'];
   const all = data[kind];
   const needle = query.trim().toLowerCase();
   const rows = all.filter((r) => (onlyDiff === 'all' || r.diff) && (!needle || r.label.toLowerCase().includes(needle)));
@@ -173,7 +173,6 @@ function Compare() {
       <span class="muted small">lu ${timeAgo(data.at)}${data.simkl ? '' : ' · Simkl indisponible à ce cycle'}</span>
       <${Button} size="sm" variant="ghost" icon="refresh" loading=${loading} onClick=${reload}>Actualiser</${Button}>
     </div>
-    ${kind === 'progress' && html`<p class="muted small">Simkl ne rend pas les reprises en lecture : elles n'y partent qu'en scrobble.</p>`}
     ${rows.length === 0
       ? html`<${Empty} icon="check" title=${onlyDiff === 'diff' ? 'Aucune différence' : 'Rien ici'}>${onlyDiff === 'diff' ? 'Les trois sources sont alignées pour cette catégorie.' : ''}</${Empty}>`
       : html`<div class="table-wrap">

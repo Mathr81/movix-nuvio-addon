@@ -338,6 +338,11 @@ function playbackOf(key) {
   return load().playback[key] || null;
 }
 
+/** Toutes les positions de reprise lues sur Simkl, par cle canonique. */
+function playbacks() {
+  return load().playback;
+}
+
 function lastScrobble(key) {
   return load().scrobbled[key] || null;
 }
@@ -357,6 +362,7 @@ module.exports = {
   markUnmatched,
   applyRemoved,
   playbackOf,
+  playbacks,
   lastScrobble,
   noteScrobble,
   reset,

@@ -1,3 +1,4 @@
+const simklLibrary = require('../integrations/simklLibrary');
 const { parseKey, describe } = require('./model');
 
 /**
@@ -78,21 +79,25 @@ async function compare(models) {
     return row;
   });
 
-  // Reprises: Simkl ne les rend pas en lecture (elles n'y partent qu'en scrobble).
+  // Reprises: celles de Simkl viennent de /sync/playback (lu avec la bibliotheque).
+  const simklPlayback = view ? simklLibrary.playbacks() : {};
   const percent = (side, key) => {
+    if (side === 'simkl') return view ? (simklPlayback[key] ? Math.round(simklPlayback[key].progress) : false) : null;
     const p = sides[side].progress.get(key);
     return p ? Math.round((p.position / (p.duration || 1)) * 100) : false;
   };
-  const progress = [...new Set([...models.movix.progress.keys(), ...models.nuvio.progress.keys()])].map((key) => {
-    const row = { key, movix: percent('movix', key), nuvio: percent('nuvio', key) };
-    // Nuvio efface de lui-meme une reprise terminee, a peine entamee ou d'un titre deja
-    // vu: son absence en face n'est alors pas un ecart.
+  const progressKeys = new Set([...models.movix.progress.keys(), ...models.nuvio.progress.keys(), ...Object.keys(simklPlayback)]);
+  const progress = [...progressKeys].map((key) => {
+    const row = { key, movix: percent('movix', key), nuvio: percent('nuvio', key), simkl: percent('simkl', key) };
+    // Une reprise terminee, a peine entamee ou d'un titre deja vu est effacee d'elle-meme
+    // par Nuvio et Simkl: son absence en face n'est alors pas un ecart.
     const seen = models.movix.watched.has(key) || models.nuvio.watched.has(key);
-    const meaningful = (v) => v !== false && v > 2 && v < 90 && !seen;
-    row.diff =
-      row.movix === false || row.nuvio === false
-        ? meaningful(row.movix) || meaningful(row.nuvio)
-        : Math.abs(row.movix - row.nuvio) > 1;
+    const meaningful = (v) => typeof v === 'number' && v > 2 && v < 90 && !seen;
+    const values = SOURCES.map((side) => row[side]).filter((v) => v !== null);
+    const present = values.filter((v) => v !== false);
+    row.diff = values.includes(false)
+      ? present.some(meaningful)
+      : Math.max(...present) - Math.min(...present) > 1;
     return row;
   });
 

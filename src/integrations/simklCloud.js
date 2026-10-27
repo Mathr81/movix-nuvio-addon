@@ -267,6 +267,8 @@ const removeFromHistory = (payload) => post('/sync/history/remove', payload);
 /** `to` est porte par CHAQUE element; un `to` global est refuse (400 empty_field). */
 const addToList = (payload) => post('/sync/add-to-list', payload);
 const playback = () => get('/sync/playback');
+/** `id`: celui d'une ligne de `/sync/playback`, pas un id de titre. */
+const removePlayback = (id) => send('DELETE', `/sync/playback/${id}`);
 const settings = () => post('/users/settings', {});
 
 /** `start` / `pause` / `stop`, avec un pourcentage. */
@@ -283,6 +285,7 @@ module.exports = {
   removeFromHistory,
   addToList,
   playback,
+  removePlayback,
   settings,
   scrobble,
   get,
