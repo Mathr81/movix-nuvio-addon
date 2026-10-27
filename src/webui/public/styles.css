@@ -2188,3 +2188,73 @@ details[open] > summary .json-caret {
     display: none;
   }
 }
+
+/* --- Lecteur ---------------------------------------------------------------------------------- */
+.modal-wide:has(.player) {
+  width: min(1180px, 100%);
+}
+.player {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 14px;
+  align-items: start;
+}
+.player-video video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: var(--radius-sm);
+}
+.player-info {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+  min-width: 0;
+}
+.bitrate-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bitrate-empty {
+  padding: 18px 0;
+}
+.bitrate-head {
+  align-items: baseline;
+}
+.bitrate-plot {
+  height: 90px;
+  cursor: crosshair;
+  border-bottom: 1px solid var(--border-strong);
+}
+.bitrate-plot svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+.bitrate-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+.bitrate-area {
+  fill: var(--accent-soft);
+}
+.bitrate-avg {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.bitrate-cursor {
+  stroke: var(--text-2);
+  stroke-width: 1;
+}
+@media (max-width: 860px) {
+  .player {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

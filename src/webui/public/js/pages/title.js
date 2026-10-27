@@ -1,8 +1,9 @@
 import { html, useState, useEffect, useRef } from '../../vendor/preact-htm.js';
 import { api, useResource, navigate, formatBitrate, formatBytes, plural } from '../lib.js';
 import {
-  Card, Badge, Button, Skeleton, ErrorBox, Empty, Segmented, Icon, JsonView, KeyValue, Meter, CopyButton, Spinner, Callout,
+  Card, Badge, Button, Skeleton, ErrorBox, Empty, Segmented, Icon, JsonView, KeyValue, Meter, CopyButton, Spinner, Callout, Modal,
 } from '../ui.js';
+import { Player } from '../player.js';
 
 const DIRECT_ID = /^(tt\d{5,}|tmdb:\d+)$/i;
 
@@ -146,6 +147,7 @@ function tierTone(tier) {
 
 function StreamsTab({ state, onRescan }) {
   const { data, error, loading, reload } = state;
+  const [playing, setPlaying] = useState(null);
   if (error) return html`<${ErrorBox} error=${error} onRetry=${reload} />`;
   if (!data) return html`<div class="loading-block"><${Spinner} /> Résolution et mesure des flux… (peut prendre une trentaine de secondes)</div>`;
   if (!data.streams.length) {
@@ -162,10 +164,11 @@ function StreamsTab({ state, onRescan }) {
     </div>
     <div class="table-wrap">
       <table class="table">
-        <thead><tr><th>Source</th><th>Qualité</th><th>Débit</th><th>Taille</th><th>Proxy</th><th>Cible</th></tr></thead>
+        <thead><tr><th></th><th>Source</th><th>Qualité</th><th>Débit</th><th>Taille</th><th>Proxy</th><th>Cible</th></tr></thead>
         <tbody>
           ${data.streams.map(
             (s) => html`<tr>
+              <td><${Button} size="sm" variant="ghost" icon="play" title="Lire dans le navigateur" onClick=${() => setPlaying(s)} /></td>
               <td><strong>${s.source}</strong>${s.aussiChez && html`<div class="muted small">aussi chez ${s.aussiChez.join(', ')}</div>`}</td>
               <td>
                 <${Badge} tone=${tierTone(s.palier)}>${s.palier ? (/^\d+$/.test(String(s.palier)) ? `${s.palier}p` : s.palier) : s.qualiteAnnoncee || '?'}</${Badge}>
@@ -181,6 +184,9 @@ function StreamsTab({ state, onRescan }) {
         </tbody>
       </table>
     </div>
+    ${playing && html`<${Modal} title=${`${playing.source} · ${playing.palier ? `${playing.palier}p` : playing.qualiteAnnoncee || '?'}`} icon="play" wide onClose=${() => setPlaying(null)}>
+      <${Player} src=${playing.lecture} />
+    </${Modal}>`}
     <${JsonView} data=${data} />`;
 }
 

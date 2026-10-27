@@ -550,6 +550,10 @@ async function handle(req, res) {
     return res.status(503).type('text/plain').send('proxy de flux desactive (STREAM_PROXY_ENABLED=false)');
   }
 
+  // Le lecteur de la WebUI lit ces flux avec hls.js, soumis au CORS quand la WebUI n'est
+  // pas ouverte sur l'origine de PUBLIC_URL. Les liens sont signes: rien a proteger de plus.
+  res.set('Access-Control-Allow-Origin', '*');
+
   const { target, spec, inline, base, error, message } = readRequest(req);
   if (error) return res.status(error).type('text/plain').send(message);
 

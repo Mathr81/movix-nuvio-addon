@@ -118,6 +118,11 @@ async function streams(type, id, { refresh = false } = {}) {
       proxifie: streamProxy.isProxied(r.url),
       injoignable: r.unreachable || undefined,
       cible: streamProxy.targetOf(r.url) || r.url,
+      // Lien que le lecteur de la WebUI peut ouvrir: un lien direct passe par le proxy,
+      // seul a poser le CORS dont hls.js a besoin. L'indice fait reecrire les playlists
+      // servies par un proxy HLS (`...-proxy?url=...m3u8`), sinon leurs URI relatives
+      // seraient resolues contre notre proxy.
+      lecture: streamProxy.isProxied(r.url) || !config.STREAM_PROXY_ENABLED ? r.url : streamProxy.proxyUrl(r.url, { playlistHints: ['m3u8'] }),
       qualiteAnnoncee: r.quality || null,
       // La resolution telle que le master l'annonce, et le palier qui en decoule. Un film
       // en scope (1920x800) doit sortir en 1080p: c'est la largeur qui le dit.

@@ -1,6 +1,7 @@
 import { html, useState, useMemo } from '../../vendor/preact-htm.js';
 import { api, useResource, useLocalState, timeAgo, plural } from '../lib.js';
 import { Badge, Button, Callout, Card, CopyButton, Dot, Empty, ErrorBox, Icon, Modal, Segmented, Skeleton, Stat, toast } from '../ui.js';
+import { Player } from '../player.js';
 
 const FILTERS = [
   { value: 'visible', label: 'Dans la playlist' },
@@ -53,6 +54,7 @@ function ChannelModal({ channel, data, act, onClose }) {
   const [name, setName] = useState(channel.name);
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState(null);
+  const [watching, setWatching] = useState(null);
 
   const others = useMemo(() => data.rows.filter((c) => c.key !== channel.key), [data, channel.key]);
   const targetKey = others.find((c) => c.name === target)?.key;
@@ -71,6 +73,17 @@ function ChannelModal({ channel, data, act, onClose }) {
     setTesting(false);
   };
 
+  // sid absent: la chaine, avec la meme bascule que dans un lecteur IPTV.
+  const watch = async (sid) => {
+    setWatching({ loading: true, sid });
+    try {
+      setWatching(await api('iptv/watch', { method: 'POST', body: { key: channel.key, sid } }));
+    } catch (error) {
+      setWatching(null);
+      toast(error.message, { tone: 'error', title: 'Lecture impossible' });
+    }
+  };
+
   return html`<${Modal} title=${channel.name} icon="tv" wide onClose=${onClose}>
     <div class="row gap wrap">
       ${channel.hidden
@@ -79,7 +92,8 @@ function ChannelModal({ channel, data, act, onClose }) {
       <${Badge}>${channel.group}</${Badge}>
       ${channel.tvgId ? html`<${Badge} tone="info">guide ${channel.tvgId}</${Badge}>` : html`<${Badge}>sans guide</${Badge}>`}
       <span class="grow"></span>
-      <${Button} size="sm" icon="play" loading=${testing} onClick=${test}>Tester le zap</${Button}>
+      <${Button} size="sm" variant="primary" icon="play" loading=${watching?.loading && !watching.sid} onClick=${() => watch()}>Regarder</${Button}>
+      <${Button} size="sm" icon="zap" loading=${testing} onClick=${test}>Tester le zap</${Button}>
       <${Button} size="sm" variant="ghost" icon=${channel.hidden === 'user' ? 'eye' : 'eyeOff'}
         onClick=${() => act('hideChannel', { key: channel.key, hidden: channel.hidden !== 'user' })}>
         ${channel.hidden === 'user' ? 'Remettre dans la playlist' : 'Masquer'}
@@ -94,6 +108,12 @@ function ChannelModal({ channel, data, act, onClose }) {
         ${navigator.share && html`<${Button} size="sm" variant="ghost" icon="external"
           onClick=${() => navigator.share({ title: channel.name, url: link }).catch(() => {})}>Partager</${Button}>`}
       </div>
+    </div>`}
+
+    ${watching?.url && html`<div class="top-gap">
+      <div class="row gap"><span class="muted small">En lecture : ${watching.label}</span><span class="grow"></span>
+        <${Button} size="sm" variant="ghost" icon="x" onClick=${() => setWatching(null)}>Fermer le lecteur</${Button}></div>
+      <${Player} src=${watching.url} />
     </div>`}
 
     ${result && html`<${Callout} tone=${result.chosen ? 'ok' : 'error'} title=${result.chosen ? `Flux retenu : ${result.chosen.label}` : 'Aucun flux ne répond'}>
@@ -117,6 +137,8 @@ function ChannelModal({ channel, data, act, onClose }) {
                 onClick=${() => act('prefer', { key: channel.key, sid: s.preferred ? null : s.sid })}>
                 ${s.preferred ? 'Ne plus forcer' : 'Forcer en premier'}
               </${Button}>
+              <${Button} size="sm" variant="ghost" icon="play" title="Regarder ce flux" loading=${watching?.loading && watching.sid === s.sid}
+                onClick=${() => watch(s.sid)} />
               ${link && html`<${CopyButton} text=${`${data.urls.play}/${channel.key}/${s.sid}.m3u8`} />`}
             </td>
           </tr>`)}

@@ -294,6 +294,7 @@ function router() {
     send(res, iptvAdmin.override(action, payload).catch((err) => { throw Object.assign(err, { status: err.status || 400 }); }));
   });
   api.post('/iptv/test', (req, res) => send(res, iptvAdmin.test(String(req.body?.key || ''))));
+  api.post('/iptv/watch', (req, res) => send(res, iptvAdmin.watch(String(req.body?.key || ''), req.body?.sid ? String(req.body.sid) : null)));
   api.post('/iptv/sweep', (_req, res) => send(res, iptvAdmin.sweep()));
   api.post('/iptv/refresh', (_req, res) => send(res, iptvAdmin.refresh()));
 

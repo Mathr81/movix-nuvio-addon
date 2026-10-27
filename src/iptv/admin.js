@@ -5,6 +5,7 @@ const health = require('./health');
 const play = require('./play');
 const epg = require('./epg');
 const routes = require('./routes');
+const streamProxy = require('../streaming/streamProxy');
 
 /**
  * Cote administration de la playlist IPTV, appele par la WebUI (`/ui/api/iptv/...`).
@@ -67,6 +68,24 @@ async function test(key) {
   };
 }
 
+/**
+ * Lien a lire dans la WebUI: la chaine (bascule auto) ou un de ses flux. Le zap renvoie
+ * l'URL amont, que le navigateur ne peut pas lire lui-meme (CORS): on la proxifie.
+ */
+async function watch(key, sid) {
+  const { byKey } = await lineup.get();
+  const channel = byKey.get(key);
+  if (!channel) throw Object.assign(new Error('chaine inconnue'), { status: 404 });
+  const stream = sid ? channel.streams.find((s) => s.sid === sid) : null;
+  if (sid && !stream) throw Object.assign(new Error('flux inconnu'), { status: 404 });
+  const picked = stream ? { url: await play.direct(stream), stream } : await play.pick(channel);
+  if (!picked.url) throw Object.assign(new Error('aucun flux ne répond'), { status: 502 });
+  return {
+    label: picked.stream.label,
+    url: config.STREAM_PROXY_ENABLED ? streamProxy.proxyUrl(picked.url, { headers: { 'User-Agent': health.USER_AGENT }, playlistHints: ['m3u8'] }) : picked.url,
+  };
+}
+
 /** Lance une ronde sans l'attendre: elle dure plusieurs minutes, la page suit sa progression. */
 function sweep() {
   health.sweep(lineup.allStreams);
@@ -79,4 +98,4 @@ async function refresh() {
   return { ok: true };
 }
 
-module.exports = { state, override, test, sweep, refresh };
+module.exports = { state, override, test, watch, sweep, refresh };

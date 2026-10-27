@@ -264,4 +264,4 @@ function status() {
   };
 }
 
-module.exports = { start, sweep, check, get, record, responds, timeoutFor, status, version: () => version };
+module.exports = { USER_AGENT, start, sweep, check, get, record, responds, timeoutFor, status, version: () => version };
