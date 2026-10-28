@@ -193,6 +193,24 @@ apparaissent, alimentées par les mêmes données que le site (`/api/sync`) :
 > moins capable que celle d'à côté — et à surcharger les libellés. Les titres sont donc
 > rendus tels quels.
 
+### Partage avec des proches
+
+Un lien d'addon par proche, déclaré dans `.env` (`GUESTS=marie:<jeton>,papa:<jeton>`, jeton
+généré par `openssl rand -hex 16`), à installer tel quel dans Nuvio/Stremio :
+
+```
+<PUBLIC_URL>/p/<jeton>/manifest.json
+```
+
+Le proche profite de ta clé VIP, mais de **rien de ton compte** : pas de *Ma liste*, de
+*Favoris* ni de recommandations, et un accueil neutre (ni classé selon tes goûts, ni
+privé de tes titres déjà vus). Tous les flux arrivent sur ce seul lien, même avec
+`STREAM_SPLIT_BY_LANG`. Seules les routes d'addon répondent sous `/p/<jeton>/` ; un jeton
+inconnu renvoie 404. Retirer l'entrée puis redémarrer coupe l'accès.
+
+> Le hub et la WebUI ne sont pas concernés, mais `/ui` reste joignable à la même adresse :
+> protège-la par `WEBUI_PASSWORD` avant de donner le domaine.
+
 ### Push vers Nuvio Sync (bibliothèque, vus, reprise de lecture)
 
 Nuvio possède un compte cloud avec une API de synchronisation. L'addon peut y **écrire**

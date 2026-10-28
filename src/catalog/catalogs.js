@@ -115,10 +115,15 @@ function feedRows(type) {
   );
 }
 
+/** Rangee tiree du compte du proprietaire: jamais montree a un proche. */
+function isPersonal(def) {
+  return !!def && ['watchlist', 'favorites', 'trakt', 'reco'].includes(def.source);
+}
+
 /** Retrouve la definition derriere un id de catalogue recu dans une requete. */
 function find(catalogId) {
   const id = catalogId.replace(/^movix-/, '');
   return definitions().find((def) => def.id === id) || null;
 }
 
-module.exports = { manifestCatalogs, feedRows, find, BUILTIN, DEFAULT_ORDER, CONFIG_FILE };
+module.exports = { manifestCatalogs, feedRows, find, isPersonal, BUILTIN, DEFAULT_ORDER, CONFIG_FILE };

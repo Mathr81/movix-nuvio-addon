@@ -13,6 +13,7 @@ const catalogs = require('./catalog/catalogs');
 const feed = require('./catalog/feed');
 const { discoverFor, resolveDates } = require('./catalog/rows');
 const ids = require('./integrations/contentIds');
+const requestContext = require('./core/requestContext');
 
 const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500';
 const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280';
@@ -95,6 +96,7 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
       return { metas: await toCatalogMetas(items, type) };
     }
     if (!def) return { metas: [] };
+    if (requestContext.guest() && catalogs.isPersonal(def)) return { metas: [] };
 
     // Les catalogues personnels ont leur propre cache (TTL sync) et ne sont pas memoises ici,
     // sinon ajouter un film a sa liste sur le site mettrait 30 min a apparaitre.
@@ -240,8 +242,9 @@ async function streamsFor({ type, id, group = null }) {
 // Avec les sous-addons par langue, l'addon principal ne rend plus rien: sinon chaque lien
 // apparaitrait deux fois dans Nuvio. La resource reste declaree (le SDK exige un handler
 // pour chaque resource) -- un manifest inchange evite aussi de reinstaller l'addon.
+// Un proche n'installe qu'un lien: il recoit tous les flux sur l'addon principal.
 builder.defineStreamHandler(async ({ type, id }) =>
-  config.STREAM_SPLIT_BY_LANG ? { streams: [] } : streamsFor({ type, id }),
+  config.STREAM_SPLIT_BY_LANG && !requestContext.guest() ? { streams: [] } : streamsFor({ type, id }),
 );
 
 builder.defineSubtitlesHandler(async ({ type, id }) => {

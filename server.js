@@ -27,6 +27,8 @@ const hub = require('./src/hub');
 const catalogFeed = require('./src/catalog/feed');
 const { startCodeAuth } = require('./src/webui/actions');
 const webui = require('./src/webui');
+const requestContext = require('./src/core/requestContext');
+const catalogs = require('./src/catalog/catalogs');
 
 const app = express();
 
@@ -35,6 +37,18 @@ app.use((_req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', '*');
   next();
+});
+
+// --- Liens "proches" --------------------------------------------------------
+// <PUBLIC_URL>/p/<jeton>/manifest.json: l'addon avec la VIP, sans rien du compte (Ma liste,
+// favoris, recommandations, gouts de l'accueil -- cf. requestContext). Seules les routes
+// d'addon repondent sous ce prefixe; un jeton inconnu ne revele rien.
+app.use((req, res, next) => {
+  if (!req.url.startsWith('/p/')) return next();
+  const route = requestContext.guestRoute(req.url, config.GUESTS);
+  if (!route) return res.status(404).json({ error: 'not found' });
+  req.url = route.url;
+  requestContext.run({ guest: route.guest }, next);
 });
 
 // --- Proxy de sous-titres -------------------------------------------------
@@ -377,14 +391,17 @@ function stremioExtra(raw) {
 }
 
 app.get('/manifest.json', async (_req, res) => {
+  const manifest = requestContext.guest()
+    ? { ...addonInterface.manifest, catalogs: addonInterface.manifest.catalogs.filter((c) => !catalogs.isPersonal(catalogs.find(c.id))) }
+    : addonInterface.manifest;
   const liveCatalogs = await livetv.catalogs();
-  if (liveCatalogs.length === 0) return res.json(addonInterface.manifest);
+  if (liveCatalogs.length === 0) return res.json(manifest);
 
   res.json({
-    ...addonInterface.manifest,
-    types: [...addonInterface.manifest.types, 'tv'],
-    idPrefixes: [...(addonInterface.manifest.idPrefixes || []), livetv.ID_PREFIX],
-    catalogs: [...addonInterface.manifest.catalogs, ...liveCatalogs],
+    ...manifest,
+    types: [...manifest.types, 'tv'],
+    idPrefixes: [...(manifest.idPrefixes || []), livetv.ID_PREFIX],
+    catalogs: [...manifest.catalogs, ...liveCatalogs],
   });
 });
 
@@ -454,6 +471,8 @@ app.listen(config.PORT, () => {
   console.log(`Movix addon (perso) demarre sur le port ${config.PORT} (toutes interfaces)`);
   console.log(`Manifest local : http://127.0.0.1:${config.PORT}/manifest.json`);
   if (config.PUBLIC_URL) console.log(`Manifest public : ${config.PUBLIC_URL}/manifest.json`);
+  // Les noms seulement: la page Logs de la WebUI reprend la console.
+  if (config.GUESTS.size) console.log(`Liens proches   : ${[...config.GUESTS.values()].join(', ')} (<PUBLIC_URL>/p/<jeton>/manifest.json)`);
   console.log(`Diagnostic     : /debug/movie/tmdb:157336  |  /debug/extract/movie/tmdb:157336  |  /debug/streams/...`);
   console.log(`                 /debug/sync  |  /debug/addons  |  /health`);
   if (config.WEBUI_ENABLED) console.log(`WebUI          : http://127.0.0.1:${config.PORT}/ui/`);

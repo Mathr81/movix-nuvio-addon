@@ -4,6 +4,7 @@ const cache = require('../core/cache');
 const tmdbClient = require('../integrations/tmdb');
 const ids = require('../integrations/contentIds');
 const catalogs = require('./catalogs');
+const requestContext = require('../core/requestContext');
 const { discoverFor, resolveDates } = require('./rows');
 const { personalRecommendations, excluded, genreAffinity } = require('./recommend');
 
@@ -177,10 +178,15 @@ async function profile(type) {
   return { seen, affinity, day: today, today };
 }
 
-async function build(type) {
+// L'accueil des proches est neutre: ni les gouts ni les vus du proprietaire, ni sa
+// rangee de recommandations. Une seule mise en page pour tous les proches.
+const NEUTRAL_PROFILE = { seen: new Set(), affinity: new Map() };
+
+async function build(type, neutral) {
   const started = Date.now();
-  const ctx = await profile(type);
-  const rows = catalogs.feedRows(type);
+  const today = new Date().toISOString().slice(0, 10);
+  const ctx = neutral ? { ...NEUTRAL_PROFILE, day: today, today } : await profile(type);
+  const rows = catalogs.feedRows(type).filter((row) => !(neutral && catalogs.isPersonal(row)));
 
   let failed = 0;
   const pools = await mapLimit(rows, 6, (row) =>
@@ -210,7 +216,7 @@ async function build(type) {
   });
 
   console.log(
-    `[catalog] accueil ${type}: ${rows.length} rangees, ${[...feeds.values()].reduce((n, f) => n + f.items.length, 0)} titres distincts, ` +
+    `[catalog] accueil ${type}${neutral ? ' (proches)' : ''}: ${rows.length} rangees, ${[...feeds.values()].reduce((n, f) => n + f.items.length, 0)} titres distincts, ` +
       `${ctx.seen.size} deja vus ecartes, ${ctx.affinity.size} genres au profil (${Date.now() - started} ms)` +
       (failed ? `, ${failed} rangee(s) en echec` : ''),
   );
@@ -227,12 +233,14 @@ function warmIds(type, items) {
   mapLimit(items, 8, (item) => ids.contentIdFor(type, item.id)).catch(() => {});
 }
 
+const layoutKey = (type, neutral) => (neutral ? `proches:${type}` : type);
+
 /** Lance une construction; elle ne remplace la mise en page en service qu'une fois prete. */
-function startBuild(type) {
+function startBuild(type, neutral) {
   const entry = { expiresAt: Infinity, next: null, promise: null };
-  entry.promise = build(type).then((result) => {
+  entry.promise = build(type, neutral).then((result) => {
     entry.expiresAt = Date.now() + (result.failed ? RETRY_FAILED_MS : config.CATALOG_REFRESH_MS);
-    layouts.set(type, entry);
+    layouts.set(layoutKey(type, neutral), entry);
     return result;
   });
   return entry;
@@ -243,16 +251,17 @@ function startBuild(type) {
  * construit (plusieurs secondes): l'accueil ne la fait jamais attendre, sauf la toute
  * premiere fois -- et `warm` la lance des le demarrage.
  */
-function layout(type) {
-  const current = layouts.get(type);
+function layout(type, neutral = false) {
+  const key = layoutKey(type, neutral);
+  const current = layouts.get(key);
   if (!current) {
-    const entry = startBuild(type);
-    layouts.set(type, entry);
-    entry.promise.catch(() => layouts.delete(type));
+    const entry = startBuild(type, neutral);
+    layouts.set(key, entry);
+    entry.promise.catch(() => layouts.delete(key));
     return entry.promise;
   }
   if (Date.now() >= current.expiresAt && !current.next) {
-    current.next = startBuild(type);
+    current.next = startBuild(type, neutral);
     current.next.promise.catch((err) => {
       console.warn(`[catalog] reconstruction ${type} en echec: ${err.message}`);
       current.next = null;
@@ -296,7 +305,7 @@ async function extend(feed, claimed, need) {
 
 /** Page `page` (1-based) d'une rangee: titres TMDB bruts, dans l'ordre. */
 async function rowPage(type, rowId, page) {
-  const { feeds, claimed } = await layout(type);
+  const { feeds, claimed } = await layout(type, !!requestContext.guest());
   const feed = feeds.get(rowId);
   if (!feed) return [];
 

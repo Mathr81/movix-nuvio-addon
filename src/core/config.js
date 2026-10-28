@@ -17,6 +17,17 @@ function readList(name, fallback) {
   return value.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+// GUESTS=nom:jeton,nom2:jeton2. Un jeton court se devinerait: il donne la VIP, on l'ecarte.
+function readGuests() {
+  const guests = new Map();
+  for (const entry of readList('GUESTS', [])) {
+    const [name, token] = entry.split(':').map((s) => s.trim());
+    if (name && token && token.length >= 16) guests.set(token, name);
+    else console.warn(`[config] GUESTS: "${name}" ignore -- format nom:jeton, jeton de 16 caracteres au moins`);
+  }
+  return guests;
+}
+
 const config = {
   PORT: Number(readEnv('PORT', 8787)),
 
@@ -160,6 +171,9 @@ const config = {
   // Jeton d'acces, porte par l'URL (M3U) ou en mot de passe (Xtream). Obligatoire: ces
   // routes donnent acces aux flux VIP du compte. `openssl rand -hex 16`.
   IPTV_TOKEN: readEnv('IPTV_TOKEN', ''),
+
+  // Liens d'addon pour les proches (<PUBLIC_URL>/p/<jeton>/manifest.json): jeton -> nom.
+  GUESTS: readGuests(),
   // Groupes Vavoo lus, tels que Movix les nomme sans le prefixe `vavoo_`. `none` = aucun.
   IPTV_VAVOO_GROUPS: readList('IPTV_VAVOO_GROUPS', ['france', 'france-sport']).filter((g) => g !== 'none'),
   // Categories du bouquet IPTV (VIP) retenues, par prefixe (`FR | KIDS TV`). `*` = toutes
