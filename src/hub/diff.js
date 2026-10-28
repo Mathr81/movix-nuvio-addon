@@ -138,6 +138,27 @@ function mergeRemovals(a, b) {
   };
 }
 
+/**
+ * Titres termines: un film vu n'importe ou, une serie que Simkl range en "termine" -- lui
+ * seul sait quels episodes sont sortis. Cles de bibliotheque.
+ */
+function finishedTitles(models, simklCompleted) {
+  const done = new Set(simklCompleted);
+  for (const model of models) for (const key of model.watched.keys()) if (key.startsWith('movie:')) done.add(key);
+  return done;
+}
+
+/**
+ * Ce qui quitte la watchlist: les titres termines DEPUIS le tour precedent, comme Simkl le
+ * fait de lui-meme. Un titre deja termine qu'on remet en liste (pour le revoir) reste, un
+ * favori aussi. `previousFinished` null (premier tour): rien, faute de point de comparaison.
+ */
+function newlyFinished(library, finished, previousFinished) {
+  if (!previousFinished) return [];
+  const before = new Set(previousFinished);
+  return [...library].filter(([key, entry]) => finished.has(key) && !before.has(key) && !entry.favorite).map(([key]) => key);
+}
+
 /** Fusion de deux deltas, dedupliquee par cle canonique. */
 function union(a, b) {
   const dedupe = (items, keyOf) => {
@@ -162,5 +183,7 @@ module.exports = {
   valuesFor,
   mergeRemovals,
   withoutKeys,
+  finishedTitles,
+  newlyFinished,
   union,
 };

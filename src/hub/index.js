@@ -23,8 +23,12 @@ const {
   valuesFor,
   mergeRemovals,
   withoutKeys,
+  finishedTitles,
+  newlyFinished,
   union,
 } = require('./diff');
+const simklLibrary = require('../integrations/simklLibrary');
+const { libKey } = require('./model');
 
 /**
  * Hub de synchronisation bidirectionnel Movix <-> Nuvio Sync -> Simkl.
@@ -156,8 +160,18 @@ async function runCycle({ dryRun = false } = {}) {
         ? withoutContested(mergeRemovals(a || emptyDelta(), b || emptyDelta()), allAdditions)
         : emptyDelta();
 
-    const removeInNuvio = removeFrom(gone.movix, gone.simkl);
-    const removeInMovix = removeFrom(gone.nuvio, gone.simkl);
+    // Watchlist: un titre qui vient d'etre termine en sort, chez Movix comme chez Nuvio.
+    const finished = finishedTitles([movix, nuvioModel, simklModel].filter(Boolean), simklView ? simklLibrary.completedKeys() : []);
+    const previousFinished = previous ? previous.finished || [] : null;
+    const unlisted = newlyFinished(new Map([...nuvioModel.library, ...movix.library]), finished, previousFinished);
+    const withUnlisted = (delta, model) => ({
+      ...delta,
+      library: [...new Set([...delta.library, ...unlisted.filter((k) => model.library.has(k))])],
+    });
+    const removeInNuvio = withUnlisted(removeFrom(gone.movix, gone.simkl), nuvioModel);
+    const removeInMovix = withUnlisted(removeFrom(gone.nuvio, gone.simkl), movix);
+    // Ces retraits sont les notres: rien ne doit les recopier ailleurs (ni re-ajout, ni Simkl).
+    for (const delta of [toNuvio, toMovix]) delta.library = delta.library.filter((e) => !unlisted.includes(libKey(e.type, e.id)));
     // Vers Simkl, les disparitions se mesurent elles aussi depuis `simklBase`, et ne
     // visent que ce que Simkl possede.
     const removeInSimkl = (() => {
@@ -167,7 +181,8 @@ async function runCycle({ dryRun = false } = {}) {
         guardRemovals('Nuvio', removalsSince(nuvioModel, simklBase.nuvio), nuvioModel, simklBase.nuvio),
       );
       return {
-        library: merged.library.filter((k) => simklView.known.library.has(k)),
+        // Un titre termine quitte nos watchlists, pas Simkl: il y est deja en "termine".
+        library: merged.library.filter((k) => simklView.known.library.has(k) && !finished.has(k)),
         watched: merged.watched.filter((k) => simklView.known.watched.has(k)),
         progress: [],
       };
@@ -196,6 +211,7 @@ async function runCycle({ dryRun = false } = {}) {
       versNuvio: count(toNuvio),
       versMovix: count(toMovix),
       versSimkl: count(toSimkl),
+      ...(unlisted.length > 0 && { sortisDeWatchlistCarVus: unlisted.length }),
       ...(Object.values(held).some((d) => deltaSize(d) > 0) && { retraitsRetenus: Object.fromEntries(Object.entries(held).map(([k, d]) => [k, count(d)])) }),
       retraits: config.HUB_PROPAGATE_DELETIONS
         ? { nuvio: count(removeInNuvio), movix: count(removeInMovix), simkl: count(removeInSimkl) }
@@ -271,6 +287,8 @@ async function runCycle({ dryRun = false } = {}) {
           ? keepHeld(snapshot(simklModel, null, removeInSimkl, ['library', 'watched']), held.simkl, previous?.simkl)
           : previous?.simkl || null,
         simklBase: simklServed ? { movix: movixSnap, nuvio: nuvioSnap } : simklBase,
+        // Sans Simkl, les series terminees ne sont pas connues ce tour-ci: on garde l'acquis.
+        finished: simklView ? [...finished] : [...new Set([...finished, ...(previousFinished || [])])],
       });
     }
 

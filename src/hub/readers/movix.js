@@ -28,6 +28,8 @@ async function readMovix() {
     for (const item of items) {
       const key = libKey(type, item.id);
       if (!model.library.has(key)) model.library.set(key, { type, id: Number(item.id), kind, addedAt: item.addedAt });
+      // Un favori ne quitte jamais la liste, meme vu (cf. diff.newlyFinished).
+      if (kind === 'favorites') model.library.get(key).favorite = true;
     }
   }
 

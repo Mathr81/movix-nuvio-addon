@@ -338,6 +338,11 @@ function playbackOf(key) {
   return load().playback[key] || null;
 }
 
+/** Cles de bibliotheque (`series:1396`) des titres que Simkl range en "termine". */
+function completedKeys() {
+  return new Set(Object.values(load().items).filter((i) => i.tmdb && i.status === 'completed').map((i) => libKey(i.kind, i.tmdb)));
+}
+
 /** Toutes les positions de reprise lues sur Simkl, par cle canonique. */
 function playbacks() {
   return load().playback;
@@ -363,6 +368,7 @@ module.exports = {
   applyRemoved,
   playbackOf,
   playbacks,
+  completedKeys,
   lastScrobble,
   noteScrobble,
   reset,
