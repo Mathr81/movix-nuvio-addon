@@ -3,6 +3,7 @@ const config = require('../core/config');
 const breaker = require('../core/breaker');
 const voe = require('./hosterVoe');
 const veev = require('./hosterVeev');
+const byse = require('./hosterByse');
 const streamProxy = require('./streamProxy');
 
 const BROWSER_UA =
@@ -31,7 +32,12 @@ const BROWSER_UA =
  *   darkibox     lecture du HTML de la page d'embed
  *   oneupload    idem
  *   sharecloudy  idem, flux servi par le proxy (le CDN exige Origin/Referer)
- *   lulustream   HTML de l'embed, script P.A.C.K.E.R. depaquete (sans l'executer)
+ *   lulustream, uqload, mixdrop
+ *                lecteur jwplayer generique: HTML de l'embed, script P.A.C.K.E.R.
+ *                depaquete (sans l'executer). Tente aussi en dernier recours sur tout
+ *                hebergeur inconnu: la famille VidHide (morencius, hanerix...) change
+ *                de domaine sans cesse et se lit de la meme facon.
+ *   byse         Filemoon et ses miroirs: API JSON chiffree AES-GCM (src/streaming/hosterByse.js)
  *   redirector   trakx.lol / kokoflix.lol (FStream): simples redirections vers le vrai
  *                hebergeur, qu'on suit avant de relancer la detection sur la cible
  *
@@ -98,6 +104,9 @@ const BUILTIN_HOSTER_PATTERNS = {
     'technicalcatalog', 'seekplayer', 'seeks\\.cloud', 'seekplays',
   ],
   vidzy: ['vidzy'],
+  // Filemoon sert desormais le lecteur Byse, comme ses miroirs anonymes.
+  byse: ['filemoon', 'byse[a-z]*\\.', 'kaydendown'],
+  mixdrop: ['mixdrop', 'mxdrop', 'm1xdrop'],
   fsvid: ['fsvid'],
   // Hors liste amont: ces trois-la n'ont jamais eu d'extracteur cote Movix, l'addon les
   // lit lui-meme depuis le HTML de la page d'embed.
@@ -107,7 +116,9 @@ const BUILTIN_HOSTER_PATTERNS = {
 };
 
 /** Hebergeurs que l'addon sait extraire SEUL, sans passer par Movix. */
-const LOCAL_EXTRACTORS = new Set(['voe', 'veev', 'darkibox', 'oneupload', 'sharecloudy', 'lulustream', 'redirector']);
+// Pas vidmoly: sa page d'attente renvoie un client HTTP vers un parking publicitaire.
+const JWPLAYER_HOSTERS = new Set(['lulustream', 'uqload', 'mixdrop']);
+const LOCAL_EXTRACTORS = new Set(['voe', 'veev', 'byse', 'darkibox', 'oneupload', 'sharecloudy', 'redirector', ...JWPLAYER_HOSTERS]);
 
 /** Le CDN de Sharecloudy (shareNNNNN.sharecloudy.com) rend 403 sans l'Origin de son lecteur. */
 const SHARECLOUDY_ORIGIN = 'https://sharecloudy.com';
@@ -224,6 +235,39 @@ async function resolveRedirect(url) {
 }
 
 /**
+ * Source d'un lecteur jwplayer, en clair ou dans un script P.A.C.K.E.R.: m3u8 d'abord
+ * (`file:` ou la table `links` de VidHide), puis mp4 (`MDCore.wurl` de Mixdrop).
+ * `null` si la page ne livre rien; une erreur de transport remonte.
+ */
+async function extractJwPlayer(embedUrl) {
+  // Sans Referer: un Referer de domaine miroir (uqload.cx -> .vc) fait servir une page vide.
+  let html = await fetchEmbedHtml(embedUrl);
+  // Page d'attente anti-robot (vidmoly, voe): rebond `?ch=1&js=<jeton>` vers elle-meme.
+  const hop = html.match(/window\.location\.replace\(\s*['"]([^'"]+)['"]/);
+  if (hop) html = await fetchEmbedHtml(new URL(hop[1], embedUrl).href, embedUrl);
+
+  const text = `${html}\n${unpackPacker(html) || ''}`;
+  const url = firstMatch(text, [
+    /file:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)/i,
+    /["']hls\d["']\s*:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)/i,
+    /file:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)/i,
+    /wurl\s*=\s*["']((?:https?:)?\/\/[^"']+)/i,
+  ]);
+  // Vidzy/fsvid servent un leurre `/troll/master.m3u8` a qui n'est pas leur lecteur.
+  if (!url || /\/troll\//.test(url)) return null;
+  return url.startsWith('//') ? `https:${url}` : url;
+}
+
+/** Flux d'un lecteur jwplayer, proxifie avec l'Origin/Referer de sa page d'embed. */
+function proxyFromEmbed(url, embedUrl) {
+  if (!config.STREAM_PROXY_ENABLED) return url;
+  const origin = new URL(embedUrl).origin;
+  // shortcut: plusieurs CDN (lulu, uqload) acceptent le flux sans en-tetes; proxifie quand
+  // meme car leurs jetons portent un parametre d'IP (`i=`). A retirer si le debit du proxy pese.
+  return streamProxy.proxyUrl(url, { headers: { accept: '*/*', origin, referer: `${origin}/`, 'user-agent': BROWSER_UA } });
+}
+
+/**
  * Disjoncteur par hebergeur: un hebergeur qui rend cinq 502 d'affilee par fiche fait
  * payer a chaque fois un aller-retour et un delai d'attente.
  */
@@ -277,20 +321,28 @@ async function extractVoeLocally(embedUrl) {
  */
 async function extractDirectUrl(embedUrl, playerNameHint) {
   const hoster = detectHoster(embedUrl, playerNameHint);
-  if (!hoster) return { ok: false, reason: 'no-extractor' };
+  if (!hoster) {
+    // Dernier recours: beaucoup d'hebergeurs anonymes sont un simple jwplayer.
+    const url = await extractJwPlayer(embedUrl).catch(() => null);
+    if (!url) return { ok: false, reason: 'no-extractor' };
+    return { ok: true, url: proxyFromEmbed(url, embedUrl), hoster: new URL(embedUrl).hostname };
+  }
   if (!LOCAL_EXTRACTORS.has(hoster)) return { ok: false, reason: 'server-only', hoster };
 
   // Service connu pour etre en panne a l'instant: on ne paye pas l'aller-retour.
   if (extractBreaker.isOpen(hoster)) return { ok: false, reason: 'cooldown', hoster };
 
   if (hoster === 'redirector') {
+    // Disjoncteur par domaine: fr.trakx.lol peut tomber sans que trakx.lol suive.
+    const key = `redirector:${new URL(embedUrl).hostname}`;
+    if (extractBreaker.isOpen(key)) return { ok: false, reason: 'cooldown', hoster };
     let target;
     try {
       target = await resolveRedirect(embedUrl);
-      extractBreaker.noteRecovery(hoster);
+      extractBreaker.noteRecovery(key);
     } catch (err) {
       console.warn(`[extract:redirector] echec HTTP pour ${embedUrl}: ${err.message}`);
-      extractBreaker.noteOutage(hoster);
+      extractBreaker.noteOutage(key);
       return { ok: false, reason: 'http-error', hoster };
     }
     if (!target || detectHoster(target) === 'redirector') return { ok: false, reason: 'deleted', hoster };
@@ -299,23 +351,25 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
     return extractDirectUrl(target, hint);
   }
 
-  if (hoster === 'veev') {
+  // Veev et Byse: module dedie, CDN qui n'accepte que l'Origin/Referer du lecteur.
+  if (hoster === 'veev' || hoster === 'byse') {
+    const module_ = hoster === 'veev' ? veev : byse;
     try {
-      const result = await veev.extract(embedUrl);
+      const result = await module_.extract(embedUrl);
       extractBreaker.noteRecovery(hoster);
       if (!result.ok) {
-        console.warn(`[extract:veev] rien a extraire de ${embedUrl}: ${result.reason}`);
+        console.warn(`[extract:${hoster}] rien a extraire de ${embedUrl}: ${result.reason}`);
         return { ok: false, reason: result.reason === 'unavailable' ? 'deleted' : result.reason, hoster };
       }
-      // Le CDN de Veev n'accepte que l'Origin/Referer de son lecteur: proxy de flux, comme voe.
+      // Proxy de flux, comme voe. Pour Byse le jeton est en plus lie au reseau (`asn=`).
       const url = config.STREAM_PROXY_ENABLED
         ? streamProxy.proxyUrl(result.url, {
-            headers: { accept: '*/*', origin: result.origin, referer: `${result.origin}/`, 'user-agent': veev.BROWSER_UA },
+            headers: { accept: '*/*', origin: result.origin, referer: `${result.origin}/`, 'user-agent': module_.BROWSER_UA },
           })
         : result.url;
       return { ok: true, url, hoster };
     } catch (err) {
-      console.warn(`[extract:veev] echec HTTP pour ${embedUrl}: ${err.message}`);
+      console.warn(`[extract:${hoster}] echec HTTP pour ${embedUrl}: ${err.message}`);
       const status = err.response?.status;
       if (!status || status >= 500) extractBreaker.noteOutage(hoster);
       return { ok: false, reason: 'http-error', hoster, status };
@@ -337,22 +391,17 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
   }
 
   try {
+    if (JWPLAYER_HOSTERS.has(hoster)) {
+      const url = await extractJwPlayer(embedUrl);
+      extractBreaker.noteRecovery(hoster);
+      if (url) return { ok: true, url: proxyFromEmbed(url, embedUrl), hoster };
+      console.warn(`[extract:${hoster}] aucune source trouvee dans le HTML de ${embedUrl}`);
+      return { ok: false, reason: 'no-url-field', hoster };
+    }
+
     const html = await fetchEmbedHtml(embedUrl, hoster === 'oneupload' ? 'https://oneupload.net/' : undefined);
 
-    if (hoster === 'lulustream') {
-      // Lulustream: jwplayer `file:"...m3u8"` dans un script P.A.C.K.E.R.
-      const url = firstMatch(unpackPacker(html) || html, [/file:\s*["']([^"']+\.m3u8[^"']*)/i]);
-      if (url) {
-        extractBreaker.noteRecovery(hoster);
-        const origin = new URL(embedUrl).origin;
-        // shortcut: le CDN accepte le flux sans en-tetes aujourd'hui; proxifie quand meme car
-        // le jeton porte un parametre d'IP (`i=`), a retirer si le debit du proxy pese.
-        const proxied = config.STREAM_PROXY_ENABLED
-          ? streamProxy.proxyUrl(url, { headers: { accept: '*/*', origin, referer: `${origin}/`, 'user-agent': BROWSER_UA } })
-          : url;
-        return { ok: true, url: proxied, hoster };
-      }
-    } else if (hoster === 'sharecloudy') {
+    if (hoster === 'sharecloudy') {
       // Sharecloudy: jwplayer, `sources: [{ file: "https://shareNNNNN.sharecloudy.com/...m3u8" }]`.
       const url = firstMatch(html, [/file:\s*["']([^"']+\.m3u8[^"']*)/i, /"file":\s*"([^"]+\.m3u8[^"]*)"/i]);
       if (url) {

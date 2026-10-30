@@ -55,15 +55,16 @@ async function extraction(type, id) {
   const results = await Promise.all(
     embeds.map(async (item) => {
       const hoster = detectHoster(item.url, item.player);
-      if (!hoster) {
+      // Meme sans hebergeur connu, le lecteur jwplayer generique peut encore le lire.
+      const outcome = await extractDirectUrl(item.url, item.player);
+      if (!hoster && !outcome.ok) {
         return { source: item.sourceName, url: item.url, hoster: null, issue: 'aucun extracteur' };
       }
-      const outcome = await extractDirectUrl(item.url, item.player);
       return {
         source: item.sourceName,
-        hoster,
+        hoster: outcome.hoster || hoster,
         url: item.url,
-        extracteur: LOCAL_EXTRACTORS.has(hoster) ? 'local' : 'Movix (resolve=1)',
+        extracteur: !hoster || LOCAL_EXTRACTORS.has(hoster) ? 'local' : 'Movix (resolve=1)',
         ok: outcome.ok,
         resultat: outcome.ok ? outcome.url : undefined,
         issue: outcome.ok ? undefined : `${outcome.reason}${outcome.status ? ` (${outcome.status})` : ''}`,
