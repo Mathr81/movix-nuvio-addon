@@ -23,6 +23,7 @@ const { breakerState: extractBreakerState } = require('../streaming/hosterExtrac
 const { breakerState: probeBreakerState } = require('../streaming/probe');
 const logBuffer = require('./logBuffer');
 const actions = require('./actions');
+const envSchema = require('./envSchema');
 const { version } = require('../../package.json');
 
 const TMDB_IMG = 'https://image.tmdb.org/t/p';
@@ -144,6 +145,7 @@ async function overview() {
       langs: config.SUBTITLE_LANGS,
     },
     liveTv,
+    iptvEnabled: config.IPTV_ENABLED,
     trackers: trackers(),
     hub: hub.status(),
     storage: {
@@ -226,6 +228,62 @@ async function seasonEpisodes(tmdbId, number) {
   }));
 }
 
+// --- Fichier .env ----------------------------------------------------------------
+// Lu tel quel (commentaires compris) et reecrit EN PLACE: sous Docker, le fichier est un
+// bind-mount, et un renommage casserait le lien avec l'hote. dotenv ne le relit qu'au
+// demarrage, d'ou le redemarrage propose a l'enregistrement.
+const ENV_FILE = paths.inRoot('.env');
+const ENV_BACKUP = paths.inData('env.bak');
+const ENV_EXAMPLE = paths.inRoot('.env.example');
+
+function envFile() {
+  if (!fs.existsSync(ENV_FILE)) return { path: ENV_FILE, exists: false, writable: false, content: '' };
+  let writable = true;
+  try {
+    fs.accessSync(ENV_FILE, fs.constants.W_OK);
+  } catch {
+    writable = false;
+  }
+  const content = fs.readFileSync(ENV_FILE, 'utf8');
+  return { path: ENV_FILE, exists: true, writable, content, backup: fileInfo(ENV_BACKUP) };
+}
+
+/** Le .env, plus de quoi dessiner le formulaire: categories de .env.example et valeurs actives. */
+function envForm() {
+  const file = envFile();
+  let schema = [];
+  try {
+    schema = envSchema.parseSchema(fs.readFileSync(ENV_EXAMPLE, 'utf8'));
+  } catch (err) {
+    console.warn(`[webui] .env.example illisible, formulaire vide: ${err.message}`);
+  }
+  // Ce que le .env definit sans que l'exemple le connaisse: editable quand meme.
+  const known = new Set(schema.flatMap((s) => s.vars.map((v) => v.key)));
+  const values = envSchema.parseValues(file.content);
+  const others = Object.keys(values).filter((k) => !known.has(k));
+  if (others.length) {
+    schema.push({ title: 'Autres', intro: 'Présentes dans le .env, absentes de .env.example.', vars: others.map((key) => ({ key, doc: '', example: '', optional: true, kind: envSchema.kindOf(key, '') })) });
+  }
+  return { ...file, schema, values };
+}
+
+/** `content`: texte complet (editeur brut). `changes`: `{CLE: valeur | null}` (formulaire). */
+function saveEnvFile({ content, changes } = {}) {
+  // Les secrets de tout l'addon passent par ici: jamais sans mot de passe sur la WebUI.
+  if (!config.WEBUI_PASSWORD) throw Object.assign(new Error('WEBUI_PASSWORD requis pour modifier le .env'), { status: 403 });
+  const current = envFile();
+  if (changes && typeof changes === 'object') content = envSchema.applyChanges(current.content, changes);
+  // La taille est deja bornee par express.json (100 ko).
+  if (typeof content !== 'string') throw Object.assign(new Error('contenu invalide'), { status: 400 });
+  if (!current.exists) throw Object.assign(new Error(`${ENV_FILE} absent (monter le .env dans le conteneur)`), { status: 409 });
+  if (!current.writable) throw Object.assign(new Error(`${ENV_FILE} non modifiable par le process`), { status: 409 });
+  fs.mkdirSync(paths.DATA_DIR, { recursive: true });
+  fs.writeFileSync(ENV_BACKUP, current.content);
+  fs.writeFileSync(ENV_FILE, content.endsWith('\n') ? content : `${content}\n`);
+  console.log('[webui] .env modifie (copie precedente: data/env.bak)');
+  return { ok: true };
+}
+
 // --- Routeur --------------------------------------------------------------------
 function send(res, pending) {
   Promise.resolve(pending)
@@ -291,6 +349,16 @@ function router() {
       }),
     ),
   );
+
+  api.get('/env', (_req, res) => send(res, envForm()));
+  api.put('/env', (req, res) => send(res, Promise.resolve().then(() => saveEnvFile(req.body || {}))));
+  // Sortie propre (le cache est sauve sur `exit`): Docker (restart: unless-stopped) ou PM2
+  // relance aussitot le process, qui relit le .env.
+  api.post('/restart', (_req, res) => {
+    console.log('[webui] redemarrage demande');
+    res.json({ ok: true });
+    setTimeout(() => process.exit(0), 300);
+  });
 
   api.post('/actions/:name', (req, res) => {
     const params = { ...(req.body || {}), dryRun: req.query.dryRun === '1' || req.body?.dryRun === true };

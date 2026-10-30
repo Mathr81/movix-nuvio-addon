@@ -227,11 +227,13 @@ export function OverviewPage() {
           data.streamProxy.enabled && ['Secret du proxy', yesNo(data.streamProxy.secretConfigured, { yes: 'fixe', no: 'éphémère', noTone: 'warn' })],
           ['Sous-titres', yesNo(data.subtitles.enabled, { yes: data.subtitles.providers.join(', '), no: 'désactivés' })],
           data.subtitles.enabled && ['Langues', html`<code>${data.subtitles.langs.join(', ')}</code>`],
-          ['TV en direct', data.liveTv.enabled
+          // Deux reglages distincts: les chaines dans Nuvio, et la playlist pour un lecteur IPTV.
+          ['TV dans Nuvio', data.liveTv.enabled
             ? data.liveTv.error
               ? html`<${Badge} tone="warn">${data.liveTv.error}</${Badge}>`
               : html`<${Badge} tone="ok">${data.liveTv.catalogs} catalogues</${Badge}>`
-            : html`<${Badge}>désactivée</${Badge}>`],
+            : html`<${Badge}>désactivée (LIVETV_ENABLED)</${Badge}>`],
+          ['Playlist IPTV', yesNo(data.iptvEnabled, { yes: 'active', no: 'désactivée (IPTV_ENABLED)' })],
         ]} />
       </${Card}>
 

@@ -6,6 +6,7 @@ import { TitlePage } from './pages/title.js';
 import { SyncPage } from './pages/sync.js';
 import { LogsPage } from './pages/logs.js';
 import { ChannelsPage } from './pages/channels.js';
+import { ConfigPage } from './pages/config.js';
 
 const ROUTES = [
   { path: '/', label: 'Santé', icon: 'activity', page: OverviewPage },
@@ -13,6 +14,7 @@ const ROUTES = [
   { path: '/synchro', label: 'Synchro', icon: 'sync', page: SyncPage },
   { path: '/chaines', label: 'Chaînes', icon: 'tv', page: ChannelsPage },
   { path: '/logs', label: 'Logs', icon: 'terminal', page: LogsPage },
+  { path: '/config', label: 'Config', icon: 'key', page: ConfigPage },
 ];
 
 function ThemeToggle() {

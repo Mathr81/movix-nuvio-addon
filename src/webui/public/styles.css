@@ -1483,6 +1483,115 @@ details[open] > summary .json-caret {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.env-toolbar {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.06);
+}
+.env-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.env-section {
+  scroll-margin-top: 80px;
+}
+.env-intro {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: pre-line;
+}
+.env-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 20px;
+  align-items: start;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.env-row:first-of-type {
+  border-top: 0;
+}
+.env-changed {
+  box-shadow: inset 3px 0 0 var(--accent);
+  padding-left: 10px;
+}
+.env-label code {
+  font-size: 13px;
+  font-weight: 600;
+}
+.env-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+.env-doc {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.env-doc summary {
+  cursor: pointer;
+}
+.env-doc p {
+  margin: 4px 0 0;
+  white-space: pre-line;
+}
+.env-control {
+  min-width: 0;
+}
+.env-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font: 13px var(--mono);
+}
+.env-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.env-secret {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+@media (max-width: 760px) {
+  .env-row {
+    grid-template-columns: 1fr;
+  }
+}
+.env-editor {
+  display: block;
+  width: 100%;
+  min-height: 65vh;
+  padding: 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font: 13px/1.5 var(--mono);
+  resize: vertical;
+  tab-size: 2;
+}
 .field {
   display: flex;
   align-items: center;

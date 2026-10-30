@@ -24,7 +24,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-COPY server.js ./
+COPY server.js .env.example ./
 COPY src ./src
 
 # `data/` appartient a l'utilisateur non-root, sinon l'ecriture du cache echoue au
