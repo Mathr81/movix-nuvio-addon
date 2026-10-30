@@ -283,6 +283,17 @@ function audioRenditionOf(text, attrs) {
 }
 
 /**
+ * Langues des pistes declarees par un master (`LANGUAGE="fr"`, a defaut le NAME). Audio:
+ * c'est ce qui permet de dire VF/VO d'un lien dont la source ne precise pas la langue.
+ * `SUBTITLES`: les sous-titres integres au flux, lus sans requete de plus.
+ */
+function audioLanguagesOf(text, type = 'AUDIO') {
+  const tracks = text.split('\n').filter((l) => /^#EXT-X-MEDIA:/.test(l.trim()) && l.includes(`TYPE=${type}`));
+  const langs = tracks.map((l) => /LANGUAGE="([^"]+)"/.exec(l)?.[1] || /NAME="([^"]+)"/.exec(l)?.[1]).filter(Boolean);
+  return [...new Set(langs)];
+}
+
+/**
  * Variantes d'un master. `BANDWIDTH` est le debit de POINTE que le lecteur doit pouvoir
  * soutenir, pas le debit moyen du fichier: il depasse la moyenne reelle de 10 a 50%.
  * `AVERAGE-BANDWIDTH`, quand il est declare, est la vraie moyenne.
@@ -466,7 +477,10 @@ async function probeHls(access, url, depth = 0, body = null) {
   if (data.includes('#EXT-X-STREAM-INF')) {
     const best = parseMaster(data);
     if (!best) return {};
-    const shape = { height: best.height, width: best.width };
+    const langs = audioLanguagesOf(data);
+    const subs = audioLanguagesOf(data, 'SUBTITLES');
+    const tracks = { ...(langs.length ? { audioLangs: langs } : {}), ...(subs.length ? { subtitleLangs: subs } : {}) };
+    const shape = { height: best.height, width: best.width, ...tracks };
 
     // Valeur declaree ET moyenne: rien de mieux a esperer, on la prend telle quelle. La
     // specification veut qu'elle inclue deja la piste audio associee.
@@ -488,6 +502,7 @@ async function probeHls(access, url, depth = 0, body = null) {
           bitrate: measured.bitrate + (audio || 0),
           height: best.height || measured.height,
           width: best.width || measured.width,
+          ...tracks,
         };
       }
     }
@@ -549,7 +564,7 @@ function ffprobeReady() {
  * le resultat suit la mesure en cache. La sonde de definition ne rallonge donc que les liens
  * dont la definition etait de toute facon inconnue.
  */
-function resolutionOf(url, headers, timeoutMs) {
+function streamInfoOf(url, headers, timeoutMs) {
   return new Promise((resolve) => {
     // Options PRIVEES du protocole http: sur une entree qui n'en est pas une, elles font
     // echouer l'ouverture.
@@ -565,9 +580,9 @@ function resolutionOf(url, headers, timeoutMs) {
 
     const args = [
       '-v', 'error',
-      '-select_streams', 'v:0',
-      '-show_entries', 'stream=width,height',
-      '-of', 'csv=p=0',
+      // Image ET pistes audio (avec leur langue) en une seule ouverture.
+      '-show_entries', 'stream=codec_type,width,height:stream_tags=language',
+      '-of', 'json',
       // Une playlist HLS renvoie vers d'autres protocoles: sans liste blanche explicite,
       // ffprobe refuse de suivre ses propres segments.
       '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
@@ -583,8 +598,18 @@ function resolutionOf(url, headers, timeoutMs) {
 
     execFile(config.FFPROBE_PATH || 'ffprobe', args, { timeout: timeoutMs }, (err, stdout) => {
       if (err && !stdout) return resolve(null);
-      const [width, height] = String(stdout).trim().split('\n')[0].split(',').map(Number);
-      resolve(height > 0 ? nominalShape(width, height) : null);
+      let streams = [];
+      try {
+        streams = JSON.parse(stdout).streams || [];
+      } catch {
+        return resolve(null);
+      }
+      const video = streams.find((st) => st.codec_type === 'video' && st.height > 0);
+      const langs = [...new Set(streams.filter((st) => st.codec_type === 'audio').map((st) => st.tags?.language).filter(Boolean))];
+      resolve({
+        ...(video ? nominalShape(video.width, video.height) : {}),
+        ...(langs.length ? { audioLangs: langs } : {}),
+      });
     });
   });
 }
@@ -596,25 +621,30 @@ function resolutionOf(url, headers, timeoutMs) {
  * que le media (une playlist prise pour un fichier, une reponse d'erreur). Mieux vaut ne
  * rien afficher qu'un "0 kb/s" qui a l'air d'une mesure.
  */
-async function finish(access, result, url, { deadline, knownHeight } = {}) {
+async function finish(access, result, url, { deadline, knownHeight, needLang } = {}) {
   const { read, ...clean } = result;
   if (clean.bitrate && clean.bitrate < 1000) {
     delete clean.bitrate;
     delete clean.estimated;
   }
-  if (clean.height || knownHeight > 0 || !config.PROBE_RESOLUTION) return clean;
+  const needHeight = !clean.height && !(knownHeight > 0);
+  // Langue inconnue de la source et absente du master: ffprobe la lit dans les pistes.
+  const needAudio = needLang && !clean.audioLangs;
+  if (!(needHeight || needAudio) || !config.PROBE_RESOLUTION) return clean;
 
   const budget = deadline ? deadline - Date.now() : config.PROBE_RESOLUTION_TIMEOUT_MS;
   if (budget < 1000) return clean;
   if (!(await ffprobeReady())) return clean;
 
   const target = access.resolve(read || url);
-  const found = await resolutionOf(
+  const found = await streamInfoOf(
     target,
     access.headers,
     Math.min(budget, config.PROBE_RESOLUTION_TIMEOUT_MS),
   ).catch(() => null);
-  return found ? { ...clean, ...found, resolutionProbed: true } : clean;
+  if (!found) return clean;
+  const out = { ...clean, ...(found.audioLangs && !clean.audioLangs ? { audioLangs: found.audioLangs } : {}) };
+  return needHeight && found.height ? { ...out, width: found.width, height: found.height, resolutionProbed: true } : out;
 }
 
 async function probeFile(access, url, durationSeconds) {
@@ -650,10 +680,11 @@ async function attempt(access, url, durationSeconds) {
  *        hoster attend en Referer, et l'origine du CDN ne suffit pas.
  *        knownHeight = definition deja connue par ailleurs (libelle du lien). Non nulle,
  *        elle dispense d'ouvrir le flux pour la mesurer.
- * @returns {Promise<{bitrate?, height?, width?, bytes?, estimated?, resolutionProbed?, unreachable?}>}
+ *        needLang = la source ne dit pas la langue: la lire dans les pistes audio.
+ * @returns {Promise<{bitrate?, height?, width?, bytes?, estimated?, resolutionProbed?, audioLangs?, subtitleLangs?, unreachable?}>}
  *          unreachable = statut HTTP (ou 'timeout') quand AUCUNE voie n'a pu joindre le lien.
  */
-async function probe(url, { durationSeconds, refererUrl, deadline, refresh, knownHeight = 0 } = {}) {
+async function probe(url, { durationSeconds, refererUrl, deadline, refresh, knownHeight = 0, needLang = false } = {}) {
   if (!config.PROBE_BITRATE || !url) return {};
 
   // Hors budget: on rend la main SANS passer par le cache. Mettre en cache un "aucune
@@ -664,11 +695,12 @@ async function probe(url, { durationSeconds, refererUrl, deadline, refresh, know
   // Rafraichissement demande: on retente ce qui avait ECHOUE, mais on garde les mesures
   // reussies -- elles ne changent pas d'un scan a l'autre et coutent cher a refaire.
   if (refresh) {
-    const previous = cache.get(`probe:${url}`);
-    if (previous && !previous.bitrate && !previous.bytes) cache.del(`probe:${url}`);
+    const previous = cache.get(`probe:v2:${url}`);
+    if (previous && !previous.bitrate && !previous.bytes) cache.del(`probe:v2:${url}`);
   }
 
-  return cache.wrap(`probe:${url}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
+  // `v2`: les mesures anterieures n'ont pas les langues des pistes audio.
+  return cache.wrap(`probe:v2:${url}`, config.CACHE_TTL_MS, config.CACHE_EMPTY_TTL_MS, async () => {
     // Ordre volontaire: l'amont d'abord quand on le connait (aucun detour reseau), puis
     // l'acces direct -- du moins cher au plus cher.
     const accesses = [
@@ -706,7 +738,7 @@ async function probe(url, { durationSeconds, refererUrl, deadline, refresh, know
         if (!result || Object.keys(result).length === 0) undecided = true;
         if (result && Object.keys(result).length > 0) {
           if (access.service) probeBreaker.noteRecovery(access.service);
-          return finish(access, result, entry, { deadline, knownHeight });
+          return finish(access, result, entry, { deadline, knownHeight, needLang });
         }
       } catch (err) {
         // Une exception ici est un timeout ou une erreur reseau (les statuts HTTP, eux, ne
@@ -744,4 +776,4 @@ function formatSize(bytes) {
   return gb >= 1 ? `${gb.toFixed(1)} Go` : `${Math.round(bytes / 1e6)} Mo`;
 }
 
-module.exports = { probe, formatBitrate, formatSize, breakerState: probeBreaker.state };
+module.exports = { probe, formatBitrate, formatSize, breakerState: probeBreaker.state, audioLanguagesOf };

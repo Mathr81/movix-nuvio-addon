@@ -2,7 +2,7 @@ const config = require('./core/config');
 const subtitles = require('./streaming/subtitles');
 const streamProxy = require('./streaming/streamProxy');
 const { resolveId } = require('./catalog/idResolver');
-const { collectRawLinks, resolveStreams, buildStreams } = require('./streaming/streamBuilder');
+const { collectRawLinks, resolveStreams, buildStreams, langGroupsOf } = require('./streaming/streamBuilder');
 const { breakerState: probeBreakerState } = require('./streaming/probe');
 const { detectHoster, extractDirectUrl, breakerState, LOCAL_EXTRACTORS } = require('./streaming/hosterExtract');
 
@@ -101,6 +101,9 @@ async function streams(type, id, { refresh = false } = {}) {
   const { tmdbId, season, episode } = await resolveId(type, id);
   // `wait`: on veut l'etat FINAL des mesures, pas celui de la premiere reponse.
   const resolved = await resolveStreams({ tmdbId, type, season, episode, wait: true, refresh });
+  const built = await buildStreams({ tmdbId, type, season, episode });
+  // Ligne telle que Nuvio l'affiche, retrouvee par l'URL: absente = masquee par l'elagage.
+  const shown = new Map(built.map((s) => [s.url || s.externalUrl, s]));
 
   return {
     tmdbId,
@@ -109,7 +112,7 @@ async function streams(type, id, { refresh = false } = {}) {
     // a l'affichage. Donner les deux nombres evite de croire a une source perdue.
     mode: config.STREAM_LIST,
     total: resolved.length,
-    affichesDansNuvio: (await buildStreams({ tmdbId, type, season, episode })).length,
+    affichesDansNuvio: built.length,
     // Voies de mesure momentanement ecartees (un service qui ne repond plus).
     ecartes: probeBreakerState(),
     streams: resolved.map((r) => ({
@@ -118,6 +121,18 @@ async function streams(type, id, { refresh = false } = {}) {
       hebergeur: r.hoster || undefined,
       // Autres sources qui renvoyaient le MEME fichier, fusionnees dans ce lien.
       aussiChez: r.alsoFrom?.length ? r.alsoFrom : undefined,
+      // Sous-serveur annonce par la source (lecteur, fournisseur agrege) et langue normalisee.
+      serveur: r.player || undefined,
+      variante: r.variant || undefined,
+      langue: r.lang || null,
+      langueDesPistes: r.langFromAudio || undefined,
+      pistesAudio: r.audioLangs?.length ? r.audioLangs : undefined,
+      // Sous-titres integres au master HLS (distincts de ceux que la source joint au lien).
+      sousTitresFlux: r.subtitleLangs?.length ? r.subtitleLangs : undefined,
+      groupesLangue: langGroupsOf(r, null),
+      sousTitres: r.subtitles?.length ? [...new Set(r.subtitles.map((t) => t.lang))] : undefined,
+      externe: !!r.externalUrl,
+      libelleNuvio: shown.get(r.url || r.externalUrl)?.title ?? null,
       proxifie: streamProxy.isProxied(r.url),
       injoignable: r.unreachable || undefined,
       cible: streamProxy.targetOf(r.url) || r.url,

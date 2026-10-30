@@ -113,6 +113,17 @@ function normalizeLang(raw) {
   return alias ? alias[1] : text;
 }
 
+// Pistes audio -> langue du lien, quand la source ne la donne pas. Codes ISO (fr, fre,
+// fra) ou noms ("Français"); `und` & co ne disent rien.
+const FRENCH_TRACK = /^(fr|fre|fra|french|fran[cç]ais|vf|vff|truefrench)\b/i;
+function langFromAudio(tracks) {
+  const langs = (tracks || []).filter((t) => !/^(und|unknown|default|zxx|mis|qaa)$/i.test(String(t).trim()));
+  if (langs.length === 0) return undefined;
+  const french = langs.filter((t) => FRENCH_TRACK.test(t)).length;
+  if (french === 0) return 'VO';
+  return french === langs.length ? 'VF' : 'MULTI';
+}
+
 /** Langue originale TMDB du titre ("fr", "en"...), null si inconnue. */
 async function originalLanguage(type, tmdbId) {
   const details = await cache
@@ -303,8 +314,15 @@ const completing = new Map();
 function describe(link, measured) {
   const labelled = parseQuality(link.quality, link.player, link.sourceName, link.lang);
   const height = measured.height || labelled;
+  const audioLang = link.lang ? undefined : langFromAudio(measured.audioLangs);
+  const lang = link.lang || audioLang;
   return {
     ...link,
+    lang,
+    // Langue lue dans les pistes audio (la source n'en disait rien), et les pistes elles-memes.
+    langFromAudio: !!audioLang,
+    audioLangs: measured.audioLangs,
+    subtitleLangs: measured.subtitleLangs,
     // Une RESOLUTION lue dans un master HLS vaut mieux qu'un libelle "HD" approximatif.
     height,
     width: measured.width,
@@ -323,7 +341,7 @@ function describe(link, measured) {
     resolutionSource: measured.resolutionProbed
       ? 'flux'
       : (measured.height ? 'playlist' : (labelled ? 'libelle' : 'aucune')),
-    langRank: langScore(link.lang, link.sourceName, link.quality, link.player),
+    langRank: langScore(lang, link.sourceName, link.quality, link.player),
     // La sonde n'a pu joindre le lien par aucune voie (statut d'erreur, timeout).
     unreachable: measured.unreachable,
   };
@@ -480,6 +498,7 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false, ref
             // reapprendre. La sonde de definition ne sert qu'aux liens dont PERSONNE ne
             // connait la definition -- un simple "HD" n'en dit pas assez (announcedQuality).
             knownHeight: announcedQuality(r.quality, r.player, r.sourceName, r.lang),
+            needLang: !r.lang,
           }).catch(() => ({}));
       slots[index] = describe(r, measured);
     });
@@ -652,4 +671,4 @@ function prefetchNextEpisode({ tmdbId, type, season, episode }) {
 
 module.exports = { buildStreams, resolveStreams, collectRawLinks, prefetchNextEpisode };
 // Exposes pour les bancs d'essai: regles de langue et de limite, sans tout le pipeline.
-Object.assign(module.exports, { capPerSource, normalizeLang, langGroupsOf });
+Object.assign(module.exports, { capPerSource, normalizeLang, langGroupsOf, langFromAudio });

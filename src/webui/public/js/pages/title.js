@@ -164,12 +164,24 @@ function StreamsTab({ state, onRescan }) {
     </div>
     <div class="table-wrap">
       <table class="table">
-        <thead><tr><th></th><th>Source</th><th>Qualité</th><th>Débit</th><th>Taille</th><th>Proxy</th><th>Cible</th></tr></thead>
+        <thead><tr><th></th><th>Source</th><th>Langue</th><th>Qualité</th><th>Débit</th><th>Taille</th><th>Proxy</th><th>Cible</th></tr></thead>
         <tbody>
           ${data.streams.map(
             (s) => html`<tr>
               <td><${Button} size="sm" variant="ghost" icon="play" title="Lire dans le navigateur" onClick=${() => setPlaying(s)} /></td>
-              <td><strong>${s.source}</strong>${s.hebergeur && html` <span class="muted small">· ${s.hebergeur}</span>`}${s.aussiChez && html`<div class="muted small">aussi chez ${s.aussiChez.join(', ')}</div>`}</td>
+              <td>
+                <strong>${s.source}</strong>${s.hebergeur && html` <span class="muted small">· ${s.hebergeur}</span>`}
+                ${(s.serveur || s.variante) && html`<div class="small">serveur <code>${s.serveur && s.variante?.toLowerCase().includes(s.serveur.toLowerCase()) ? s.variante : [s.serveur, s.variante].filter(Boolean).join(' · ')}</code></div>`}
+                ${s.aussiChez && html`<div class="muted small">aussi chez ${s.aussiChez.join(', ')}</div>`}
+                <div class="muted small">${s.libelleNuvio ? html`Nuvio : ${s.libelleNuvio}` : html`<em>masqué dans Nuvio</em>`}${s.externe ? ' · navigateur' : ''}</div>
+              </td>
+              <td>
+                ${s.langue ? html`<${Badge} tone="accent" title=${s.langueDesPistes ? 'déduite des pistes audio' : 'annoncée par la source'}>${s.langue}${s.langueDesPistes ? ' ♪' : ''}</${Badge}>` : html`<span class="muted">?</span>`}
+                ${s.pistesAudio && html`<div class="muted small" title="pistes audio du flux">♪ ${s.pistesAudio.join(', ')}</div>`}
+                <div class="muted small">${s.groupesLangue.join(' + ')}</div>
+                ${s.sousTitres && html`<div class="muted small" title="joints par la source">ST ${s.sousTitres.join(', ')}</div>`}
+                ${s.sousTitresFlux && html`<div class="muted small" title="intégrés au flux (master HLS)">ST flux ${s.sousTitresFlux.join(', ')}</div>`}
+              </td>
               <td>
                 <${Badge} tone=${tierTone(s.palier)}>${s.palier ? (/^\d+$/.test(String(s.palier)) ? `${s.palier}p` : s.palier) : s.qualiteAnnoncee || '?'}</${Badge}>
                 ${s.resolution && html`<div class="muted small">${s.resolution} · ${s.origineResolution}</div>`}
