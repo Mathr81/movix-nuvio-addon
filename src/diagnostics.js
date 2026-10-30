@@ -114,6 +114,8 @@ async function streams(type, id, { refresh = false } = {}) {
     ecartes: probeBreakerState(),
     streams: resolved.map((r) => ({
       source: r.sourceName,
+      // Hebergeur extrait par l'addon (byse, mixdrop...): la source seule ne dit pas d'ou vient le fichier.
+      hebergeur: r.hoster || undefined,
       // Autres sources qui renvoyaient le MEME fichier, fusionnees dans ce lien.
       aussiChez: r.alsoFrom?.length ? r.alsoFrom : undefined,
       proxifie: streamProxy.isProxied(r.url),

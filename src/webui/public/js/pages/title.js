@@ -169,7 +169,7 @@ function StreamsTab({ state, onRescan }) {
           ${data.streams.map(
             (s) => html`<tr>
               <td><${Button} size="sm" variant="ghost" icon="play" title="Lire dans le navigateur" onClick=${() => setPlaying(s)} /></td>
-              <td><strong>${s.source}</strong>${s.aussiChez && html`<div class="muted small">aussi chez ${s.aussiChez.join(', ')}</div>`}</td>
+              <td><strong>${s.source}</strong>${s.hebergeur && html` <span class="muted small">· ${s.hebergeur}</span>`}${s.aussiChez && html`<div class="muted small">aussi chez ${s.aussiChez.join(', ')}</div>`}</td>
               <td>
                 <${Badge} tone=${tierTone(s.palier)}>${s.palier ? (/^\d+$/.test(String(s.palier)) ? `${s.palier}p` : s.palier) : s.qualiteAnnoncee || '?'}</${Badge}>
                 ${s.resolution && html`<div class="muted small">${s.resolution} · ${s.origineResolution}</div>`}
