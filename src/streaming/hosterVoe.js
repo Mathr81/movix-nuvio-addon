@@ -91,7 +91,7 @@ async function fetchPlayerPage(embedUrl, { timeout = 8000, maxRedirects = 3 } = 
   const http = axios.create({
     timeout,
     responseType: 'text',
-    maxRedirects: 5,
+    maxRedirects: 15,
     validateStatus: () => true,
     headers: { 'User-Agent': BROWSER_UA, Referer: 'https://voe.sx/' },
   });

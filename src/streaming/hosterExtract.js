@@ -31,6 +31,9 @@ const BROWSER_UA =
  *   darkibox     lecture du HTML de la page d'embed
  *   oneupload    idem
  *   sharecloudy  idem, flux servi par le proxy (le CDN exige Origin/Referer)
+ *   lulustream   HTML de l'embed, script P.A.C.K.E.R. depaquete (sans l'executer)
+ *   redirector   trakx.lol / kokoflix.lol (FStream): simples redirections vers le vrai
+ *                hebergeur, qu'on suit avant de relancer la detection sur la cible
  *
  * Tout le reste demande la resolution serveur. Renvoyer "no-extractor" pour ces liens
  * n'est pas une regression: sans cle VIP ils n'etaient de toute facon plus extractibles
@@ -53,6 +56,9 @@ const BROWSER_UA =
  * domaine sans toucher au code, comme le site le fait avec ses "hosters custom & regex".
  */
 const BUILTIN_HOSTER_PATTERNS = {
+  // En PREMIER: le libelle FStream ("Dood", "Voe") ne dit rien du redirecteur lui-meme,
+  // c'est sa cible qui decide de l'extracteur.
+  redirector: ['trakx\\.lol', 'kokoflix\\.lol'],
   voe: [
     // voe.<tld> + les variantes `voe-unblock`, `v-o-e-unblock`, `voeunbl0ck12`...
     'voe\\.',
@@ -101,7 +107,7 @@ const BUILTIN_HOSTER_PATTERNS = {
 };
 
 /** Hebergeurs que l'addon sait extraire SEUL, sans passer par Movix. */
-const LOCAL_EXTRACTORS = new Set(['voe', 'veev', 'darkibox', 'oneupload', 'sharecloudy']);
+const LOCAL_EXTRACTORS = new Set(['voe', 'veev', 'darkibox', 'oneupload', 'sharecloudy', 'lulustream', 'redirector']);
 
 /** Le CDN de Sharecloudy (shareNNNNN.sharecloudy.com) rend 403 sans l'Origin de son lecteur. */
 const SHARECLOUDY_ORIGIN = 'https://sharecloudy.com';
@@ -180,6 +186,44 @@ function firstMatch(html, patterns) {
 }
 
 /**
+ * Depaquete un script `eval(function(p,a,c,k,e,d){...}('...',a,c,'...'.split('|')))` par
+ * simple substitution de mots: le code distant n'est jamais execute.
+ */
+function unpackPacker(html) {
+  const m = html.match(/}\('([\s\S]*?)',\s*(\d+),\s*(\d+),\s*'([\s\S]*?)'\.split\('\|'\)/);
+  if (!m) return null;
+  const [, payload, radix, count, keywords] = m;
+  const base = Number(radix);
+  const words = keywords.split('|');
+  const encode = (n) =>
+    (n < base ? '' : encode(Math.floor(n / base))) + ((n %= base) > 35 ? String.fromCharCode(n + 29) : n.toString(36));
+  const dict = {};
+  for (let i = Number(count) - 1; i >= 0; i--) dict[encode(i)] = words[i] || encode(i);
+  return payload.replace(/\b\w+\b/g, (w) => dict[w] ?? w);
+}
+
+/**
+ * Cible d'un redirecteur FStream: en-tete Location (302/303) ou `location.href = '...'`
+ * (trakx.lol/voeN). `null` = lien mort (404, 410, "Video unavailable", erreur SQL du site).
+ * Seule une panne reseau remonte en exception.
+ */
+async function resolveRedirect(url) {
+  const res = await axios.get(url, {
+    timeout: 8000,
+    responseType: 'text',
+    maxRedirects: 0,
+    validateStatus: () => true,
+    headers: { 'User-Agent': BROWSER_UA },
+  });
+  const location = res.headers.location;
+  if (res.status >= 300 && res.status < 400 && location) return new URL(location, url).href;
+  if (res.status === 200 && typeof res.data === 'string') {
+    return firstMatch(res.data, [/location\.href\s*=\s*['"](https?:\/\/[^'"]+)['"]/]);
+  }
+  return null;
+}
+
+/**
  * Disjoncteur par hebergeur: un hebergeur qui rend cinq 502 d'affilee par fiche fait
  * payer a chaque fois un aller-retour et un delai d'attente.
  */
@@ -239,6 +283,22 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
   // Service connu pour etre en panne a l'instant: on ne paye pas l'aller-retour.
   if (extractBreaker.isOpen(hoster)) return { ok: false, reason: 'cooldown', hoster };
 
+  if (hoster === 'redirector') {
+    let target;
+    try {
+      target = await resolveRedirect(embedUrl);
+      extractBreaker.noteRecovery(hoster);
+    } catch (err) {
+      console.warn(`[extract:redirector] echec HTTP pour ${embedUrl}: ${err.message}`);
+      extractBreaker.noteOutage(hoster);
+      return { ok: false, reason: 'http-error', hoster };
+    }
+    if (!target || detectHoster(target) === 'redirector') return { ok: false, reason: 'deleted', hoster };
+    // Les alias Voe changent tous les mois; le chemin trakx (`/voe1/`, `/voe4/`) le dit, lui.
+    const hint = /\/voe\d*\//i.test(embedUrl) ? 'voe.' : playerNameHint;
+    return extractDirectUrl(target, hint);
+  }
+
   if (hoster === 'veev') {
     try {
       const result = await veev.extract(embedUrl);
@@ -279,7 +339,20 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
   try {
     const html = await fetchEmbedHtml(embedUrl, hoster === 'oneupload' ? 'https://oneupload.net/' : undefined);
 
-    if (hoster === 'sharecloudy') {
+    if (hoster === 'lulustream') {
+      // Lulustream: jwplayer `file:"...m3u8"` dans un script P.A.C.K.E.R.
+      const url = firstMatch(unpackPacker(html) || html, [/file:\s*["']([^"']+\.m3u8[^"']*)/i]);
+      if (url) {
+        extractBreaker.noteRecovery(hoster);
+        const origin = new URL(embedUrl).origin;
+        // shortcut: le CDN accepte le flux sans en-tetes aujourd'hui; proxifie quand meme car
+        // le jeton porte un parametre d'IP (`i=`), a retirer si le debit du proxy pese.
+        const proxied = config.STREAM_PROXY_ENABLED
+          ? streamProxy.proxyUrl(url, { headers: { accept: '*/*', origin, referer: `${origin}/`, 'user-agent': BROWSER_UA } })
+          : url;
+        return { ok: true, url: proxied, hoster };
+      }
+    } else if (hoster === 'sharecloudy') {
       // Sharecloudy: jwplayer, `sources: [{ file: "https://shareNNNNN.sharecloudy.com/...m3u8" }]`.
       const url = firstMatch(html, [/file:\s*["']([^"']+\.m3u8[^"']*)/i, /"file":\s*"([^"]+\.m3u8[^"]*)"/i]);
       if (url) {
@@ -338,4 +411,4 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
   }
 }
 
-module.exports = { detectHoster, hasLocalExtractor, extractDirectUrl, breakerState, LOCAL_EXTRACTORS };
+module.exports = { detectHoster, hasLocalExtractor, extractDirectUrl, breakerState, LOCAL_EXTRACTORS, unpackPacker };
