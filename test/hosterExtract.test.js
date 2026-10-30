@@ -33,3 +33,10 @@ test('Filemoon et ses miroirs vont a Byse', () => {
   assert.strictEqual(detectHoster('https://bysebuho.com/e/abc'), 'byse');
   assert.strictEqual(detectHoster('https://mxdrop.to/e/abc'), 'mixdrop');
 });
+
+test('upns et frvideosrc sont reconnus, y compris sur leurs domaines de rechange', () => {
+  assert.strictEqual(detectHoster('https://flemmix.upns.pro/#abc'), 'upns');
+  assert.strictEqual(detectHoster('https://coflix.upn.one/#abc'), 'upns');
+  assert.strictEqual(detectHoster('https://frvideosrc.co/film/1375666'), 'frvideosrc');
+  assert.strictEqual(detectHoster('https://vidsonic.net/e/abc'), 'vidsonic');
+});

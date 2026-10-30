@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const axios = require('axios');
 const config = require('../core/config');
 const breaker = require('../core/breaker');
@@ -32,12 +33,15 @@ const BROWSER_UA =
  *   darkibox     lecture du HTML de la page d'embed
  *   oneupload    idem
  *   sharecloudy  idem, flux servi par le proxy (le CDN exige Origin/Referer)
- *   lulustream, uqload, mixdrop
+ *   lulustream, uqload, mixdrop, vidsonic
  *                lecteur jwplayer generique: HTML de l'embed, script P.A.C.K.E.R.
  *                depaquete (sans l'executer). Tente aussi en dernier recours sur tout
  *                hebergeur inconnu: la famille VidHide (morencius, hanerix...) change
  *                de domaine sans cesse et se lit de la meme facon.
  *   byse         Filemoon et ses miroirs: API JSON chiffree AES-GCM (src/streaming/hosterByse.js)
+ *   upns         lecteurs `*.upns.*` / `*.upn.*` (flemmix, coflix...): API JSON chiffree
+ *                AES-128-CBC a cle fixe, celle que publient les extracteurs libres
+ *   frvideosrc   agregateur: sa propre API rend des embeds, repasses ici un par un
  *   redirector   trakx.lol / kokoflix.lol (FStream): simples redirections vers le vrai
  *                hebergeur, qu'on suit avant de relancer la detection sur la cible
  *
@@ -65,6 +69,8 @@ const BUILTIN_HOSTER_PATTERNS = {
   // En PREMIER: le libelle FStream ("Dood", "Voe") ne dit rien du redirecteur lui-meme,
   // c'est sa cible qui decide de l'extracteur.
   redirector: ['trakx\\.lol', 'kokoflix\\.lol'],
+  frvideosrc: ['frvideosrc\\.'],
+  upns: ['\\.upns?\\.'],
   voe: [
     // voe.<tld> + les variantes `voe-unblock`, `v-o-e-unblock`, `voeunbl0ck12`...
     'voe\\.',
@@ -107,6 +113,7 @@ const BUILTIN_HOSTER_PATTERNS = {
   // Filemoon sert desormais le lecteur Byse, comme ses miroirs anonymes.
   byse: ['filemoon', 'byse[a-z]*\\.', 'kaydendown'],
   mixdrop: ['mixdrop', 'mxdrop', 'm1xdrop'],
+  vidsonic: ['vidsonic'],
   fsvid: ['fsvid'],
   // Hors liste amont: ces trois-la n'ont jamais eu d'extracteur cote Movix, l'addon les
   // lit lui-meme depuis le HTML de la page d'embed.
@@ -117,8 +124,8 @@ const BUILTIN_HOSTER_PATTERNS = {
 
 /** Hebergeurs que l'addon sait extraire SEUL, sans passer par Movix. */
 // Pas vidmoly: sa page d'attente renvoie un client HTTP vers un parking publicitaire.
-const JWPLAYER_HOSTERS = new Set(['lulustream', 'uqload', 'mixdrop']);
-const LOCAL_EXTRACTORS = new Set(['voe', 'veev', 'byse', 'darkibox', 'oneupload', 'sharecloudy', 'redirector', ...JWPLAYER_HOSTERS]);
+const JWPLAYER_HOSTERS = new Set(['lulustream', 'uqload', 'mixdrop', 'vidsonic']);
+const LOCAL_EXTRACTORS = new Set(['voe', 'veev', 'byse', 'upns', 'frvideosrc', 'darkibox', 'oneupload', 'sharecloudy', 'redirector', ...JWPLAYER_HOSTERS]);
 
 /** Le CDN de Sharecloudy (shareNNNNN.sharecloudy.com) rend 403 sans l'Origin de son lecteur. */
 const SHARECLOUDY_ORIGIN = 'https://sharecloudy.com';
@@ -246,7 +253,10 @@ async function extractJwPlayer(embedUrl) {
   const hop = html.match(/window\.location\.replace\(\s*['"]([^'"]+)['"]/);
   if (hop) html = await fetchEmbedHtml(new URL(hop[1], embedUrl).href, embedUrl);
 
-  const text = `${html}\n${unpackPacker(html) || ''}`;
+  // Vidsonic: URL en hex, a l'envers, decoupee par des `|`.
+  const hex = html.match(/_0x1\s*=\s*'([0-9a-f|]{40,})'/i);
+  const reversed = hex ? Buffer.from(hex[1].replace(/\|/g, ''), 'hex').toString('utf8').split('').reverse().join('') : '';
+  const text = `${html}\n${unpackPacker(html) || ''}\nfile:"${reversed}"`;
   const url = firstMatch(text, [
     /file:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)/i,
     /["']hls\d["']\s*:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)/i,
@@ -256,6 +266,56 @@ async function extractJwPlayer(embedUrl) {
   // Vidzy/fsvid servent un leurre `/troll/master.m3u8` a qui n'est pas leur lecteur.
   if (!url || /\/troll\//.test(url)) return null;
   return url.startsWith('//') ? `https:${url}` : url;
+}
+
+/** Cle et IV du lecteur upns, identiques sur tous ses domaines. */
+const UPNS_KEY = Buffer.from('kiemtienmua911ca');
+const UPNS_IV = Buffer.from('1234567890oiuytr');
+
+/**
+ * Lecteur upns: `https://<domaine>/#<id>` -> `/api/v1/video?id=<id>`, reponse en hex
+ * chiffree. `cfNative` (servi par le domaine du lecteur) passe sans en-tetes; `source`
+ * (IP nue) exige le Referer du lecteur. `null` = video supprimee.
+ */
+async function extractUpns(embedUrl) {
+  const { origin, hash } = new URL(embedUrl);
+  const id = hash.slice(1);
+  if (!id) return null;
+  const { data } = await axios.get(`${origin}/api/v1/video?id=${encodeURIComponent(id)}`, {
+    timeout: 8000,
+    responseType: 'text',
+    // 404 = video supprimee: une reponse, pas une panne.
+    validateStatus: (status) => status < 500,
+    headers: { 'User-Agent': BROWSER_UA, Referer: `${origin}/` },
+  });
+  const hex = String(data).trim();
+  if (!/^[0-9a-f]+$/i.test(hex)) return null;
+  const decipher = crypto.createDecipheriv('aes-128-cbc', UPNS_KEY, UPNS_IV);
+  const video = JSON.parse(Buffer.concat([decipher.update(Buffer.from(hex, 'hex')), decipher.final()]).toString('utf8'));
+  return [video.cfNative, video.source].find((url) => typeof url === 'string' && /^https?:\/\//.test(url)) || null;
+}
+
+/**
+ * Agregateur frvideosrc: la page porte un jeton pour SA propre API, qui rend les embeds
+ * (mixdrop, dood, dropload...). Seule la forme film est connue (`/film/<imdb sans tt>`).
+ */
+async function frvideosrcEmbeds(embedUrl) {
+  // Le CDN garde la page en cache avec un jeton deja expire: parametre unique pour l'eviter.
+  const fresh = new URL(embedUrl);
+  fresh.searchParams.set('_', Date.now());
+  const page = String(await fetchEmbedHtml(fresh.href));
+  const body = page.match(/body:\s*JSON\.stringify\((\{[^)]*\})\)/);
+  if (!body) return [];
+  // Objet litteral JS (cles nues, apostrophes) -> JSON.
+  const payload = JSON.parse(body[1].replace(/'/g, '"').replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":'));
+  const { data } = await axios.post(new URL('/api/embed-links', embedUrl).href, payload, {
+    timeout: 8000,
+    headers: { 'User-Agent': BROWSER_UA, Referer: embedUrl },
+  });
+  return (data?.sources || [])
+    .filter((s) => typeof s.url === 'string')
+    .sort((a, b) => (a.rank || 99) - (b.rank || 99))
+    .map((s) => s.url);
 }
 
 /** Flux d'un lecteur jwplayer, proxifie avec l'Origin/Referer de sa page d'embed. */
@@ -351,6 +411,24 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
     return extractDirectUrl(target, hint);
   }
 
+  if (hoster === 'frvideosrc') {
+    let embeds;
+    try {
+      embeds = await frvideosrcEmbeds(embedUrl);
+    } catch (err) {
+      console.warn(`[extract:frvideosrc] echec HTTP pour ${embedUrl}: ${err.message}`);
+      return { ok: false, reason: 'http-error', hoster };
+    }
+    // shortcut: un seul flux par lien frvideosrc (le premier extractible); a eclater en
+    // plusieurs liens si l'agregateur se met a servir des hebergeurs que personne d'autre n'a.
+    for (const url of embeds) {
+      if (detectHoster(url) === 'frvideosrc') continue;
+      const result = await extractDirectUrl(url, playerNameHint);
+      if (result.ok) return result;
+    }
+    return { ok: false, reason: embeds.length ? 'no-url-field' : 'deleted', hoster };
+  }
+
   // Veev et Byse: module dedie, CDN qui n'accepte que l'Origin/Referer du lecteur.
   if (hoster === 'veev' || hoster === 'byse') {
     const module_ = hoster === 'veev' ? veev : byse;
@@ -391,8 +469,8 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
   }
 
   try {
-    if (JWPLAYER_HOSTERS.has(hoster)) {
-      const url = await extractJwPlayer(embedUrl);
+    if (JWPLAYER_HOSTERS.has(hoster) || hoster === 'upns') {
+      const url = hoster === 'upns' ? await extractUpns(embedUrl) : await extractJwPlayer(embedUrl);
       extractBreaker.noteRecovery(hoster);
       if (url) return { ok: true, url: proxyFromEmbed(url, embedUrl), hoster };
       console.warn(`[extract:${hoster}] aucune source trouvee dans le HTML de ${embedUrl}`);
