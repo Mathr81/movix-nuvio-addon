@@ -147,10 +147,12 @@ function merge(entriesBySource, epgIndex) {
     const guide = epg.lookup(epgIndex, key);
     // Le nom du guide est le plus propre; a defaut celui de l'IPTV (casse mixte), puis Vavoo.
     const named = streams.find((s) => s.source !== 'vavoo') || streams[0];
-    const group = names.groupOf(key, streams.flatMap((s) => s.hints || []));
+    // Chaines etrangeres choisies (IPTV_VAVOO_PICKS): a part, pas melees aux francaises.
+    const group = streams.every((s) => s.foreign) ? 'International' : names.groupOf(key, streams.flatMap((s) => s.hints || []));
     channels.push({
       key,
-      name: guide?.name || named.name,
+      // Certains guides n'ont pour nom que leur identifiant (`Channel4.uk`).
+      name: (guide?.name && !/\.[a-z]{2,3}$/i.test(guide.name) ? guide.name : '') || named.name,
       group,
       logo: streams.find((s) => s.logo)?.logo || guide?.icon || '',
       tvgId: guide?.id || '',

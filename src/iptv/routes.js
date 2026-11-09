@@ -5,6 +5,7 @@ const express = require('express');
 const config = require('../core/config');
 const lineup = require('./lineup');
 const epg = require('./epg');
+const sports = require('./sports');
 const play = require('./play');
 const health = require('./health');
 const names = require('./names');
@@ -50,7 +51,7 @@ function attr(value) {
  * `sources=all` deroule chaque flux en entree separee (`TF1 · FHD · IPTV`), pour choisir
  * a la main; par defaut une chaine = une ligne, et la bascule est automatique.
  */
-function buildM3u(channels, base, { all = false } = {}) {
+function buildM3u(channels, base, { all = false, matches = [] } = {}) {
   const root = `${base}/iptv/${config.IPTV_TOKEN}`;
   const lines = [epg.enabled() ? `#EXTM3U url-tvg="${root}/epg.xml.gz" x-tvg-url="${root}/epg.xml.gz"` : '#EXTM3U'];
 
@@ -67,14 +68,20 @@ function buildM3u(channels, base, { all = false } = {}) {
       lines.push(`${root}/play/${channel.key}/${stream.sid}.m3u8`);
     }
   }
+  for (const { event, channel, name } of matches) {
+    lines.push(`#EXTINF:-1 tvg-id="${attr(channel.tvgId)}" tvg-logo="${attr(channel.logo)}" group-title="${MATCHES_GROUP}",${name}`);
+    // URL distincte de celle de la chaine: Nuvio dedoublonne les entrees par URL.
+    lines.push(`${root}/play/${channel.key}.m3u8?match=${encodeURIComponent(event.id)}`);
+  }
   return `${lines.join('\n')}\n`;
 }
 
 async function sendPlaylist(req, res) {
   const { channels } = await lineup.get();
   const all = /^(all|1|true)$/i.test(String(req.query.sources || ''));
+  const matches = all ? [] : await sports.entries(channels);
   res.set('Cache-Control', 'no-store');
-  res.type('audio/x-mpegurl').send(buildM3u(channels, baseUrl(req), { all }));
+  res.type('audio/x-mpegurl').send(buildM3u(channels, baseUrl(req), { all, matches }));
 }
 
 /** Guide filtre sur la grille. `.xml` le sert decompresse, pour les lecteurs qui ignorent le gzip. */
@@ -292,13 +299,22 @@ function xtreamAuth(req, res, next) {
   return next();
 }
 
-function xtreamCategories(channels) {
+const MATCHES_GROUP = 'Matchs';
+// Hors de la numerotation de names.GROUPS (index + 1).
+const MATCHES_CATEGORY = '100';
+
+function xtreamCategories(channels, matches) {
   const present = new Set(channels.map((channel) => channel.group));
-  return names.GROUPS.filter((group) => present.has(group)).map((group) => ({
+  const rows = names.GROUPS.filter((group) => present.has(group)).map((group) => ({
     category_id: String(names.GROUPS.indexOf(group) + 1),
     category_name: group,
     parent_id: 0,
   }));
+  return matches.length ? [{ category_id: MATCHES_CATEGORY, category_name: MATCHES_GROUP, parent_id: 0 }, ...rows] : rows;
+}
+
+function xtreamMatch({ channel, name, streamId }, index) {
+  return { ...xtreamStream(channel), num: 10000 + index, name, stream_id: streamId, category_id: MATCHES_CATEGORY };
 }
 
 function xtreamStream(channel) {
@@ -349,20 +365,23 @@ async function shortEpg(channel, channels, limit) {
 }
 
 router.get('/player_api.php', xtreamAuth, async (req, res) => {
-  const { channels, byId } = await lineup.get();
+  const view = await lineup.get();
+  const { channels, byId } = view;
   const action = String(req.query.action || '');
 
-  if (action === 'get_live_categories') return res.json(xtreamCategories(channels));
+  if (action === 'get_live_categories') return res.json(xtreamCategories(channels, await sports.entries(channels)));
   if (action === 'get_live_streams') {
     const category = req.query.category_id ? String(req.query.category_id) : null;
-    return res.json(channels.map(xtreamStream).filter((row) => !category || row.category_id === category));
+    const rows = [...channels.map(xtreamStream), ...(await sports.entries(channels)).map(xtreamMatch)];
+    return res.json(rows.filter((row) => !category || row.category_id === category));
   }
   // Ni films ni series: des listes vides, pas des erreurs, pour ne pas bloquer l'accueil.
   if (/^get_(?:vod|series)/.test(action)) return res.json([]);
   if (action === 'get_short_epg' || action === 'get_simple_data_table') {
     // Guide court = les N prochains programmes; table complete = toute la fenetre connue.
     const limit = action === 'get_short_epg' ? Math.max(1, Number(req.query.limit) || 4) : Infinity;
-    return res.json({ epg_listings: await shortEpg(byId.get(String(req.query.stream_id || '')), channels, limit) });
+    const id = String(req.query.stream_id || '');
+    return res.json({ epg_listings: await shortEpg(byId.get(id) || (await sports.channelOfStreamId(id, view)), channels, limit) });
   }
 
   const base = new URL(baseUrl(req));
@@ -403,8 +422,9 @@ async function xtreamPlay(req, res, next) {
   // Meme forme d'URL que des routes Stremio a trois segments (`/meta/tv/x.json`): on ne
   // repond que si le deuxieme segment est le jeton, et on passe la main sinon.
   if (!enabled() || !tokenOk(req.params.password) || !/^\d+(?:\.\w+)?$/.test(req.params.file)) return next();
-  const { byId } = await lineup.get();
-  return playChannel(req, res, byId.get(stripExt(req.params.file)));
+  const view = await lineup.get();
+  const id = stripExt(req.params.file);
+  return playChannel(req, res, view.byId.get(id) || (await sports.channelOfStreamId(id, view)));
 }
 
 router.get('/live/:username/:password/:file', xtreamPlay);

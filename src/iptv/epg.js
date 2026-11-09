@@ -6,7 +6,7 @@ const { pipeline } = require('stream/promises');
 const axios = require('axios');
 const config = require('../core/config');
 const paths = require('../core/paths');
-const { keyOf } = require('./names');
+const { keyOf, parse } = require('./names');
 
 /**
  * Guide des programmes (XMLTV).
@@ -237,7 +237,9 @@ async function channels() {
     const entry = { id, name, icon };
     // Un `.fr` l'emporte sur son homonyme belge ou suisse (`Arte.fr` avant `Arte.be`).
     const french = /\.fr$/i.test(id);
-    for (const key of new Set([keyOf(name), keyOf(id.replace(/\.[a-z]{2,3}$/i, ''))])) {
+    // Nom tel quel, nom sans sa qualite (`NBA TV HD` -> nbatv, comme les noms des sources),
+    // puis identifiant sans son pays (`.fr`, `.us2`).
+    for (const key of new Set([keyOf(name), parse(name).key, keyOf(id.replace(/\.[a-z]{2,3}\d?$/i, ''))])) {
       if (!key) continue;
       const known = index.get(key);
       if (!known || (french && !/\.fr$/i.test(known.id))) index.set(key, entry);
@@ -387,7 +389,7 @@ async function programmes(ids) {
         if (!start || stop < from || start > until) continue;
         const channel = decodeEntities(attr(match[1], 'channel'));
         if (!byChannel.has(channel)) byChannel.set(channel, []);
-        byChannel.get(channel).push({ start, stop, title: tag(match[2], 'title'), desc: tag(match[2], 'desc') });
+        byChannel.get(channel).push({ start, stop, title: tag(match[2], 'title'), sub: tag(match[2], 'sub-title'), desc: tag(match[2], 'desc') });
       }
       buffer = buffer.slice(consumed);
     }

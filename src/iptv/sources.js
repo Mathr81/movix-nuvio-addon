@@ -2,6 +2,7 @@ const axios = require('axios');
 const { mainApi } = require('../integrations/movixClient');
 const config = require('../core/config');
 const cache = require('../core/cache');
+const names = require('./names');
 
 /**
  * Sources de flux de la playlist IPTV.
@@ -30,15 +31,31 @@ const XTREAM_RESOLVE_TTL_MS = 60 * 60 * 1000;
 
 // --- Vavoo -------------------------------------------------------------------
 
+/** `united-kingdom:BBC ONE|SKY NEWS;germany:NBA TV` -> Map(groupe -> Set(cles de fusion)). */
+function vavooPicks() {
+  const picks = new Map();
+  if (config.IPTV_VAVOO_PICKS === 'none') return picks;
+  for (const part of String(config.IPTV_VAVOO_PICKS || '').split(';')) {
+    const [slug, list = ''] = part.split(':');
+    const keys = list.split('|').map((name) => names.parse(name).key).filter(Boolean);
+    if (slug?.trim() && keys.length) picks.set(slug.trim(), new Set([...(picks.get(slug.trim()) || []), ...keys]));
+  }
+  return picks;
+}
+
 async function listVavoo() {
   const out = [];
-  for (const slug of config.IPTV_VAVOO_GROUPS) {
+  const picks = vavooPicks();
+  for (const slug of new Set([...config.IPTV_VAVOO_GROUPS, ...picks.keys()])) {
+    // Groupe lu en entier, ou seulement pour les chaines choisies.
+    const only = config.IPTV_VAVOO_GROUPS.includes(slug) ? null : picks.get(slug);
     const { data } = await mainApi.get(`/api/livetv/catalog/tv/vavoo_${encodeURIComponent(slug)}`, {
       timeout: LIST_TIMEOUT_MS,
     });
     for (const meta of data?.metas || []) {
       const ref = String(meta?.id || '').replace(/^vavoo_/, '');
       if (!ref || !meta.name) continue;
+      if (only && !only.has(names.parse(meta.name).key)) continue;
       out.push({
         source: 'vavoo',
         sid: `v${ref}`,
@@ -46,6 +63,7 @@ async function listVavoo() {
         label: meta.name,
         logo: meta.logo || meta.poster || '',
         hints: [slug, meta.description],
+        foreign: !!only,
       });
     }
   }

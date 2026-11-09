@@ -98,6 +98,7 @@ const KEY_ALIASES = [
   [/^euronewsint$/, 'euronews'],
   [/^automoto$/, 'automotolachaine'],
   [/^equidialive$/, 'equidia'],
+  [/^itv1$/, 'itv'],
 ];
 
 /**
@@ -139,7 +140,7 @@ function parse(raw) {
 
 // --- Rangement par theme -----------------------------------------------------
 
-const GROUPS = ['Généraliste', 'Info', 'Sport', 'Cinéma', 'Séries', 'Jeunesse', 'Découverte', 'Musique', 'Divertissement', 'Régional', 'Autres'];
+const GROUPS = ['Généraliste', 'Info', 'Sport', 'Cinéma', 'Séries', 'Jeunesse', 'Découverte', 'Musique', 'Divertissement', 'Régional', 'International', 'Autres'];
 
 // Premier theme dont un mot-cle figure dans la cle gagne: l'ordre regle les ambiguites
 // (`canalplussport` est du sport avant d'etre une chaine Canal).

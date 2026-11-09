@@ -162,6 +162,16 @@ const config = {
   IPTV_TOKEN: readEnv('IPTV_TOKEN', ''),
   // Groupes Vavoo lus, tels que Movix les nomme sans le prefixe `vavoo_`. `none` = aucun.
   IPTV_VAVOO_GROUPS: readList('IPTV_VAVOO_GROUPS', ['france', 'france-sport']).filter((g) => g !== 'none'),
+  // Chaines etrangeres choisies une a une (groupe "International"): `groupe:Nom|Nom;...`,
+  // groupes Vavoo sans `vavoo_`, noms tels que Vavoo les affiche (casse et suffixe libres).
+  // Un pays entier en compte des centaines: on ne prend que ce qui sert. `none` = aucune.
+  // Entrees "Matchs" (matchs ESPN retrouves dans le guide), pour l'onglet Sports de Nuvio
+  // Enhanced, qui n'associe un match a une chaine que par son nom.
+  IPTV_SPORTS_MATCHES: readBool('IPTV_SPORTS_MATCHES', true),
+  IPTV_VAVOO_PICKS: readEnv(
+    'IPTV_VAVOO_PICKS',
+    'united-kingdom:BBC ONE|BBC TWO|BBC THREE|BBC FOUR|BBC NEWS|BBC WORLD NEWS|ITV 1|ITV2|ITV3|ITV4|CHANNEL 4|CHANNEL 5|SKY NEWS|CNN|AL JAZEERA|CNBC NEWS|SKY ATLANTIC|SKY DOCUMENTARIES|SKY SPORTS MAIN EVENT|SKY SPORTS PREMIER LEAGUE|SKY SPORTS FOOTBALL|SKY SPORTS ARENA|SKY SPORTS ACTION|SKY SPORTS F1|SKY SPORTS NFL|SKY SPORTS TENNIS|SKY SPORTS GOLF|SKY SPORTS CRICKET|SKY SPORTS MIX|SKY SPORTS NEWS|TNT SPORTS 1|TNT SPORTS 2|TNT SPORTS 3|TNT SPORTS 4|PREMIER SPORTS 1|PREMIER SPORTS 2|LALIGA TV|MUTV|LFC TV|WWE|UFC FIGHT NIGHT PASS;germany:NBA TV;italy:SKY SPORT NBA',
+  ),
   // Categories du bouquet IPTV (VIP) retenues, par prefixe (`FR | KIDS TV`). `*` = toutes
   // (167 categories, surtout arabophones), `none` = aucune.
   IPTV_XTREAM_PREFIXES: readList('IPTV_XTREAM_PREFIXES', ['FR']).filter((p) => p !== 'none'),
@@ -192,11 +202,15 @@ const config = {
   IPTV_EPG_URL: readEnv(
     'IPTV_EPG_URL',
     // Mesure du 11/2026: 242 chaines avec programme pour xmltv_fr seul, 298 avec cette fusion.
+    // UK1 juste apres xmltvfr: les Sky Sports britanniques avant leurs homonymes suisses
+    // (CH1). US2 en dernier, pour NBA TV.
     'https://xmltvfr.fr/xmltv/xmltv.xml.gz,' +
+      'https://epgshare01.online/epgshare01/epg_ripper_UK1.xml.gz,' +
       'https://epgshare01.online/epgshare01/epg_ripper_FR1.xml.gz,' +
       'https://epgshare01.online/epgshare01/epg_ripper_BE2.xml.gz,' +
       'https://epgshare01.online/epgshare01/epg_ripper_CH1.xml.gz,' +
-      'https://www.open-epg.com/files/france1.xml.gz',
+      'https://www.open-epg.com/files/france1.xml.gz,' +
+      'https://epgshare01.online/epgshare01/epg_ripper_US2.xml.gz',
   ),
   IPTV_EPG_REFRESH_MS: Number(readEnv('IPTV_EPG_REFRESH_MS', 12 * 60 * 60 * 1000)),
   // Relecture des sources (nouvelles chaines, flux retires).
