@@ -53,3 +53,22 @@ test('lecture du scoreboard ESPN: domicile d abord, matchs termines ecartes', ()
   });
   assert.deepStrictEqual(events.map((e) => [e.id, e.teams.map((t) => t.short)]), [['9', ['Hawks', 'Lakers']]]);
 });
+
+test('Pro D2 lu dans le guide: le direct oui, la rediffusion non', () => {
+  const channels = [channel('canalplussport', 'Canal+ Sport', 'CanalPlusSport.fr')];
+  const programmes = new Map([['CanalPlusSport.fr', [
+    { start: now + 1 * H, stop: now + 3 * H, title: 'Rugby : Pro D2 | Colomiers / Béziers', sub: '', desc: '' },
+    { start: now + 5 * H, stop: now + 7 * H, title: 'Rugby : Pro D2', sub: '10e journée  : Agen / Biarritz Olympique', desc: '' },
+  ]]]);
+  const found = match([], channels, programmes, now);
+  assert.deepStrictEqual(found.map((f) => f.name.replace(/ · [^·]+$/, '')), ['Agen - Biarritz Olympique · Canal+ Sport']);
+});
+
+test('Top 14 ESPN: Stade Toulousain retrouve sous "Toulouse"', () => {
+  const channels = [channel('canalplus', 'Canal+', 'CanalPlus.fr')];
+  const programmes = new Map([['CanalPlus.fr', [
+    { start: now + 1 * H, stop: now + 3 * H, title: 'Rugby : Top 14', sub: '11e journée : Lyon / Toulouse', desc: '' },
+  ]]]);
+  const found = match([event('7', now + 1 * H, ['Lyon', 'Lyon'], ['Stade Toulousain', 'Stade Toulousain'])], channels, programmes, now);
+  assert.strictEqual(found.length, 1);
+});

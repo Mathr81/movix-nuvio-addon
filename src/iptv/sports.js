@@ -26,7 +26,16 @@ const LEAGUES = [
   'soccer/eng.1', 'soccer/esp.1', 'soccer/ita.1', 'soccer/ger.1', 'soccer/fra.1',
   'soccer/uefa.champions', 'soccer/uefa.europa', 'basketball/nba', 'football/nfl',
   'hockey/nhl', 'baseball/mlb', 'mma/ufc',
+  // Absents de l'onglet Sports du fork: visibles seulement dans le groupe "Matchs".
+  // Top 14, Champions Cup, Challenge Cup, Six Nations, tests internationaux.
+  'rugby/270559', 'rugby/271937', 'rugby/272073', 'rugby/180659', 'rugby/289234',
 ];
+
+// Competitions qu'ESPN ne couvre pas (Pro D2): lues dans le guide. Un direct y porte la
+// journee en sous-titre ("10e journee : Agen / Biarritz Olympique"); une rediffusion,
+// l'affiche dans le titre ("Rugby : Pro D2 | Agen / Biarritz").
+const GUIDE_ONLY = /^rugby\s*:\s*pro\s*d2\b/i;
+const LIVE_SUB = /journ[ée]e\s*:\s*(.+?)\s*\/\s*(.+?)\s*$/i;
 
 const EVENTS_TTL_MS = 30 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 8000;
@@ -49,6 +58,7 @@ const FRENCH = {
   olympiacos: 'olympiakos', 'paris saint germain': 'paris sg psg', 'red star': 'etoile rouge', seville: 'seville',
   bayern: 'bayern', cologne: 'cologne', napoli: 'naples', 'man united': 'manchester united', 'man city': 'manchester city',
   'c palace': 'crystal palace', 'nottm forest': 'nottingham forest', wolves: 'wolverhampton',
+  'stade toulousain': 'toulouse', 'section paloise': 'pau', 'usa perpignan': 'perpignan', 'ru vannes': 'vannes',
 };
 
 function normalize(text) {
@@ -125,11 +135,25 @@ function paris(ms, now = Date.now()) {
   return day(ms) === day(now) ? time : `${new Date(ms).toLocaleDateString('fr-FR', { ...PARIS, weekday: 'short' })} ${time}`;
 }
 
+/** Matchs en direct lus dans le guide, pour les competitions absentes d'ESPN. */
+function guideEvents(programmes) {
+  const byId = new Map();
+  for (const list of programmes.values()) {
+    for (const programme of list) {
+      const teams = GUIDE_ONLY.test(programme.title) && String(programme.sub || '').match(LIVE_SUB);
+      if (!teams) continue;
+      const id = `guide-${normalize(`${teams[1]} ${teams[2]}`).trim().replace(/ /g, '-')}-${programme.start}`;
+      byId.set(id, { id, start: programme.start, teams: [teams[1], teams[2]].map((name) => ({ short: name, name })) });
+    }
+  }
+  return [...byId.values()];
+}
+
 /** Rapproche matchs et programmes: [{ event, channel, name }], tries par heure. */
 function match(eventList, channels, programmes, now = Date.now()) {
   const found = [];
   const seen = new Set();
-  const upcoming = eventList.filter((e) => e.start > now - LOOKBEHIND_MS && e.start < now + LOOKAHEAD_MS);
+  const upcoming = [...eventList, ...guideEvents(programmes)].filter((e) => e.start > now - LOOKBEHIND_MS && e.start < now + LOOKAHEAD_MS);
   for (const channel of channels) {
     for (const programme of programmes.get(channel.tvgId) || []) {
       const candidates = upcoming.filter((e) => e.start >= programme.start - EARLY_MS && e.start < programme.stop);

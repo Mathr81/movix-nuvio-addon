@@ -144,7 +144,10 @@ function merge(entriesBySource, epgIndex) {
 
   const channels = [];
   for (const [key, streams] of groups) {
-    const guide = epg.lookup(epgIndex, key);
+    // ESPN neerlandais, Fox Sports argentin: aucun guide de ces pays n'est charge, et le
+    // guide americain homonyme decrirait d'autres programmes.
+    const unguided = streams.every((s) => s.foreign && LOCAL_FEEDS.has(s.hints?.[0]));
+    const guide = unguided ? null : epg.lookup(epgIndex, key);
     // Le nom du guide est le plus propre; a defaut celui de l'IPTV (casse mixte), puis Vavoo.
     const named = streams.find((s) => s.source !== 'vavoo') || streams[0];
     // Chaines etrangeres choisies (IPTV_VAVOO_PICKS): a part, pas melees aux francaises.
@@ -397,6 +400,8 @@ async function allStreams() {
   const { all } = await get();
   return all.flatMap((channel) => channel.streams);
 }
+
+const LOCAL_FEEDS = new Set(['netherlands', 'spain', 'arabia', 'portugal']);
 
 function start() {
   loadFromDisk();
