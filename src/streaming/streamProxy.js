@@ -81,13 +81,32 @@ function publicBase() {
  *  - rules: [{match, skipBytes, contentType}] appliquees quand l'URL cible matche;
  *  - playlistHints: fragments d'URL qui trahissent une playlist sans extension .m3u8,
  *    pour les CDN qui servent les leurs sur un chemin opaque.
+ *  - playlistVia: NOM de la variable de config qui porte un proxy SOCKS (ex.
+ *    'MOVY_PROXY_URL') par lequel aller chercher les playlists -- pour les CDN qui ne les
+ *    servent qu'a l'IP qui a obtenu le lien. Les segments restent en direct. Le nom, pas
+ *    l'URL: l'adresse interne du proxy n'a pas a voyager dans les liens remis au lecteur.
  */
 function normalizeSpec(spec = {}) {
   return {
     h: spec.headers || {},
     r: Array.isArray(spec.rules) ? spec.rules : [],
     p: Array.isArray(spec.playlistHints) ? spec.playlistHints : [],
+    ...(spec.playlistVia ? { v: spec.playlistVia } : {}),
   };
+}
+
+const viaAgents = new Map();
+
+/** Agents axios pour joindre l'amont d'une playlist: le proxy nomme par la recette, sinon direct. */
+function playlistAgents(spec) {
+  const url = spec.v && config[spec.v];
+  if (!url) return { httpsAgent: insecureAgent };
+  if (!viaAgents.has(url)) {
+    const { SocksProxyAgent } = require('socks-proxy-agent');
+    viaAgents.set(url, new SocksProxyAgent(url, { rejectUnauthorized: false }));
+  }
+  const agent = viaAgents.get(url);
+  return { httpAgent: agent, httpsAgent: agent, proxy: false };
 }
 
 /**
@@ -348,7 +367,7 @@ const PLAYLIST_URI_TAGS = /^#EXT-X-(MEDIA|I-FRAME-STREAM-INF|RENDITION-REPORT)\b
 /** Reecrit une playlist pour que tout ce qu'elle reference repasse par le proxy. */
 function rewritePlaylist(text, baseUrl, spec) {
   // La certitude du parent ne se transmet pas aux enfants: c'est chaque ligne qui la porte.
-  const childSpec = { h: spec.h, r: spec.r, p: spec.p };
+  const childSpec = { h: spec.h, r: spec.r, p: spec.p, ...(spec.v ? { v: spec.v } : {}) };
   let nextIsVariant = false;
 
   return text
@@ -467,7 +486,7 @@ async function fetchPlaylist(target, spec) {
     decompress: false,
     timeout: config.STREAM_PROXY_TIMEOUT_MS,
     maxRedirects: 5,
-    httpsAgent: insecureAgent,
+    ...playlistAgents(spec),
     validateStatus: () => true,
   });
 

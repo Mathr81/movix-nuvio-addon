@@ -16,8 +16,10 @@ const tmdb = require('../integrations/tmdb');
  * `{sources:[{quality,url}], subtitles, playlist}`.
  *
  * L'API est derriere Cloudflare, qui refuse l'IP du VPS : seed et sources passent par
- * MOVY_PROXY_URL (le tunnel NAS). Le CDN video, lui, se joint en direct mais exige le
- * Referer du site sur les playlists : le proxy de flux le rejoue.
+ * MOVY_PROXY_URL (le tunnel NAS). Depuis 11/2026, le CDN ne sert les PLAYLISTS qu'a cette
+ * meme IP (403 depuis le VPS) : le proxy de flux les recupere par le tunnel
+ * (`playlistVia`), avec le Referer du site. Les segments, sur un autre hote, restent en
+ * direct -- le NAS ne relaie que quelques Ko par lecture.
  *
  * Serveurs : "miami" et "boise" (VO, "May have 4K" d'apres le site) sont les deux qui
  * montent au 2160p ; "paris" (VF) repondait "encoded source missing" en octobre 2026.
@@ -173,7 +175,8 @@ async function getStreams({ tmdbId, type, season, episode }) {
     for (const source of sources) {
       if (!source?.url || byQuality.has(source.quality)) continue;
       byQuality.set(source.quality, {
-        url: kit.proxied(source.url, { headers }),
+        // Le CDN ne sert les playlists qu'a l'IP qui a obtenu le lien (celle du tunnel).
+        url: kit.proxied(source.url, { headers, playlistVia: config.MOVY_PROXY_URL ? 'MOVY_PROXY_URL' : undefined }),
         direct: true,
         sourceName: 'Movy',
         player: server,
