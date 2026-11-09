@@ -93,6 +93,11 @@ const KEY_ALIASES = [
   [/^golf$/, 'golfplus'],
   [/^warner$/, 'warnertv'],
   [/^tv5mondoinfo$/, 'tv5mondeinfo'],
+  [/^lcpassembleenationale(?:24h24)?$/, 'lcp'],
+  [/^tv5monde(?:europe|francebelgiquesuissemonaco)$/, 'tv5monde'],
+  [/^euronewsint$/, 'euronews'],
+  [/^automoto$/, 'automotolachaine'],
+  [/^equidialive$/, 'equidia'],
 ];
 
 /**
