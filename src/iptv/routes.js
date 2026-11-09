@@ -78,7 +78,7 @@ async function sendPlaylist(req, res) {
 }
 
 /** Guide filtre sur la grille. `.xml` le sert decompresse, pour les lecteurs qui ignorent le gzip. */
-async function sendEpg(res, { gzip }) {
+async function sendEpg(req, res, { gzip }) {
   const { channels } = await lineup.get();
   const ids = new Set(channels.map((channel) => channel.tvgId).filter(Boolean));
   const file = await epg.filteredFile(ids);
@@ -96,6 +96,9 @@ async function sendEpg(res, { gzip }) {
   stream.on('error', () => res.destroy());
   if (gzip && compressed) return stream.pipe(res.type('application/gzip'));
   res.type('application/xml');
+  res.vary('Accept-Encoding');
+  // XML demande, mais le client sait decompresser a la volee: 8x moins a transferer.
+  if (compressed && req.acceptsEncodings('gzip') === 'gzip') return stream.pipe(res.set('Content-Encoding', 'gzip'));
   return (compressed ? stream.pipe(zlib.createGunzip()) : stream).pipe(res);
 }
 
@@ -234,8 +237,8 @@ router.use('/iptv/:token', (req, res, next) => {
 
 router.get('/iptv/:token/playlist.m3u', sendPlaylist);
 router.get('/iptv/:token/playlist.m3u8', sendPlaylist);
-router.get('/iptv/:token/epg.xml.gz', (_req, res) => sendEpg(res, { gzip: true }));
-router.get('/iptv/:token/epg.xml', (_req, res) => sendEpg(res, { gzip: false }));
+router.get('/iptv/:token/epg.xml.gz', (req, res) => sendEpg(req, res, { gzip: true }));
+router.get('/iptv/:token/epg.xml', (req, res) => sendEpg(req, res, { gzip: false }));
 
 router.get('/iptv/:token/play/:file', async (req, res) => {
   const { byKey } = await lineup.get();
@@ -312,6 +315,8 @@ function xtreamStream(channel) {
     tv_archive: 0,
     direct_source: '',
     tv_archive_duration: 0,
+    // Sans extension annoncee, les clients supposent `.ts` et lisent le HLS servi comme du MPEG-TS.
+    container_extension: 'm3u8',
   };
 }
 
@@ -391,7 +396,7 @@ router.get('/player_api.php', xtreamAuth, async (req, res) => {
   });
 });
 
-router.get('/xmltv.php', xtreamAuth, (_req, res) => sendEpg(res, { gzip: false }));
+router.get('/xmltv.php', xtreamAuth, (req, res) => sendEpg(req, res, { gzip: false }));
 router.get('/get.php', xtreamAuth, sendPlaylist);
 
 async function xtreamPlay(req, res, next) {

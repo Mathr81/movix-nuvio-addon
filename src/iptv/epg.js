@@ -263,6 +263,17 @@ function lookup(index, key) {
 }
 
 let filteredSignature = null;
+// Le guide filtre n'est regenere qu'a chaque telechargement (IPTV_EPG_REFRESH_MS, 12 h):
+// trois jours laissent de la marge entre deux.
+const FILTERED_DAYS_AHEAD_MS = 3 * 24 * 60 * 60 * 1000;
+
+function inWindow(block, from, until) {
+  const tag = block.slice(0, block.indexOf('>'));
+  const start = parseXmltvTime((tag.match(/\sstart="([^"]*)"/) || [])[1]);
+  const stop = parseXmltvTime((tag.match(/\sstop="([^"]*)"/) || [])[1]);
+  // Horaires illisibles: on garde plutot que de vider une chaine.
+  return !start || !stop || (stop >= from && start <= until);
+}
 let filtering = null;
 
 /**
@@ -290,8 +301,12 @@ async function filteredFile(ids) {
 
     try {
       out.write(XMLTV_HEAD);
+      // Les applis ne gardent qu'un a deux jours: inutile de leur faire parser la semaine.
+      const from = Date.now() - WINDOW_BEFORE_MS;
+      const until = Date.now() + FILTERED_DAYS_AHEAD_MS;
       for await (const block of blocks(sourceText())) {
         if (!ids.has(blockChannel(block))) continue;
+        if (block.startsWith('<programme') && !inWindow(block, from, until)) continue;
         kept += 1;
         if (!out.write(`  ${block}\n`)) await once(out, 'drain');
       }
