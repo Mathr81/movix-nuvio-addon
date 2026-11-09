@@ -142,9 +142,9 @@ function qualityLabel(v) {
   return `${name}${/VIDEO-RANGE=PQ|HDR/i.test(v.inf) ? ' HDR' : ''}`;
 }
 
-/** Mini-master : entete + toutes les pistes audio + la seule variante video choisie. */
-function miniMaster(master, variant) {
-  return [...master.header, ...master.audio, variant.inf, variant.uri, ''].join('\n');
+/** Mini-master : entete + toutes les pistes audio + les variantes video choisies. */
+function miniMaster(master, ...variants) {
+  return [...master.header, ...master.audio, ...variants.flatMap((v) => [v.inf, v.uri]), ''].join('\n');
 }
 
 // --- Addon -----------------------------------------------------------------
@@ -279,6 +279,21 @@ async function getStreams({ tmdbId, type, season, episode }) {
           }
           log.ok('Cinejoy', label, `${server}: master illisible (${err.message}) -- rendu brut`);
           results.push({ url: master, direct: true, sourceName: 'Cinejoy', player: server, lang: config.CINEJOY_LANG || undefined });
+          return;
+        }
+        if (config.STREAM_QUALITY_MENU && parsed.variants.length > 1) {
+          // Une entree, toutes les qualites: le lecteur (Nuvio Enhanced) propose le choix.
+          const kept = kit.aboveFloor(parsed.variants);
+          const quality = qualityLabel(kept[0]);
+          results.push({
+            url: streamProxy.proxyInlinePlaylist(miniMaster(parsed, ...kept), master, { headers }),
+            direct: true,
+            sourceName: 'Cinejoy',
+            player: server,
+            variant: server,
+            quality,
+            lang: config.CINEJOY_LANG || undefined,
+          });
           return;
         }
         for (const variant of parsed.variants) {

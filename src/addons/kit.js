@@ -100,6 +100,15 @@ async function episodeRef(tmdbId, seasonNumber, episodeNumber) {
  * Rendre l'URL brute quand le proxy est coupe est volontaire: la source reste visible et
  * echouera franchement a la lecture, au lieu de disparaitre sans explication.
  */
+/**
+ * Variantes au-dessus du plancher MIN_STREAM_QUALITY (tri decroissant suppose), pour un
+ * master a plusieurs qualites. Aucune au-dessus: on garde tout plutot que rien.
+ */
+function aboveFloor(variants) {
+  const kept = variants.filter((v) => !v.height || v.height >= config.MIN_STREAM_QUALITY);
+  return kept.length > 0 ? kept : variants;
+}
+
 function proxied(url, spec) {
   if (!config.STREAM_PROXY_ENABLED) return url;
   return streamProxy.proxyUrl(url, spec);
@@ -114,4 +123,5 @@ module.exports = {
   titleOf,
   episodeRef,
   proxied,
+  aboveFloor,
 };

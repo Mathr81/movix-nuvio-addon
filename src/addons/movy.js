@@ -3,6 +3,7 @@ const config = require('../core/config');
 const log = require('../core/log');
 const kit = require('./kit');
 const tmdb = require('../integrations/tmdb');
+const streamProxy = require('../streaming/streamProxy');
 
 /**
  * Movy (movy.sx) -- site Next.js dont l'API de flux (api.wecollege.net) sert du 4K, vite.
@@ -121,6 +122,13 @@ async function fetchSources(server, params, tmdbId, seed) {
   return decrypt(body, seed, tmdbId);
 }
 
+// Debit nominal annonce dans le master synthetique (BANDWIDTH y est obligatoire).
+const NOMINAL_BPS = { 2160: 16000000, 1440: 10000000, 1080: 6000000, 720: 3000000, 480: 1500000, 360: 800000 };
+
+function heightOf(quality) {
+  return Number(/(\d{3,4})p/i.exec(String(quality))?.[1]) || (/4k/i.test(String(quality)) ? 2160 : 0);
+}
+
 // A langue egale, la piste complete d'abord, SDH (bruitages en plus) ensuite.
 const KIND_RANK = { '': 0, sdh: 1 };
 
@@ -186,22 +194,38 @@ async function getStreams({ tmdbId, type, season, episode }) {
   for (const { server, sources, subtitles } of answers) {
     for (const source of sources) {
       if (!source?.url || byQuality.has(source.quality)) continue;
-      byQuality.set(source.quality, {
-        // Le CDN ne sert les playlists qu'a l'IP qui a obtenu le lien (celle du tunnel).
-        url: kit.proxied(source.url, { headers, playlistVia: config.MOVY_PROXY_URL ? 'MOVY_PROXY_URL' : undefined }),
-        direct: true,
-        sourceName: 'Movy',
-        player: server,
-        // Chaque palier est garde (le plus haut passe devant au tri) : utile quand le debit
-        // de la connexion ne suit pas la 4K.
-        variant: source.quality,
-        quality: source.quality,
-        lang: config.MOVY_LANG || undefined,
-        subtitles: subtitles.length > 0 ? subtitles : undefined,
-      });
+      byQuality.set(source.quality, { url: source.url, server, quality: source.quality, subtitles });
     }
   }
-  const results = [...byQuality.values()];
+  const spec = { headers, playlistVia: config.MOVY_PROXY_URL ? 'MOVY_PROXY_URL' : undefined };
+  const entry = ({ url, server, quality, subtitles }) => ({
+    url,
+    direct: true,
+    sourceName: 'Movy',
+    player: server,
+    // Chaque palier est garde (le plus haut passe devant au tri) : utile quand le debit
+    // de la connexion ne suit pas la 4K.
+    variant: quality,
+    quality,
+    lang: config.MOVY_LANG || undefined,
+    subtitles: subtitles.length > 0 ? subtitles : undefined,
+  });
+  const found = [...byQuality.values()].sort((a, b) => heightOf(b.quality) - heightOf(a.quality));
+  let results;
+  if (config.STREAM_QUALITY_MENU && config.STREAM_PROXY_ENABLED && found.length > 1) {
+    // Une entree, un master synthetique vers les playlists de chaque palier: le menu
+    // Qualite de Nuvio Enhanced les propose. Son debit est une estimation (non annonce).
+    const kept = kit.aboveFloor(found.map((f) => ({ ...f, height: heightOf(f.quality) })));
+    const master = ['#EXTM3U', '#EXT-X-VERSION:6', '#EXT-X-INDEPENDENT-SEGMENTS'];
+    for (const f of kept) {
+      const resolution = f.height ? `,RESOLUTION=${Math.round((f.height * 16) / 9)}x${f.height}` : '';
+      master.push(`#EXT-X-STREAM-INF:BANDWIDTH=${NOMINAL_BPS[f.height] || 4000000}${resolution},NAME="${f.quality}"`, f.url);
+    }
+    results = [{ ...entry(kept[0]), url: streamProxy.proxyInlinePlaylist(`${master.join('\n')}\n`, kept[0].url, spec), variant: undefined }];
+  } else {
+    // Le CDN ne sert les playlists qu'a l'IP qui a obtenu le lien (celle du tunnel).
+    results = found.map((f) => ({ ...entry(f), url: kit.proxied(f.url, spec) }));
+  }
   const langs = results[0]?.subtitles?.length || 0;
   log.ok('Movy', label, `${results.length} lien(s) sur ${config.MOVY_SERVERS.join(', ')}, ${langs} langue(s) de sous-titres`);
   return results;
