@@ -93,11 +93,22 @@ const http = axios.create({
   ...proxyAgent(),
 });
 
-async function fetchSources(server, params, tmdbId) {
-  // Seed frais a chaque titre (~100 ms) : il expire en 30 s et un 401 obligerait a reessayer.
-  const seedRes = await http.get('/seed', { params: { mediaId: tmdbId } });
+// Seed frais a chaque titre (~100 ms) : il expire en 30 s et un 401 obligerait a reessayer.
+// Un seul pour tous les serveurs : il ne depend que du titre, et l'API rend 429 quand
+// miami et boise le demandent chacun en meme temps.
+async function fetchSeed(tmdbId) {
+  let seedRes = await http.get('/seed', { params: { mediaId: tmdbId } });
+  // Limite de debit de l'API: une seconde suffit en general a la laisser passer.
+  if (seedRes.status === 429) {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    seedRes = await http.get('/seed', { params: { mediaId: tmdbId } });
+  }
   const seed = JSON.parse(seedRes.data || '{}').seed;
   if (!seed) throw new Error(`seed HTTP ${seedRes.status}`);
+  return seed;
+}
+
+async function fetchSources(server, params, tmdbId, seed) {
   const res = await http.get(`/${server}/sources`, { params: { ...params, enc: '2', seed } });
   const body = String(res.data || '');
   if (res.status !== 200 || body.startsWith('{')) {
@@ -159,9 +170,10 @@ async function getStreams({ tmdbId, type, season, episode }) {
   // Interroges en parallele, mais lus dans l'ordre de MOVY_SERVERS : miami et boise servent
   // le meme fichier (meme id, /vd vs /vdb), on ne garde donc qu'un lien par qualite, celui
   // du premier serveur qui l'a -- le suivant ne sert que de repli.
+  const seeded = fetchSeed(tmdbId);
   const answers = await Promise.all(
     config.MOVY_SERVERS.map((server) =>
-      fetchSources(server, params, tmdbId).then(
+      seeded.then((seed) => fetchSources(server, params, tmdbId, seed)).then(
         (data) => ({ server, sources: data.sources || [], subtitles: toSubtitles(data.subtitles, headers) }),
         (err) => {
           log.fail('Movy', `${label} (${server})`, err);

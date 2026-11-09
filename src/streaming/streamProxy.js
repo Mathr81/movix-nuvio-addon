@@ -114,9 +114,20 @@ function playlistAgents(spec) {
  * Nuvio, et elle survit donc a un redemarrage (a condition que STREAM_PROXY_SECRET soit fixe).
  */
 function proxyUrl(targetUrl, spec) {
-  const payload = b64urlEncode(JSON.stringify({ ...normalizeSpec(spec), u: targetUrl }));
-  return `${publicBase()}${ROUTE}?p=${payload}&s=${sign(payload)}`;
+  const normalized = normalizeSpec(spec);
+  const payload = b64urlEncode(JSON.stringify({ ...normalized, u: targetUrl }));
+  return `${publicBase()}${routeFor(looksLikePlaylist(String(targetUrl), normalized))}?p=${payload}&s=${sign(payload)}`;
 }
+
+/**
+ * Route du lien remis au lecteur: `.m3u8` quand la cible est une playlist. Nuvio Enhanced
+ * n'inspecte le master (menu de qualite) que si l'URL contient `.m3u8`, et ExoPlayer en
+ * deduit le type de flux. Jamais sur un fichier: il le prendrait alors pour du HLS.
+ */
+function routeFor(isPlaylist) {
+  return isPlaylist ? `${ROUTE}.m3u8` : ROUTE;
+}
+
 
 /**
  * Variante "playlist synthetique": le corps m3u8 est fourni par l'addon (ex: un mini-master
@@ -127,7 +138,7 @@ function proxyUrl(targetUrl, spec) {
  */
 function proxyInlinePlaylist(body, baseUrl, spec) {
   const payload = b64urlEncode(JSON.stringify({ ...normalizeSpec(spec), pl: body, base: baseUrl || '' }));
-  return `${publicBase()}${ROUTE}?p=${payload}&s=${sign(payload)}`;
+  return `${publicBase()}${routeFor(true)}?p=${payload}&s=${sign(payload)}`;
 }
 
 /**
@@ -149,7 +160,7 @@ function childUrl(targetUrl, spec, isPlaylist = false) {
   const entry = { url: targetUrl, spec: isPlaylist ? { ...spec, f: 1 } : spec };
   const id = sign(JSON.stringify(entry)).slice(0, 22);
   tickets.set(id, { ...entry, expiresAt: Date.now() + TICKET_TTL_MS });
-  return `${publicBase()}${ROUTE}?c=${id}`;
+  return `${publicBase()}${routeFor(isPlaylist)}?c=${id}`;
 }
 
 function isProxied(url) {
@@ -736,8 +747,10 @@ async function handle(req, res) {
 }
 
 function mount(app) {
-  app.get(ROUTE, handle);
-  app.head(ROUTE, handle);
+  for (const route of [ROUTE, routeFor(true)]) {
+    app.get(route, handle);
+    app.head(route, handle);
+  }
 }
 
 module.exports = { ROUTE, mount, proxyUrl, proxyInlinePlaylist, isProxied, targetOf, sourceOf, inlineOf, headersOf, localize, publicBase };
