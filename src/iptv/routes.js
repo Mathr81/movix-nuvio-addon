@@ -84,7 +84,7 @@ async function sendEpg(res, { gzip }) {
   const file = await epg.filteredFile(ids);
   if (!file) return res.status(404).type('text/plain').send('guide indisponible');
 
-  // Le repli sur le fichier source peut rendre un XML non compresse (IPTV_EPG_URL en .xml).
+  // Filtre ou source fusionnee: tous deux en gzip, mais on verifie plutot que supposer.
   const head = Buffer.alloc(2);
   const fd = fs.openSync(file, 'r');
   fs.readSync(fd, head, 0, 2, 0);

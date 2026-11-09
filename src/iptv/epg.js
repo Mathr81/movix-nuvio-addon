@@ -17,6 +17,9 @@ const { keyOf } = require('./names');
  * avec leurs programmes. Un lecteur IPTV sur un boitier relit ce fichier en entier a
  * chaque mise a jour du guide; lui epargner les deux tiers n'est pas du luxe.
  *
+ * IPTV_EPG_URL accepte plusieurs guides separes par des virgules: ils sont fusionnes en un
+ * seul fichier source au telechargement (voir `merge`), le reste du module n'en voit qu'un.
+ *
  * Le fichier source sert aussi a NOMMER: ses `<channel>` donnent, pour chaque chaine,
  * l'identifiant attendu en `tvg-id` et un logo. C'est ce qui relie une chaine fusionnee a
  * son guide.
@@ -41,49 +44,148 @@ function sourceAgeMs() {
 
 let downloading = null;
 
-/** Telecharge le guide s'il est absent ou perime. Garde l'ancien si le telechargement echoue. */
+function urls() {
+  return String(config.IPTV_EPG_URL || '').split(',').map((url) => url.trim()).filter(Boolean);
+}
+
+async function download(url, file) {
+  const res = await axios.get(url, {
+    responseType: 'stream',
+    timeout: DOWNLOAD_TIMEOUT_MS,
+    // Garder les .gz tels quels: `textOf` decompresse d'apres les octets, pas l'en-tete HTTP.
+    decompress: false,
+    headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Encoding': 'identity' },
+  });
+  await pipeline(res.data, fs.createWriteStream(file));
+}
+
+/** Telecharge les guides s'ils sont absents ou perimes. Garde l'ancien si TOUS echouent. */
 async function refresh({ force = false } = {}) {
   if (!enabled()) return false;
   if (!force && sourceAgeMs() < config.IPTV_EPG_REFRESH_MS) return false;
   if (downloading) return downloading;
 
   downloading = (async () => {
+    fs.mkdirSync(paths.DATA_DIR, { recursive: true });
+    const list = urls();
+    const parts = list.map((_, i) => `${SOURCE_FILE()}.part${i}`);
     const tmp = `${SOURCE_FILE()}.tmp`;
     try {
-      fs.mkdirSync(paths.DATA_DIR, { recursive: true });
-      const res = await axios.get(config.IPTV_EPG_URL, {
-        responseType: 'stream',
-        timeout: DOWNLOAD_TIMEOUT_MS,
-        // Le fichier est deja un .gz: le laisser tel quel, sans decompression transparente.
-        decompress: false,
-        headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Encoding': 'identity' },
-      });
-      await pipeline(res.data, fs.createWriteStream(tmp));
+      const results = await Promise.allSettled(list.map((url, i) => download(url, parts[i])));
+      results.forEach((r, i) => r.status === 'rejected' && console.warn(`[iptv] guide indisponible (${list[i]}): ${r.reason?.message}`));
+      const ok = parts.filter((_, i) => results[i].status === 'fulfilled');
+      if (ok.length === 0) return false;
+      const stats = await merge(ok, tmp);
       fs.renameSync(tmp, SOURCE_FILE());
       channelIndex = null;
       filteredSignature = null;
-      console.log(`[iptv] guide telecharge (${Math.round(fs.statSync(SOURCE_FILE()).size / 1024)} Ko)`);
+      console.log(`[iptv] guide telecharge: ${ok.length}/${list.length} source(s), ${stats.channels} chaine(s), ` +
+        `${Math.round(fs.statSync(SOURCE_FILE()).size / 1024)} Ko`);
       return true;
     } catch (err) {
-      fs.rmSync(tmp, { force: true });
-      console.warn(`[iptv] guide indisponible (${config.IPTV_EPG_URL}): ${err.message}`);
+      console.warn(`[iptv] guide indisponible: ${err.message}`);
       return false;
     } finally {
+      for (const file of [...parts, tmp]) fs.rmSync(file, { force: true });
       downloading = null;
     }
   })();
   return downloading;
 }
 
-/** Flux texte du guide source, que le fichier soit compresse ou non. */
-function sourceText() {
-  const raw = fs.createReadStream(SOURCE_FILE());
-  const gz = /\.gz(?:$|\?)/i.test(config.IPTV_EPG_URL);
-  const stream = gz ? raw.pipe(zlib.createGunzip()) : raw;
+/** Flux texte d'un XMLTV, gzip ou non (detecte aux octets: les URL ne le disent pas toujours). */
+function textOf(file) {
+  const head = Buffer.alloc(2);
+  const fd = fs.openSync(file, 'r');
+  fs.readSync(fd, head, 0, 2, 0);
+  fs.closeSync(fd);
+  const raw = fs.createReadStream(file);
+  const stream = head[0] === 0x1f && head[1] === 0x8b ? raw.pipe(zlib.createGunzip()) : raw;
   stream.setEncoding('utf8');
   // Sans ca, une erreur de lecture du fichier ne remonterait pas au consommateur du flux.
   raw.on('error', (err) => stream.destroy(err));
   return stream;
+}
+
+const XMLTV_HEAD = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE tv SYSTEM "xmltv.dtd">\n<tv>\n';
+
+/**
+ * Blocs `<channel>...</channel>` et `<programme>...</programme>` d'un XMLTV, au fil de la
+ * decompression, sans jamais tenir le document en memoire.
+ */
+async function* blocks(stream) {
+  const opening = /<(?:channel|programme)\b/g;
+  let buffer = '';
+  for await (const chunk of stream) {
+    buffer += chunk;
+    // Curseur plutot que decoupes successives: un morceau porte des centaines de blocs.
+    let cursor = 0;
+    for (;;) {
+      opening.lastIndex = cursor;
+      const found = opening.exec(buffer);
+      if (!found) {
+        // Garde la queue: une balise ouvrante peut etre coupee entre deux morceaux.
+        cursor = Math.max(cursor, buffer.length - 16);
+        break;
+      }
+      const start = found.index;
+      const closing = buffer.startsWith('<channel', start) ? '</channel>' : '</programme>';
+      const end = buffer.indexOf(closing, start);
+      if (end < 0) {
+        cursor = start;
+        break;
+      }
+      yield buffer.slice(start, end + closing.length);
+      cursor = end + closing.length;
+    }
+    buffer = buffer.slice(cursor);
+  }
+}
+
+/** Identifiant de chaine d'un bloc (`id` d'un `<channel>`, `channel` d'un `<programme>`). */
+function blockChannel(block) {
+  const tag = block.slice(0, block.indexOf('>'));
+  return decodeEntities((tag.match(block.startsWith('<channel') ? /\sid="([^"]*)"/ : /\schannel="([^"]*)"/) || [])[1] || '');
+}
+
+/**
+ * Fusionne plusieurs XMLTV en un seul (gzip): toutes les `<channel>` d'abord, puis les
+ * programmes. Un identifiant appartient au PREMIER guide de la liste qui le declare: les
+ * programmes des suivants pour ce meme identifiant sont ecartes, sinon ils s'empileraient.
+ */
+async function merge(files, target) {
+  const out = zlib.createGzip();
+  const written = pipeline(out, fs.createWriteStream(target));
+  const owner = new Map();
+  const write = async (text) => {
+    if (!out.write(text)) await once(out, 'drain');
+  };
+  await write(XMLTV_HEAD);
+  for (const [i, file] of files.entries()) {
+    const stream = textOf(file);
+    for await (const block of blocks(stream)) {
+      // Les `<channel>` ouvrent le fichier: inutile de decompresser les programmes ici.
+      if (block.startsWith('<programme')) break;
+      const id = blockChannel(block);
+      if (!id || owner.has(id)) continue;
+      owner.set(id, i);
+      await write(`  ${block}\n`);
+    }
+    stream.destroy();
+  }
+  for (const [i, file] of files.entries()) {
+    for await (const block of blocks(textOf(file))) {
+      if (block.startsWith('<programme') && owner.get(blockChannel(block)) === i) await write(`  ${block}\n`);
+    }
+  }
+  out.end('</tv>\n');
+  await written;
+  return { channels: owner.size };
+}
+
+/** Flux texte du guide source (fusionne, toujours en gzip). */
+function sourceText() {
+  return textOf(SOURCE_FILE());
 }
 
 function decodeEntities(text) {
@@ -127,7 +229,7 @@ async function channels() {
     return index;
   }
 
-  const pattern = /<channel\s+id="([^"]+)"\s*>([\s\S]*?)<\/channel>/g;
+  const pattern = /<channel\s+id="([^"]+)"[^>]*>([\s\S]*?)<\/channel>/g;
   for (const match of head.matchAll(pattern)) {
     const id = decodeEntities(match[1]);
     const name = decodeEntities((match[2].match(/<display-name[^>]*>([^<]*)</) || [])[1] || '').trim();
@@ -186,50 +288,12 @@ async function filteredFile(ids) {
     const written = pipeline(out, fs.createWriteStream(tmp));
     let kept = 0;
 
-    const keep = (block) => {
-      const id = decodeEntities((block.match(/^<(?:channel\s+id|programme\b[^>]*?\schannel)="([^"]*)"/) || [])[1] || '');
-      if (!ids.has(id)) return;
-      kept += 1;
-      out.write(`  ${block}\n`);
-    };
-
     try {
-      const opening = /<(?:channel|programme)\b/g;
-      let buffer = '';
-      let headerDone = false;
-      for await (const chunk of sourceText()) {
-        buffer += chunk;
-
-        if (!headerDone) {
-          const first = buffer.search(/<(?:channel|programme)\b/);
-          if (first < 0) continue;
-          out.write(buffer.slice(0, first).replace(/\s+$/, '\n'));
-          buffer = buffer.slice(first);
-          headerDone = true;
-        }
-
-        // Curseur plutot que decoupes successives: un morceau porte des centaines de blocs.
-        let cursor = 0;
-        for (;;) {
-          opening.lastIndex = cursor;
-          const found = opening.exec(buffer);
-          if (!found) {
-            // Garde la queue: une balise ouvrante peut etre coupee entre deux morceaux.
-            cursor = Math.max(cursor, buffer.length - 16);
-            break;
-          }
-          const start = found.index;
-          const closing = buffer.startsWith('<channel', start) ? '</channel>' : '</programme>';
-          const end = buffer.indexOf(closing, start);
-          if (end < 0) {
-            cursor = start;
-            break;
-          }
-          keep(buffer.slice(start, end + closing.length));
-          cursor = end + closing.length;
-        }
-        buffer = buffer.slice(cursor);
-        if (out.writableNeedDrain) await once(out, 'drain');
+      out.write(XMLTV_HEAD);
+      for await (const block of blocks(sourceText())) {
+        if (!ids.has(blockChannel(block))) continue;
+        kept += 1;
+        if (!out.write(`  ${block}\n`)) await once(out, 'drain');
       }
       out.end('</tv>\n');
       await written;
@@ -322,4 +386,4 @@ async function programmes(ids) {
   return byChannel;
 }
 
-module.exports = { enabled, refresh, channels, lookup, filteredFile, programmes, sourceAgeMs };
+module.exports = { enabled, refresh, channels, lookup, filteredFile, programmes, sourceAgeMs, merge };

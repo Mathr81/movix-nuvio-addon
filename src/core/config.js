@@ -188,8 +188,16 @@ const config = {
   // Definition maximale preferee (hauteur: 2160, 1080, 720). Les flux au-dessus passent
   // en dernier recours -- utile quand l'appareil peine sur la 4K HEVC. 0 = pas de plafond.
   IPTV_MAX_QUALITY: Number(readEnv('IPTV_MAX_QUALITY', 0)),
-  // Guide des programmes (XMLTV, .xml ou .xml.gz). Vide = pas de guide.
-  IPTV_EPG_URL: readEnv('IPTV_EPG_URL', 'https://xmltvfr.fr/xmltv/xmltv_fr.xml.gz'),
+  // Guides XMLTV (.xml ou .xml.gz) separes par des virgules, fusionnes. Vide = pas de guide.
+  IPTV_EPG_URL: readEnv(
+    'IPTV_EPG_URL',
+    // Mesure du 11/2026: 242 chaines avec programme pour xmltv_fr seul, 298 avec cette fusion.
+    'https://xmltvfr.fr/xmltv/xmltv.xml.gz,' +
+      'https://epgshare01.online/epgshare01/epg_ripper_FR1.xml.gz,' +
+      'https://epgshare01.online/epgshare01/epg_ripper_BE2.xml.gz,' +
+      'https://epgshare01.online/epgshare01/epg_ripper_CH1.xml.gz,' +
+      'https://www.open-epg.com/files/france1.xml.gz',
+  ),
   IPTV_EPG_REFRESH_MS: Number(readEnv('IPTV_EPG_REFRESH_MS', 12 * 60 * 60 * 1000)),
   // Relecture des sources (nouvelles chaines, flux retires).
   IPTV_REFRESH_MS: Number(readEnv('IPTV_REFRESH_MS', 60 * 60 * 1000)),
