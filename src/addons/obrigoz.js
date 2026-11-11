@@ -42,9 +42,11 @@ function baseUrl() {
  * un deux-points ou un tiret separateur.
  */
 function cleanTitle(rawTitle) {
-  let title = String(rawTitle || '').replace(/\([^)]*\)/g, '');
+  // TMDB laisse parfois des marques invisibles (U+200E) qui font echouer la recherche.
+  let title = String(rawTitle || '').replace(/[\u200b-\u200f\u2060\ufeff]/g, '').replace(/\([^)]*\)/g, '');
   if (title.includes(':')) [title] = title.split(':');
-  if (title.includes(' - ')) [title] = title.split(' - ');
+  // TMDB ecrit souvent le separateur en tiret long ("Drive – The Pretenders").
+  [title] = title.split(/\s[-\u2013\u2014]\s/);
   return title.trim();
 }
 
@@ -99,6 +101,24 @@ function parseJwPlayerSources(html) {
     .filter(Boolean);
 }
 
+function normalize(text) {
+  return String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * La recherche du site est floue ("Coco" rend "Cocorico 2", "Avengers : Doomsday" rend un
+ * LEGO Marvel): prendre le premier resultat servait un autre film. On n'accepte donc
+ * qu'une fiche au titre identique (complet, ou raccourci comme la requete) et d'annee
+ * egale -- a un an pres, les sorties a cheval sur deux annees variant selon le pays.
+ */
+function pickResult(found, titles, year) {
+  const wanted = new Set(titles.flatMap((t) => [normalize(t), normalize(cleanTitle(t))]).filter(Boolean));
+  const sameTitle = found.filter((item) => wanted.has(normalize(item.title)) || wanted.has(normalize(cleanTitle(item.title))));
+  if (!year) return sameTitle[0] || null;
+  const gap = (item) => Math.abs(Number(item.year) - Number(year));
+  return sameTitle.find((item) => gap(item) === 0) || sameTitle.find((item) => gap(item) <= 1) || null;
+}
+
 async function search(http, query) {
   const { data, status } = await http.post(
     site().home,
@@ -136,9 +156,11 @@ async function extractSources(http, videoId) {
 async function getStreams({ tmdbId, type }) {
   if (type !== 'movie') return [];
 
-  const { title, year } = await kit.titleOf(type, tmdbId);
-  const query = cleanTitle(title);
-  if (!query) {
+  const { title, originalTitle, year } = await kit.titleOf(type, tmdbId);
+  // Le site range certains films sous leur titre original ("War of the Worlds"): on le
+  // tente quand le titre francais ne mene a aucune fiche.
+  const queries = [...new Set([cleanTitle(title), cleanTitle(originalTitle)])].filter(Boolean);
+  if (queries.length === 0) {
     log.ok('Obrigoz', tmdbId, 'pas de titre exploitable cote TMDB');
     return [];
   }
@@ -148,14 +170,15 @@ async function getStreams({ tmdbId, type }) {
     headers: { Referer: `${baseUrl()}/` },
   });
 
-  const found = await search(http, query);
-  if (found.length === 0) {
-    log.ok('Obrigoz', tmdbId, `aucun resultat pour "${query}"`);
+  let selected = null;
+  for (const query of queries) {
+    selected = pickResult(await search(http, query), [title, originalTitle], year);
+    if (selected) break;
+  }
+  if (!selected) {
+    log.ok('Obrigoz', tmdbId, `aucune fiche pour "${queries.join('" / "')}" (${year || '?'})`);
     return [];
   }
-
-  // L'annee departage les remakes et les homonymes, que le titre seul confond.
-  const selected = (year && found.find((item) => item.year === year)) || found[0];
   const sources = await extractSources(http, selected.id);
   if (sources.length === 0) {
     log.ok('Obrigoz', tmdbId, `"${selected.title}" (${selected.year}): aucune source dans l'iframe`);
@@ -188,6 +211,8 @@ async function getStreams({ tmdbId, type }) {
 }
 
 module.exports = {
+  cleanTitle,
+  pickResult,
   id: 'obrigoz',
   name: 'Obrigoz',
   supports: { movie: true, series: false },

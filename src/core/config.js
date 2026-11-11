@@ -354,7 +354,7 @@ const config = {
   // --- Obrigoz (domaine tournant) -------------------------------------------
   // URL de la page d'accueil, telle que le navigateur l'affiche: domaine, prefixe et nom du
   // site en changent, tout se deduit d'elle (cf. src/addons/obrigoz.js).
-  OBRIGOZ_URL: readEnv('OBRIGOZ_URL', 'https://dokimov.com/174e409/home/dokimov'),
+  OBRIGOZ_URL: readEnv('OBRIGOZ_URL', 'https://trimav.com/b86bd60/home/trimav'),
   OBRIGOZ_LANG: readEnv('OBRIGOZ_LANG', 'VF'),
 
   // --- Cinejoy (cinejoy.to -- canal scelle lumen-gate-v2 pilote via crush.wasm) ---
