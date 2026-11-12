@@ -44,3 +44,22 @@ test('upns et frvideosrc sont reconnus, y compris sur leurs domaines de rechange
 test('embedorigin (Stream Origin) est reconnu', () => {
   assert.strictEqual(detectHoster('https://embedorigin.cc/e/xm07m7q2zn73'), 'streamorigin');
 });
+
+test('lien resolu par Movix: extraction locale prioritaire si l\'hebergeur est connu', () => {
+  const { apply } = require('../src/sources/resolved');
+  const table = new Map([
+    ['https://voe.sx/e/a2ubyfi9relu', { m3u8: 'https://proxiesembed/voe-proxy?url=x' }],
+    ['https://vidzy.org/embed-x.html', { m3u8: 'https://proxiesembed/vidzy-proxy?url=y' }],
+  ]);
+  const voe = apply({ url: 'https://voe.sx/e/a2ubyfi9relu' }, table);
+  assert.strictEqual(voe.url, 'https://voe.sx/e/a2ubyfi9relu');
+  assert.strictEqual(voe.serverFallback.url, 'https://proxiesembed/voe-proxy?url=x');
+  const vidzy = apply({ url: 'https://vidzy.org/embed-x.html' }, table);
+  assert.strictEqual(vidzy.direct, true);
+  assert.strictEqual(vidzy.url, 'https://proxiesembed/vidzy-proxy?url=y');
+});
+
+test('seekstreaming a un extracteur local', () => {
+  const { hasLocalExtractor } = require('../src/streaming/hosterExtract');
+  assert.ok(hasLocalExtractor('https://neocine.embedseek.com/#sqvki'));
+});

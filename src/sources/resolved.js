@@ -1,4 +1,5 @@
 const config = require('../core/config');
+const { hasLocalExtractor } = require('../streaming/hosterExtract');
 
 /**
  * Resolution des m3u8 COTE SERVEUR.
@@ -120,10 +121,17 @@ function collect(payload, table = new Map(), depth = 0) {
  * Resolu: le lien devient un flux DIRECT, et l'URL d'embed est conservee dans
  * `embedUrl` -- c'est elle que les CDN attendent en Referer, et c'est la cle sur
  * laquelle le reste de l'addon deduplique.
+ *
+ * Hebergeur que l'addon sait extraire seul: l'embed est garde et extrait localement, le
+ * lien Movix ne sert que de repli (`serverFallback`). Ses m3u8 passent par proxiesembed
+ * ou portent un jeton lie a l'IP de Movix (Voe `i=`, Byse `asn=`): 403/502 chez nous.
  */
 function apply(item, table) {
   const hit = item.url ? table.get(item.url) : null;
   if (!hit) return item;
+  if (hasLocalExtractor(item.url, item.player)) {
+    return { ...item, serverFallback: { url: hit.m3u8, subtitles: hit.subtitles } };
+  }
   const out = { ...item, url: hit.m3u8, embedUrl: item.url, direct: true, resolvedByServer: true };
   if (hit.subtitles && !item.subtitles) out.subtitles = hit.subtitles;
   return out;
@@ -132,7 +140,7 @@ function apply(item, table) {
 /** Applique la table a toute une liste, et compte ce qui a ete resolu. */
 function applyAll(items, table) {
   const out = items.map((item) => apply(item, table));
-  return { items: out, resolved: out.filter((i) => i.resolvedByServer).length };
+  return { items: out, resolved: out.filter((i) => i.resolvedByServer || i.serverFallback).length };
 }
 
 /**

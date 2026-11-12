@@ -407,6 +407,9 @@ const config = {
   // Quand un embed n'a pas d'extracteur (vidara.to, lecteurvideo.com...), proposer quand meme
   // le lien en "ouvrir dans le navigateur" au lieu de le jeter. Bruyant -> desactive par defaut.
   SHOW_UNPLAYABLE_EMBEDS: readBool('SHOW_UNPLAYABLE_EMBEDS', false),
+  // Masque les liens que la sonde n'a pu joindre par aucune voie (false: relegues en fin
+  // de liste avec un avertissement).
+  HIDE_UNREACHABLE: readBool('HIDE_UNREACHABLE', true),
 
   CACHE_TTL_MS: Number(readEnv('CACHE_TTL_MS', 30 * 60 * 1000)),
   // Le cache survit au redemarrage: sans ca, un `npm start` fait repayer a la premiere

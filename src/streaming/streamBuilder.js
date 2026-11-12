@@ -353,7 +353,7 @@ function describe(link, measured) {
  * tous les 720p francais. Dans chaque palier: langue preferee d'abord, puis debit -- a
  * definition egale, c'est lui qui separe un vrai 1080p d'un upscale compresse.
  *
- * En queue: les liens que la sonde n'a pu joindre (releguees, pas masques -- un hebergeur
+ * En queue: les liens que la sonde n'a pu joindre (masques si HIDE_UNREACHABLE, sinon relegues: un hebergeur
  * peut n'etre tombe que quelques minutes), puis les liens externes.
  */
 function sortStreams(streams) {
@@ -403,6 +403,11 @@ async function resolveStreams({ tmdbId, type, season, episode, wait = false, ref
       // On conserve la page d'embed: c'est elle que le CDN attend en Referer, pas sa
       // propre origine. Sans ca, la mesure de debit repart en 403.
       if (result.ok) return { ...item, url: result.url, hoster: result.hoster, embedUrl: item.url };
+      // Extraction locale en echec: le lien deja resolu par Movix vaut mieux que rien.
+      if (item.serverFallback) {
+        const { url, subtitles } = item.serverFallback;
+        return { ...item, url, embedUrl: item.url, direct: true, resolvedByServer: true, subtitles: item.subtitles || subtitles };
+      }
       if (result.reason === 'no-extractor') unplayable.push(item);
       // Hebergeur extractible, mais par Movix seulement: le lien n'est pas mort, c'est la
       // resolution serveur qui n'a rien rendu (pas de cle VIP, VIP expiree, extraction en
@@ -562,7 +567,8 @@ async function buildStreams({ tmdbId, type, season, episode, refresh = false, gr
   // ce qui a ete resolu et mesure, sans quoi il ne servirait plus a diagnostiquer.
   // Plancher avant l'elagage, pour qu'un 480p n'occupe pas une place de MAX_STREAMS_PER_SOURCE.
   // Palier inconnu (0) = garde: on ne sait pas ce qu'il vaut.
-  const watchable = enriched.filter((r) => !(tierOf(r) > 0 && tierOf(r) < config.MIN_STREAM_QUALITY));
+  const watchable = enriched.filter((r) => !(tierOf(r) > 0 && tierOf(r) < config.MIN_STREAM_QUALITY))
+    .filter((r) => !(config.HIDE_UNREACHABLE && r.unreachable));
   const kept = config.keepAllStreams()
     ? watchable
     : capPerSource(pruneDominated(watchable), config.MAX_STREAMS_PER_SOURCE);

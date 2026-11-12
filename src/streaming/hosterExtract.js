@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const axios = require('axios');
 const config = require('../core/config');
 const breaker = require('../core/breaker');
@@ -39,8 +38,9 @@ const BROWSER_UA =
  *                hebergeur inconnu: la famille VidHide (morencius, hanerix...) change
  *                de domaine sans cesse et se lit de la meme facon.
  *   byse         Filemoon et ses miroirs: API JSON chiffree AES-GCM (src/streaming/hosterByse.js)
- *   upns         lecteurs `*.upns.*` / `*.upn.*` (flemmix, coflix...): API JSON chiffree
- *                AES-128-CBC a cle fixe, celle que publient les extracteurs libres
+ *   upns, seekstreaming
+ *                lecteurs `#<id>` (flemmix, coflix, embedseek...): un resolveur rend
+ *                l'embed du vrai hebergeur, extrait ensuite comme les redirecteurs
  *   streamorigin embedorigin.cc: API JSON en clair, `hls` jouable sans en-tetes
  *   frvideosrc   agregateur: sa propre API rend des embeds, repasses ici un par un
  *   redirector   trakx.lol / kokoflix.lol (FStream): simples redirections vers le vrai
@@ -127,7 +127,7 @@ const BUILTIN_HOSTER_PATTERNS = {
 /** Hebergeurs que l'addon sait extraire SEUL, sans passer par Movix. */
 // Pas vidmoly: sa page d'attente renvoie un client HTTP vers un parking publicitaire.
 const JWPLAYER_HOSTERS = new Set(['lulustream', 'uqload', 'mixdrop', 'vidsonic']);
-const LOCAL_EXTRACTORS = new Set(['voe', 'veev', 'byse', 'upns', 'streamorigin', 'frvideosrc', 'darkibox', 'oneupload', 'sharecloudy', 'redirector', ...JWPLAYER_HOSTERS]);
+const LOCAL_EXTRACTORS = new Set(['voe', 'veev', 'byse', 'upns', 'seekstreaming', 'streamorigin', 'frvideosrc', 'darkibox', 'oneupload', 'sharecloudy', 'redirector', ...JWPLAYER_HOSTERS]);
 
 /** Le CDN de Sharecloudy (shareNNNNN.sharecloudy.com) rend 403 sans l'Origin de son lecteur. */
 const SHARECLOUDY_ORIGIN = 'https://sharecloudy.com';
@@ -270,31 +270,21 @@ async function extractJwPlayer(embedUrl) {
   return url.startsWith('//') ? `https:${url}` : url;
 }
 
-/** Cle et IV du lecteur upns, identiques sur tous ses domaines. */
-const UPNS_KEY = Buffer.from('kiemtienmua911ca');
-const UPNS_IV = Buffer.from('1234567890oiuytr');
-
 /**
- * Lecteur upns: `https://<domaine>/#<id>` -> `/api/v1/video?id=<id>`, reponse en hex
- * chiffree. `cfNative` (servi par le domaine du lecteur) passe sans en-tetes; `source`
- * (IP nue) exige le Referer du lecteur. `null` = video supprimee.
+ * upns (`*.upns.*`, `*.upn.*`) et seekstreaming (`*.embedseek.com`...) partagent depuis
+ * 2026-11 le meme lecteur: `https://<domaine>/#<id>` -> `/api/public/resolve?file1=<id>`,
+ * qui rend l'embed du vrai hebergeur (`{ok, url}`). `null` = video supprimee.
  */
-async function extractUpns(embedUrl) {
+async function resolveFileHash(embedUrl) {
   const { origin, hash } = new URL(embedUrl);
   const id = hash.slice(1);
   if (!id) return null;
-  const { data } = await axios.get(`${origin}/api/v1/video?id=${encodeURIComponent(id)}`, {
+  const { data } = await axios.get(`${origin}/api/public/resolve?file1=${encodeURIComponent(id)}`, {
     timeout: 8000,
-    responseType: 'text',
-    // 404 = video supprimee: une reponse, pas une panne.
     validateStatus: (status) => status < 500,
-    headers: { 'User-Agent': BROWSER_UA, Referer: `${origin}/` },
+    headers: { 'User-Agent': BROWSER_UA, Referer: embedUrl },
   });
-  const hex = String(data).trim();
-  if (!/^[0-9a-f]+$/i.test(hex)) return null;
-  const decipher = crypto.createDecipheriv('aes-128-cbc', UPNS_KEY, UPNS_IV);
-  const video = JSON.parse(Buffer.concat([decipher.update(Buffer.from(hex, 'hex')), decipher.final()]).toString('utf8'));
-  return [video.cfNative, video.source].find((url) => typeof url === 'string' && /^https?:\/\//.test(url)) || null;
+  return data?.ok && typeof data.url === 'string' && /^https?:\/\//.test(data.url) ? data.url : null;
 }
 
 /**
@@ -402,6 +392,12 @@ async function extractVoeLocally(embedUrl) {
 async function extractDirectUrl(embedUrl, playerNameHint) {
   const hoster = detectHoster(embedUrl, playerNameHint);
   if (!hoster) {
+    // Alias Voe pas encore listes (noms de personnes, renouveles chaque mois): on les
+    // reconnait a la forme de l'URL, `/e/<12 caracteres>`.
+    if (/^\/e\/[a-z0-9]{12}\/?$/i.test(new URL(embedUrl).pathname)) {
+      const result = await extractDirectUrl(embedUrl, 'voe.');
+      if (result.ok) return result;
+    }
     // Dernier recours: beaucoup d'hebergeurs anonymes sont un simple jwplayer.
     const url = await extractJwPlayer(embedUrl).catch(() => null);
     if (!url) return { ok: false, reason: 'no-extractor' };
@@ -412,20 +408,20 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
   // Service connu pour etre en panne a l'instant: on ne paye pas l'aller-retour.
   if (extractBreaker.isOpen(hoster)) return { ok: false, reason: 'cooldown', hoster };
 
-  if (hoster === 'redirector') {
+  if (hoster === 'redirector' || hoster === 'upns' || hoster === 'seekstreaming') {
     // Disjoncteur par domaine: fr.trakx.lol peut tomber sans que trakx.lol suive.
     const key = `redirector:${new URL(embedUrl).hostname}`;
     if (extractBreaker.isOpen(key)) return { ok: false, reason: 'cooldown', hoster };
     let target;
     try {
-      target = await resolveRedirect(embedUrl);
+      target = hoster === 'redirector' ? await resolveRedirect(embedUrl) : await resolveFileHash(embedUrl);
       extractBreaker.noteRecovery(key);
     } catch (err) {
       console.warn(`[extract:redirector] echec HTTP pour ${embedUrl}: ${err.message}`);
       extractBreaker.noteOutage(key);
       return { ok: false, reason: 'http-error', hoster };
     }
-    if (!target || detectHoster(target) === 'redirector') return { ok: false, reason: 'deleted', hoster };
+    if (!target || detectHoster(target) === hoster) return { ok: false, reason: 'deleted', hoster };
     // Les alias Voe changent tous les mois; le chemin trakx (`/voe1/`, `/voe4/`) le dit, lui.
     const hint = /\/voe\d*\//i.test(embedUrl) ? 'voe.' : playerNameHint;
     return extractDirectUrl(target, hint);
@@ -489,10 +485,8 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
   }
 
   try {
-    if (JWPLAYER_HOSTERS.has(hoster) || hoster === 'upns' || hoster === 'streamorigin') {
-      const url = hoster === 'upns' ? await extractUpns(embedUrl)
-        : hoster === 'streamorigin' ? await extractStreamOrigin(embedUrl)
-        : await extractJwPlayer(embedUrl);
+    if (JWPLAYER_HOSTERS.has(hoster) || hoster === 'streamorigin') {
+      const url = hoster === 'streamorigin' ? await extractStreamOrigin(embedUrl) : await extractJwPlayer(embedUrl);
       extractBreaker.noteRecovery(hoster);
       if (url) return { ok: true, url: proxyFromEmbed(url, embedUrl), hoster };
       console.warn(`[extract:${hoster}] aucune source trouvee dans le HTML de ${embedUrl}`);
