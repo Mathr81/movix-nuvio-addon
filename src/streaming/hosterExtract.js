@@ -41,6 +41,7 @@ const BROWSER_UA =
  *   byse         Filemoon et ses miroirs: API JSON chiffree AES-GCM (src/streaming/hosterByse.js)
  *   upns         lecteurs `*.upns.*` / `*.upn.*` (flemmix, coflix...): API JSON chiffree
  *                AES-128-CBC a cle fixe, celle que publient les extracteurs libres
+ *   streamorigin embedorigin.cc: API JSON en clair, `hls` jouable sans en-tetes
  *   frvideosrc   agregateur: sa propre API rend des embeds, repasses ici un par un
  *   redirector   trakx.lol / kokoflix.lol (FStream): simples redirections vers le vrai
  *                hebergeur, qu'on suit avant de relancer la detection sur la cible
@@ -118,6 +119,7 @@ const BUILTIN_HOSTER_PATTERNS = {
   // Hors liste amont: ces trois-la n'ont jamais eu d'extracteur cote Movix, l'addon les
   // lit lui-meme depuis le HTML de la page d'embed.
   darkibox: ['darkibox'],
+  streamorigin: ['embedorigin', 'streamorigin'],
   oneupload: ['oneupload'],
   sharecloudy: ['sharecloudy'],
 };
@@ -125,7 +127,7 @@ const BUILTIN_HOSTER_PATTERNS = {
 /** Hebergeurs que l'addon sait extraire SEUL, sans passer par Movix. */
 // Pas vidmoly: sa page d'attente renvoie un client HTTP vers un parking publicitaire.
 const JWPLAYER_HOSTERS = new Set(['lulustream', 'uqload', 'mixdrop', 'vidsonic']);
-const LOCAL_EXTRACTORS = new Set(['voe', 'veev', 'byse', 'upns', 'frvideosrc', 'darkibox', 'oneupload', 'sharecloudy', 'redirector', ...JWPLAYER_HOSTERS]);
+const LOCAL_EXTRACTORS = new Set(['voe', 'veev', 'byse', 'upns', 'streamorigin', 'frvideosrc', 'darkibox', 'oneupload', 'sharecloudy', 'redirector', ...JWPLAYER_HOSTERS]);
 
 /** Le CDN de Sharecloudy (shareNNNNN.sharecloudy.com) rend 403 sans l'Origin de son lecteur. */
 const SHARECLOUDY_ORIGIN = 'https://sharecloudy.com';
@@ -293,6 +295,24 @@ async function extractUpns(embedUrl) {
   const decipher = crypto.createDecipheriv('aes-128-cbc', UPNS_KEY, UPNS_IV);
   const video = JSON.parse(Buffer.concat([decipher.update(Buffer.from(hex, 'hex')), decipher.final()]).toString('utf8'));
   return [video.cfNative, video.source].find((url) => typeof url === 'string' && /^https?:\/\//.test(url)) || null;
+}
+
+/**
+ * Stream Origin (embedorigin.cc/e/<code>): la page est une appli Next.js vide, le lecteur
+ * lit `GET /app/v1/play/<code>?embed=1` sur le domaine de l'embed (JSON en clair, 2026-11).
+ * `null` = video supprimee.
+ */
+async function extractStreamOrigin(embedUrl) {
+  const { origin, pathname } = new URL(embedUrl);
+  // Le lecteur ne garde que les 12 premiers caracteres du code (`/^[a-z0-9]{12}/`).
+  const code = pathname.split('/').filter(Boolean).pop()?.match(/^[a-z0-9]{12}/i)?.[0];
+  if (!code) return null;
+  const { data } = await axios.get(`${origin}/app/v1/play/${code}?embed=1`, {
+    timeout: 8000,
+    validateStatus: (status) => status < 500,
+    headers: { 'User-Agent': BROWSER_UA, Referer: embedUrl },
+  });
+  return [data?.hls, data?.mp4].find((url) => typeof url === 'string' && /^https?:\/\//.test(url)) || null;
 }
 
 /**
@@ -469,8 +489,10 @@ async function extractDirectUrl(embedUrl, playerNameHint) {
   }
 
   try {
-    if (JWPLAYER_HOSTERS.has(hoster) || hoster === 'upns') {
-      const url = hoster === 'upns' ? await extractUpns(embedUrl) : await extractJwPlayer(embedUrl);
+    if (JWPLAYER_HOSTERS.has(hoster) || hoster === 'upns' || hoster === 'streamorigin') {
+      const url = hoster === 'upns' ? await extractUpns(embedUrl)
+        : hoster === 'streamorigin' ? await extractStreamOrigin(embedUrl)
+        : await extractJwPlayer(embedUrl);
       extractBreaker.noteRecovery(hoster);
       if (url) return { ok: true, url: proxyFromEmbed(url, embedUrl), hoster };
       console.warn(`[extract:${hoster}] aucune source trouvee dans le HTML de ${embedUrl}`);

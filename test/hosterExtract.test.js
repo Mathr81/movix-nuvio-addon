@@ -40,3 +40,7 @@ test('upns et frvideosrc sont reconnus, y compris sur leurs domaines de rechange
   assert.strictEqual(detectHoster('https://frvideosrc.co/film/1375666'), 'frvideosrc');
   assert.strictEqual(detectHoster('https://vidsonic.net/e/abc'), 'vidsonic');
 });
+
+test('embedorigin (Stream Origin) est reconnu', () => {
+  assert.strictEqual(detectHoster('https://embedorigin.cc/e/xm07m7q2zn73'), 'streamorigin');
+});
