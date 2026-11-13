@@ -334,9 +334,8 @@ const config = {
   AETHER_API_DOMAIN: readEnv('AETHER_API_DOMAIN', 'raccoonunbutteredbagel.zip'),
   // "love" existe mais n'est pas dans le defaut: son CDN (c.ravenflix.st) repond 403 a tout
   // ce qui n'est pas l'extension navigateur du site, lien frais et en-tetes du site compris.
-  AETHER_SERVERS: readList('AETHER_SERVERS', ['aurora', 'lul', 'link', 'gallic']),
-  // Origin/Referer exiges par le CDN tiers du serveur "link".
-  AETHER_LINK_ORIGIN: readEnv('AETHER_LINK_ORIGIN', 'https://nextgencloudfabric.com'),
+  // Meme ordre que les sources par defaut du site.
+  AETHER_SERVERS: readList('AETHER_SERVERS', ['lul', 'lil', 'meridian', 'rock', 'ly', 'aurora', 'gallic']),
   // Gallic n'est pas sur le domaine d'API des autres serveurs: il a sa propre base.
   AETHER_GALLIC_API: readEnv('AETHER_GALLIC_API', 'https://api.subl2cw8mg.workers.dev'),
   // Aucune des API n'annonce la langue de la piste: on l'etiquette a la main pour que le

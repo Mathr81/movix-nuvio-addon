@@ -9,9 +9,8 @@ const kit = require('./kit');
  *  - aurora (tik.<domaine>)    : liste `streams` (m3u8), comme gallic;
  *  - love   (love.<domaine>)   : renvoie une URL de fichier mp4 (c.ravenflix.st);
  *  - lul    (lul.<domaine>)    : renvoie une URL intermediaire qui repond 302 vers le master;
- *  - link   (link.<domaine>)   : renvoie une URL brute qu'il faut encapsuler dans le
- *                                m3u8-proxy officiel du site (le CDN d'origine refuse tout
- *                                ce qui ne vient pas de nextgencloudfabric.com);
+ *  - lil, meridian, rock, ly    : une URL de flux sur un CDN tiers, qui n'accepte que
+ *                                l'Origin de son propre lecteur (cf. cdnHeaders);
  *  - gallic (AETHER_GALLIC_API): la source VF du site. Seul serveur a ne pas etre sur le
  *                                domaine d'API des autres, et seul a rendre PLUSIEURS flux
  *                                d'un coup, un par fournisseur.
@@ -52,6 +51,30 @@ function apiHeaders(refererUrl) {
   return { accept: '*/*', origin: siteOrigin(), referer: refererUrl };
 }
 
+/** Corps JSON d'un appel d'API reussi, `null` sinon (404 = rien pour ce titre). */
+async function apiGet(http, url, refererUrl) {
+  const { data, status } = await http.get(url, { headers: apiHeaders(refererUrl), validateStatus: () => true });
+  return status === 200 && data && typeof data === 'object' ? data : null;
+}
+
+/** Lil et Meridian nomment les series `show`: `/show/<id>/<saison>/<episode>`. */
+function showPath(path) {
+  return path.replace(/^\/tv\//, '/show/');
+}
+
+/** En-tetes de lecture pour un CDN tiers qui n'accepte que l'Origin de son lecteur. */
+function cdnHeaders(origin) {
+  const base = String(origin).replace(/\/+$/, '');
+  return {
+    accept: '*/*',
+    'accept-language': kit.ACCEPT_LANGUAGE,
+    origin: base,
+    referer: `${base}/`,
+    'user-agent': kit.BROWSER_UA,
+    ...kit.chromeHints(),
+  };
+}
+
 /**
  * En-tetes de LECTURE, rejoues par le proxy sur la playlist puis sur chaque segment.
  * Plus complets que ceux des appels d'API: les CDN filtrent aussi sur les Client Hints.
@@ -73,6 +96,13 @@ const PROXY_SPEC_RULES = [
     // qu'aucun demuxeur ne sait lire: on les retire et on retablit le vrai type MIME.
     match: 'tiktokcdn\\.com|origin\\.image',
     skipBytes: 8,
+    contentType: 'video/mp2t',
+  },
+  {
+    // Rock (films): segments enveloppes dans un en-tete PNG de 64 octets.
+    // shortcut: motif lie au domaine vercetti.org, a elargir s'il en change.
+    match: 'vercetti\\.org/seg/',
+    skipBytes: 64,
     contentType: 'video/mp2t',
   },
 ];
@@ -187,32 +217,47 @@ const SERVERS = {
     },
   },
 
-  link: {
-    label: 'Link',
+  // Lil, Meridian, Rock et Ly: une URL de flux, sur un CDN tiers qui attend l'Origin de
+  // son propre lecteur. Le site l'encapsule dans son proxy HLS (un navigateur ne peut ni
+  // forger un Origin ni echapper au CORS); nous posons ces en-tetes directement.
+  lil: {
+    label: 'Lil',
     lang: () => config.AETHER_LANG,
     async resolve({ http, path, refererUrl }) {
-      const { data, status } = await http.get(`https://link.${config.AETHER_API_DOMAIN}${path}`, {
-        headers: apiHeaders(`${refererUrl}?r=%2Fsettings%2Fsource%2Fembeds`),
-        validateStatus: () => true,
-      });
-      if (status !== 200 || !data?.stream) return null;
+      const data = await apiGet(http, `https://lil.${config.AETHER_API_DOMAIN}${showPath(path)}`, refererUrl);
+      // CDN sans contrainte d'en-tetes: ceux du site suffisent.
+      return typeof data?.stream?.url === 'string' ? data.stream.url : null;
+    },
+  },
 
-      // Ce flux vient d'un CDN tiers, qui attend l'Origin d'un autre site que celui d'ou
-      // on vient. Le site encapsule donc cette URL dans son propre proxy HLS -- parce
-      // qu'un NAVIGATEUR ne peut ni forger un Origin ni echapper au CORS. Nous, si: on
-      // pose ces en-tetes directement et on economise le rebond.
-      const cdnOrigin = config.AETHER_LINK_ORIGIN.replace(/\/+$/, '');
-      return {
-        url: data.stream,
-        headers: {
-          accept: '*/*',
-          'accept-language': kit.ACCEPT_LANGUAGE,
-          origin: cdnOrigin,
-          referer: `${cdnOrigin}/`,
-          'user-agent': kit.BROWSER_UA,
-          ...kit.chromeHints(),
-        },
-      };
+  meridian: {
+    label: 'Meridian',
+    lang: () => config.AETHER_LANG,
+    async resolve({ http, path, refererUrl }) {
+      const data = await apiGet(http, `https://meridian.${config.AETHER_API_DOMAIN}${showPath(path)}`, refererUrl);
+      if (typeof data?.url !== 'string') return null;
+      return { url: data.url, headers: cdnHeaders(new URL(data.url).origin) };
+    },
+  },
+
+  rock: {
+    label: 'Rock',
+    lang: () => config.AETHER_LANG,
+    async resolve({ http, path, refererUrl }) {
+      const data = await apiGet(http, `https://rock.${config.AETHER_API_DOMAIN}${path}`, refererUrl);
+      return typeof data?.stream === 'string' ? { url: data.stream, headers: cdnHeaders('https://vidrock.to') } : null;
+    },
+  },
+
+  ly: {
+    label: 'Ly',
+    lang: () => config.AETHER_LANG,
+    async resolve({ http, path, refererUrl }) {
+      const data = await apiGet(http, `https://ly.${config.AETHER_API_DOMAIN}${path}`, refererUrl);
+      if (!data?.success || typeof data.stream !== 'string') return null;
+      // L'API annonce elle-meme les en-tetes de son CDN.
+      const origin = data.proxyHeaders?.Origin || new URL(data.stream).origin;
+      return { url: data.stream, headers: cdnHeaders(origin), quality: resolutionIn(data.quality) };
     },
   },
 
@@ -333,7 +378,6 @@ module.exports = {
   settings: () => ({
     serveurs: config.AETHER_SERVERS,
     serveursInstalles: Object.keys(SERVERS),
-    origineCdnLink: config.AETHER_LINK_ORIGIN,
     apiGallic: config.AETHER_GALLIC_API,
     langue: config.AETHER_LANG,
     langueGallic: config.AETHER_GALLIC_LANG,

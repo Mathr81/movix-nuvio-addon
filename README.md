@@ -1046,8 +1046,11 @@ finale, la mesure de débit et l'affichage sont communs à toutes les sources.
 **Aether** interroge ses serveurs en parallèle, chacun rendant le flux à sa façon :
 `aurora` renvoie l'URL m3u8 dans son JSON, `lul` une URL intermédiaire qui répond `302`
 vers le master (la redirection ne survivrait pas au passage dans un proxy HLS, elle est
-donc résolue en amont), `link` une URL brute dont le CDN n'accepte que l'`Origin` d'un
-tiers (`nextgencloudfabric.com`).
+donc résolue en amont). `lil`, `meridian`, `rock` et `ly` rendent une URL de flux sur un
+CDN tiers qui n'accepte que l'`Origin` de son propre lecteur (`cdn.kaxate.fun`,
+`vidrock.to`, et pour `ly` celui que l'API annonce dans `proxyHeaders`). `lil` et
+`meridian` nomment les séries `/show/…` au lieu de `/tv/…`. Les segments films de `rock`
+sont enveloppés dans un en-tête PNG de 64 octets, retiré par le proxy.
 
 `gallic` est la **source VF** du site, et la seule à sortir du lot deux fois : elle vit sur
 sa propre base d'API (`AETHER_GALLIC_API`, un Worker Cloudflare) et rend **plusieurs flux
@@ -1063,16 +1066,16 @@ rang ne distingue rien pour qui lit la liste. Le champ `provider` n'est donc ret
 s'il porte un vrai nom ; sinon c'est le **domaine qui sert le flux** qui nomme le lien
 (`sfy-01-fr.vidsonic.net` → `Vidsonic`).
 
-> Si ton `.env` fige `AETHER_SERVERS=aurora,lul,link`, `gallic` n'est pas interrogé et tout
+> Si ton `.env` fige `AETHER_SERVERS=aurora,lul`, `gallic` n'est pas interrogé et tout
 > reste en VO. Le démarrage le dit désormais : `serveur(s) installés mais absents de
 > AETHER_SERVERS`. `/debug/addons` liste côte à côte les serveurs demandés et ceux
 > installés.
 
-Le site encapsule ce dernier dans son propre proxy HLS (`jbam.aether.bar`) parce qu'un
-**navigateur** ne peut ni forger un `Origin` ni échapper au CORS. Un serveur, si : on pose
-directement les en-têtes attendus (`AETHER_LINK_ORIGIN`) et on économise le rebond.
+Le site encapsule ces flux tiers dans son propre proxy HLS parce qu'un **navigateur** ne
+peut ni forger un `Origin` ni échapper au CORS. Un serveur, si : on pose directement les
+en-têtes attendus et on économise le rebond.
 
-Les **séries** passent par les mêmes trois serveurs, au chemin près : `/tv/<id>/<saison>/
+Les **séries** passent par les mêmes serveurs (sauf `gallic`, films seulement), au chemin près : `/tv/<id>/<saison>/
 <épisode>` au lieu de `/movie/<id>`. Le `Referer`, lui, descend jusqu'à l'épisode et le
 désigne par les **ids TMDB internes**, pas par ses numéros —
 `/media/tmdb-tv-273240-off-campus/421523/7061243`. Ils viennent d'un appel `/tv/{id}/season
@@ -1080,21 +1083,10 @@ désigne par les **ids TMDB internes**, pas par ses numéros —
 TMDB ne répond pas, le `Referer` retombe sur la page du titre plutôt que d'abandonner la
 résolution — un `Referer` moins précis reste meilleur qu'aucun flux.
 
-Quand un serveur Aether ne joue pas, un diagnostic suit la chaîne **jusqu'à un vrai
-segment** et se prononce sur ses **octets**, pas sur son code de statut :
-
-```bash
-npm run aether:diag -- 157336        # film
-npm run aether:diag -- 273240 1 1    # série : tmdbId saison épisode
-```
-
-C'est la seule étape qui prouve quoi que ce soit, et elle a servi deux fois. Un CDN qui
-refuse un segment ne répond pas forcément `403` : il sert volontiers une page d'erreur
-**en `200`**. Un proxy HLS peut étiqueter de la vidéo en `text/html`. Et un segment reçu
-compressé est illisible pour un lecteur. Dans les trois cas le lecteur redemande en boucle
-sans jamais démarrer, et rien dans les statuts ne le laisse voir — le diagnostic, lui,
-reconnaît `0x47` toutes les 188 octets (MPEG-TS), `ftyp`/`moof` (MP4 fragmenté), `<`
-(page HTML) et l'en-tête gzip.
+Quand un serveur Aether ne joue pas, `/debug/streams/<type>/<id>` montre ce que la sonde a
+obtenu pour chaque lien. Un CDN qui refuse un segment ne répond pas forcément `403` : il
+sert volontiers une page d'erreur **en `200`**, un proxy HLS peut étiqueter de la vidéo en
+`text/html`, et un segment reçu compressé est illisible pour un lecteur.
 
 Le proxy applique le même contrôle en fonctionnement, et il en tire une **correction** :
 quand l'amont étiquette `text/html` (ou n'étiquette rien) ce qui est en réalité du MPEG-TS
