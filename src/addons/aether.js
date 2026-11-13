@@ -9,7 +9,7 @@ const kit = require('./kit');
  *  - aurora (tik.<domaine>)    : liste `streams` (m3u8), comme gallic;
  *  - love   (love.<domaine>)   : renvoie une URL de fichier mp4 (c.ravenflix.st);
  *  - lul    (lul.<domaine>)    : renvoie une URL intermediaire qui repond 302 vers le master;
- *  - lil, meridian, rock, ly    : une URL de flux sur un CDN tiers, qui n'accepte que
+ *  - lil, meridian              : une URL de flux sur un CDN tiers, qui n'accepte que
  *                                l'Origin de son propre lecteur (cf. cdnHeaders);
  *  - gallic (AETHER_GALLIC_API): la source VF du site. Seul serveur a ne pas etre sur le
  *                                domaine d'API des autres, et seul a rendre PLUSIEURS flux
@@ -96,13 +96,6 @@ const PROXY_SPEC_RULES = [
     // qu'aucun demuxeur ne sait lire: on les retire et on retablit le vrai type MIME.
     match: 'tiktokcdn\\.com|origin\\.image',
     skipBytes: 8,
-    contentType: 'video/mp2t',
-  },
-  {
-    // Rock (films): segments enveloppes dans un en-tete PNG de 64 octets.
-    // shortcut: motif lie au domaine vercetti.org, a elargir s'il en change.
-    match: 'vercetti\\.org/seg/',
-    skipBytes: 64,
     contentType: 'video/mp2t',
   },
 ];
@@ -217,7 +210,7 @@ const SERVERS = {
     },
   },
 
-  // Lil, Meridian, Rock et Ly: une URL de flux, sur un CDN tiers qui attend l'Origin de
+  // Lil et Meridian: une URL de flux, sur un CDN tiers qui attend l'Origin de
   // son propre lecteur. Le site l'encapsule dans son proxy HLS (un navigateur ne peut ni
   // forger un Origin ni echapper au CORS); nous posons ces en-tetes directement.
   lil: {
@@ -237,27 +230,6 @@ const SERVERS = {
       const data = await apiGet(http, `https://meridian.${config.AETHER_API_DOMAIN}${showPath(path)}`, refererUrl);
       if (typeof data?.url !== 'string') return null;
       return { url: data.url, headers: cdnHeaders(new URL(data.url).origin) };
-    },
-  },
-
-  rock: {
-    label: 'Rock',
-    lang: () => config.AETHER_LANG,
-    async resolve({ http, path, refererUrl }) {
-      const data = await apiGet(http, `https://rock.${config.AETHER_API_DOMAIN}${path}`, refererUrl);
-      return typeof data?.stream === 'string' ? { url: data.stream, headers: cdnHeaders('https://vidrock.to') } : null;
-    },
-  },
-
-  ly: {
-    label: 'Ly',
-    lang: () => config.AETHER_LANG,
-    async resolve({ http, path, refererUrl }) {
-      const data = await apiGet(http, `https://ly.${config.AETHER_API_DOMAIN}${path}`, refererUrl);
-      if (!data?.success || typeof data.stream !== 'string') return null;
-      // L'API annonce elle-meme les en-tetes de son CDN.
-      const origin = data.proxyHeaders?.Origin || new URL(data.stream).origin;
-      return { url: data.stream, headers: cdnHeaders(origin), quality: resolutionIn(data.quality) };
     },
   },
 
@@ -293,7 +265,9 @@ function selectedServers() {
 // Un .env ecrit avant l'ajout d'un serveur fige AETHER_SERVERS sur une liste plus courte
 // que ce qui est installe. Le serveur manquant disparait alors sans qu'aucune erreur ne le
 // signale -- c'est exactement le cas de la source VF, qui se voit seulement a l'usage.
-const unlisted = Object.keys(SERVERS).filter((name) => name !== 'love').filter(
+// Hors defaut par choix: love (CDN reserve a l'extension), aurora et gallic (vides en 11/2026).
+const OPTIONAL = new Set(['love', 'aurora', 'gallic']);
+const unlisted = Object.keys(SERVERS).filter((name) => !OPTIONAL.has(name)).filter(
   (name) => !config.AETHER_SERVERS.some((listed) => listed.toLowerCase() === name),
 );
 if (unlisted.length > 0) {

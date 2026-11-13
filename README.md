@@ -1046,11 +1046,10 @@ finale, la mesure de débit et l'affichage sont communs à toutes les sources.
 **Aether** interroge ses serveurs en parallèle, chacun rendant le flux à sa façon :
 `aurora` renvoie l'URL m3u8 dans son JSON, `lul` une URL intermédiaire qui répond `302`
 vers le master (la redirection ne survivrait pas au passage dans un proxy HLS, elle est
-donc résolue en amont). `lil`, `meridian`, `rock` et `ly` rendent une URL de flux sur un
-CDN tiers qui n'accepte que l'`Origin` de son propre lecteur (`cdn.kaxate.fun`,
-`vidrock.to`, et pour `ly` celui que l'API annonce dans `proxyHeaders`). `lil` et
-`meridian` nomment les séries `/show/…` au lieu de `/tv/…`. Les segments films de `rock`
-sont enveloppés dans un en-tête PNG de 64 octets, retiré par le proxy.
+donc résolue en amont). `lil` et `meridian` rendent une URL de flux sur un CDN tiers
+(`meridian` n'accepte que l'`Origin` de son lecteur, `cdn.kaxate.fun`), et nomment les
+séries `/show/…` au lieu de `/tv/…`. Par défaut, l'addon s'arrête là : `lul`, `lil`,
+`meridian`.
 
 `gallic` est la **source VF** du site, et la seule à sortir du lot deux fois : elle vit sur
 sa propre base d'API (`AETHER_GALLIC_API`, un Worker Cloudflare) et rend **plusieurs flux

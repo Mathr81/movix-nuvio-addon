@@ -1,4 +1,5 @@
 const fs = require('fs');
+const axios = require('axios');
 const path = require('path');
 const crypto = require('crypto');
 const config = require('../core/config');
@@ -197,7 +198,26 @@ async function servers() {
 
 const proxyReady = () => config.STREAM_PROXY_ENABLED && !!config.PUBLIC_URL;
 
-async function fetchMaster(url) {
+/**
+ * Serveurs dont le CDN refuse l'IP du VPS sur TOUT (master, playlists, segments: 404
+ * "Removed"): ils passent entierement par le tunnel NAS (MOVY_PROXY_URL). C'est le cas de
+ * "secret" (lightspeed.st, 11/2026), qui sert en plus des segments fMP4 nommes `.png`.
+ */
+const NAS_ONLY = new Set(['secret']);
+const NAS_RULES = [{ match: '\\.png(?:$|\\?)', contentType: 'video/mp4' }];
+
+async function fetchMaster(url, viaNas = false) {
+  if (viaNas) {
+    const res = await axios.get(url, {
+      headers: { accept: '*/*', referer: `${config.CINEJOY_ORIGIN}/`, origin: config.CINEJOY_ORIGIN, 'user-agent': kit.BROWSER_UA },
+      timeout: config.CINEJOY_TIMEOUT_MS,
+      responseType: 'text',
+      validateStatus: () => true,
+      ...streamProxy.playlistAgents({ v: 'MOVY_PROXY_URL' }),
+    });
+    if (res.status >= 400) throw new Error(`master HTTP ${res.status}`);
+    return res.data;
+  }
   const res = await fetch(url, {
     headers: { accept: '*/*', referer: `${config.CINEJOY_ORIGIN}/`, origin: config.CINEJOY_ORIGIN },
     signal: AbortSignal.timeout(config.CINEJOY_TIMEOUT_MS),
@@ -221,7 +241,8 @@ async function getStreams({ tmdbId, type, season, episode }) {
   ]);
 
   const request = { type, tmdbId, season, episode, imdb, year: meta.year, title: meta.title };
-  const names = await servers();
+  // Sans tunnel, un serveur NAS_ONLY ne rendrait que des liens morts.
+  const names = (await servers()).filter((name) => config.MOVY_PROXY_URL || !NAS_ONLY.has(name.toLowerCase()));
   const answers = await Promise.all(
     names.map(async (server) => {
       try {
@@ -257,7 +278,7 @@ async function getStreams({ tmdbId, type, season, episode }) {
   // par palier suppose le proxy actif.
   if (!proxyReady()) {
     log.ok('Cinejoy', label, 'proxy inactif -- master brut (pas de selecteur par palier)');
-    return found.flatMap(({ server, masters }) =>
+    return found.filter(({ server }) => !NAS_ONLY.has(server.toLowerCase())).flatMap(({ server, masters }) =>
       masters.map((url) => ({ url, direct: true, sourceName: 'Cinejoy', player: server, lang: config.CINEJOY_LANG || undefined })),
     );
   }
@@ -267,9 +288,11 @@ async function getStreams({ tmdbId, type, season, episode }) {
   await Promise.all(
     found.flatMap(({ server, masters }) =>
       masters.map(async (master) => {
+        const viaNas = NAS_ONLY.has(server.toLowerCase());
+        const spec = viaNas ? { headers, playlistVia: 'MOVY_PROXY_URL', allVia: true, rules: NAS_RULES } : { headers };
         let parsed;
         try {
-          parsed = parseMaster(await fetchMaster(master), master);
+          parsed = parseMaster(await fetchMaster(master, viaNas), master);
         } catch (err) {
           // Refus du CDN (4xx): le lien est mort, le proposer ferait un lecteur qui tourne
           // dans le vide. Une panne passagere (reseau, 5xx) garde en revanche l'URL brute.
@@ -286,7 +309,7 @@ async function getStreams({ tmdbId, type, season, episode }) {
           const kept = kit.aboveFloor(parsed.variants);
           const quality = qualityLabel(kept[0]);
           results.push({
-            url: streamProxy.proxyInlinePlaylist(miniMaster(parsed, ...kept), master, { headers }),
+            url: streamProxy.proxyInlinePlaylist(miniMaster(parsed, ...kept), master, spec),
             direct: true,
             sourceName: 'Cinejoy',
             player: server,
@@ -300,7 +323,7 @@ async function getStreams({ tmdbId, type, season, episode }) {
           const quality = qualityLabel(variant);
           results.push({
             // Playlist synthetique : la variante choisie + l'audio, servie par le proxy.
-            url: streamProxy.proxyInlinePlaylist(miniMaster(parsed, variant), master, { headers }),
+            url: streamProxy.proxyInlinePlaylist(miniMaster(parsed, variant), master, spec),
             direct: true,
             sourceName: 'Cinejoy',
             player: server,

@@ -85,6 +85,8 @@ function publicBase() {
  *    'MOVY_PROXY_URL') par lequel aller chercher les playlists -- pour les CDN qui ne les
  *    servent qu'a l'IP qui a obtenu le lien. Les segments restent en direct. Le nom, pas
  *    l'URL: l'adresse interne du proxy n'a pas a voyager dans les liens remis au lecteur.
+ *  - allVia: les SEGMENTS passent eux aussi par ce proxy -- pour les CDN qui refusent
+ *    l'IP du VPS sur tout (toute la video transite alors par le tunnel).
  */
 function normalizeSpec(spec = {}) {
   return {
@@ -92,6 +94,7 @@ function normalizeSpec(spec = {}) {
     r: Array.isArray(spec.rules) ? spec.rules : [],
     p: Array.isArray(spec.playlistHints) ? spec.playlistHints : [],
     ...(spec.playlistVia ? { v: spec.playlistVia } : {}),
+    ...(spec.playlistVia && spec.allVia ? { a: 1 } : {}),
   };
 }
 
@@ -378,7 +381,7 @@ const PLAYLIST_URI_TAGS = /^#EXT-X-(MEDIA|I-FRAME-STREAM-INF|RENDITION-REPORT)\b
 /** Reecrit une playlist pour que tout ce qu'elle reference repasse par le proxy. */
 function rewritePlaylist(text, baseUrl, spec) {
   // La certitude du parent ne se transmet pas aux enfants: c'est chaque ligne qui la porte.
-  const childSpec = { h: spec.h, r: spec.r, p: spec.p, ...(spec.v ? { v: spec.v } : {}) };
+  const childSpec = { h: spec.h, r: spec.r, p: spec.p, ...(spec.v ? { v: spec.v } : {}), ...(spec.a ? { a: 1 } : {}) };
   let nextIsVariant = false;
 
   return text
@@ -666,7 +669,7 @@ async function handle(req, res) {
       decompress: false,
       timeout: config.STREAM_PROXY_TIMEOUT_MS,
       maxRedirects: 5,
-      httpsAgent: insecureAgent,
+      ...(spec.a ? playlistAgents(spec) : { httpsAgent: insecureAgent }),
       validateStatus: () => true,
     });
 
@@ -753,4 +756,4 @@ function mount(app) {
   }
 }
 
-module.exports = { ROUTE, mount, proxyUrl, proxyInlinePlaylist, isProxied, targetOf, sourceOf, inlineOf, headersOf, localize, publicBase };
+module.exports = { ROUTE, mount, proxyUrl, proxyInlinePlaylist, playlistAgents, isProxied, targetOf, sourceOf, inlineOf, headersOf, localize, publicBase };
