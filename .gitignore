@@ -4,3 +4,4 @@ logs/
 .trakt-token.json
 .simkl-token.json
 data/
+scan-results*/
