@@ -199,11 +199,11 @@ async function servers() {
 const proxyReady = () => config.STREAM_PROXY_ENABLED && !!config.PUBLIC_URL;
 
 /**
- * Serveurs dont le CDN refuse l'IP du VPS sur TOUT (master, playlists, segments: 404
- * "Removed"): ils passent entierement par le tunnel NAS (MOVY_PROXY_URL). C'est le cas de
- * "secret" (lightspeed.st, 11/2026), qui sert en plus des segments fMP4 nommes `.png`.
+ * Certains CDN refusent l'IP du VPS sur TOUT (master, playlists, segments: 404 "Removed"),
+ * ex. lightspeed.st et g.ferb.st (11/2026). Quand le master renvoie 4xx au VPS, on le
+ * retente via le tunnel NAS (MOVY_PROXY_URL) et tout le flux passe alors par lui.
+ * Les noms de serveurs changent souvent (Secret -> Light), d'ou la detection a la volee.
  */
-const NAS_ONLY = new Set(['secret']);
 const NAS_RULES = [{ match: '\\.png(?:$|\\?)', contentType: 'video/mp4' }];
 
 async function fetchMaster(url, viaNas = false) {
@@ -241,8 +241,7 @@ async function getStreams({ tmdbId, type, season, episode }) {
   ]);
 
   const request = { type, tmdbId, season, episode, imdb, year: meta.year, title: meta.title };
-  // Sans tunnel, un serveur NAS_ONLY ne rendrait que des liens morts.
-  const names = (await servers()).filter((name) => config.MOVY_PROXY_URL || !NAS_ONLY.has(name.toLowerCase()));
+  const names = await servers();
   const answers = await Promise.all(
     names.map(async (server) => {
       try {
@@ -278,7 +277,7 @@ async function getStreams({ tmdbId, type, season, episode }) {
   // par palier suppose le proxy actif.
   if (!proxyReady()) {
     log.ok('Cinejoy', label, 'proxy inactif -- master brut (pas de selecteur par palier)');
-    return found.filter(({ server }) => !NAS_ONLY.has(server.toLowerCase())).flatMap(({ server, masters }) =>
+    return found.flatMap(({ server, masters }) =>
       masters.map((url) => ({ url, direct: true, sourceName: 'Cinejoy', player: server, lang: config.CINEJOY_LANG || undefined })),
     );
   }
@@ -288,11 +287,18 @@ async function getStreams({ tmdbId, type, season, episode }) {
   await Promise.all(
     found.flatMap(({ server, masters }) =>
       masters.map(async (master) => {
-        const viaNas = NAS_ONLY.has(server.toLowerCase());
-        const spec = viaNas ? { headers, playlistVia: 'MOVY_PROXY_URL', allVia: true, rules: NAS_RULES } : { headers };
+        let viaNas = false;
         let parsed;
         try {
-          parsed = parseMaster(await fetchMaster(master, viaNas), master);
+          let body;
+          try {
+            body = await fetchMaster(master);
+          } catch (err) {
+            if (!config.MOVY_PROXY_URL || !/HTTP 4\d\d/.test(err.message)) throw err;
+            viaNas = true;
+            body = await fetchMaster(master, true);
+          }
+          parsed = parseMaster(body, master);
         } catch (err) {
           // Refus du CDN (4xx): le lien est mort, le proposer ferait un lecteur qui tourne
           // dans le vide. Une panne passagere (reseau, 5xx) garde en revanche l'URL brute.
@@ -304,6 +310,7 @@ async function getStreams({ tmdbId, type, season, episode }) {
           results.push({ url: master, direct: true, sourceName: 'Cinejoy', player: server, lang: config.CINEJOY_LANG || undefined });
           return;
         }
+        const spec = viaNas ? { headers, playlistVia: 'MOVY_PROXY_URL', allVia: true, rules: NAS_RULES } : { headers };
         if (config.STREAM_QUALITY_MENU && parsed.variants.length > 1) {
           // Une entree, toutes les qualites: le lecteur (Nuvio Enhanced) propose le choix.
           const kept = kit.aboveFloor(parsed.variants);
