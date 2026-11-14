@@ -749,7 +749,7 @@ que l'addon prend à la place du site :
 | `iptv_` | Xtream, **réservé aux VIP** (403 sans clé) | ✅ |
 | `match_` | rencontres sportives FCTV, en playlist HLS servie par Mainapi | ✅ |
 | `streamed_` | rencontres Streamed : embed `embed.st`, converti en flux natif | ✅ avec clé VIP |
-| `northlive_` | lecteur en **iframe** | ❌ page web, pas un flux |
+| `northlive_` | lecteur en iframe, converti en HLS par l'addon (jeton de lecture) | ✅ via le proxy de flux |
 
 Chaque lecteur Streamed porte une `_streamedKey` ; pour un VIP,
 `/api/livetv/streamed/native/<chaîne>/<clé>` la convertit en m3u8 signée sur
@@ -805,10 +805,10 @@ meilleure définition d'abord.
 |---|---|---|
 | Vavoo | HLS gratuit, groupes par pays | `IPTV_VAVOO_GROUPS` (défaut `france,france-sport`) |
 | IPTV web (Xtream) | bouquet **VIP**, signé par proxiesembed | `IPTV_XTREAM_PREFIXES` (défaut `FR`) |
+| NorthLive | lecteur web de Movix converti en HLS (TF1 et d'autres chaînes absentes de Vavoo) | toujours actif |
 | M3U tierces | n'importe quelle playlist | `IPTV_EXTRA_M3U=Nom\|URL\|PREFIXE` |
 
-NorthLive n'est pas une source : ce sont les mêmes flux Vavoo (ses « Serveur B/S/C »)
-derrière un lecteur web et un jeton de lecture. Les rencontres (`match_`, `streamed_`)
+Les rencontres (`match_`, `streamed_`)
 sont des événements, pas des chaînes : elles restent côté [TV en direct](#tv-en-direct).
 
 **Bascule au zap** — la playlist ne contient aucune URL de flux (elles portent un jeton qui
@@ -1514,8 +1514,8 @@ serveur**, et la raison d'un échec (status HTTP, champ URL manquant).
   Nuvio attendent une URL vidéo directe et ne peuvent donc pas les lire. C'est la
   principale raison d'un écart de nombre de liens avec le site.
 - **Darkino / Nightflix est retiré côté site**, il n'y a donc rien à intégrer de ce côté.
-- **Toutes les chaînes de TV en direct ne sont pas jouables** : NorthLive et les rencontres
-  sportives sont servis en iframe. Voir [TV en direct](#tv-en-direct).
+- **Toutes les chaînes de TV en direct ne sont pas jouables** : les rencontres sportives
+  sont servies en iframe. Voir [TV en direct](#tv-en-direct).
 - **Sous-titres** : nécessite `PUBLIC_URL` correctement renseignée, sinon l'appareil de
   lecture ne saura pas joindre la route de conversion. L'URL servie encode la source dans
   le **chemin** (`/subtitle/<base64url>.vtt`) et non plus en paramètre de requête : rien à

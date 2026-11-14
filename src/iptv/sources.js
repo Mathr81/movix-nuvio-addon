@@ -3,6 +3,7 @@ const { mainApi } = require('../integrations/movixClient');
 const config = require('../core/config');
 const cache = require('../core/cache');
 const names = require('./names');
+const northlive = require('../livetv/northlive');
 
 /**
  * Sources de flux de la playlist IPTV.
@@ -15,10 +16,9 @@ const names = require('./names');
  *
  *   vavoo   HLS gratuit, trois fournisseurs (.s/.b/.c) derriere un catalogue par pays.
  *   xtream  bouquet "IPTV web" de Movix, reserve aux VIP, servi signe par proxiesembed.
+ *   northlive  lecteur web de Movix (catalogues `northlive_*`), converti en HLS par
+ *           livetv/northlive.js. Couvre des chaines absentes de Vavoo (TF1...).
  *   m3u     playlists tierces (IPTV_EXTRA_M3U), deja porteuses d'URLs directes.
- *
- * NorthLive n'est pas une source: ce sont les memes flux Vavoo (ses "Serveur B/S/C"),
- * derriere un lecteur web et un jeton de lecture. Rien a y gagner.
  */
 
 const LIST_TIMEOUT_MS = 20000;
@@ -124,6 +124,36 @@ async function resolveXtream(entry) {
   });
 }
 
+// --- NorthLive -------------------------------------------------------------------
+
+async function listNorthlive() {
+  const { data: manifest } = await mainApi.get('/api/livetv/manifest', { timeout: LIST_TIMEOUT_MS });
+  const catalogs = (manifest?.catalogs || []).map((c) => c.id).filter((id) => /^northlive_/.test(id));
+  const out = [];
+  for (const id of catalogs) {
+    const { data } = await mainApi.get(`/api/livetv/catalog/tv/${encodeURIComponent(id)}`, { timeout: LIST_TIMEOUT_MS });
+    for (const meta of data?.metas || []) {
+      const ref = String(meta?.id || '');
+      if (!ref.startsWith('northlive_') || !meta.name) continue;
+      out.push({
+        source: 'northlive',
+        sid: `n${ref.slice('northlive_'.length)}`,
+        ref,
+        label: meta.name,
+        logo: meta.logo || meta.poster || '',
+        hints: [id.slice('northlive_'.length)],
+      });
+    }
+  }
+  return out;
+}
+
+async function resolveNorthlive(entry) {
+  const { data } = await mainApi.get(`/api/livetv/stream/tv/${encodeURIComponent(entry.ref)}`, { timeout: RESOLVE_TIMEOUT_MS });
+  const player = (data?.streams || []).find((row) => northlive.isNorthlivePlayer(row?.url));
+  return player ? northlive.resolvePlayer(player.url) : null;
+}
+
 // --- Playlists M3U tierces -----------------------------------------------------
 
 /** `Nom|https://.../liste.m3u|FR` -> { label, url, prefix }. Le nom et le filtre sont optionnels. */
@@ -196,6 +226,7 @@ async function listExtra() {
 const SOURCES = {
   vavoo: { label: 'Vavoo', list: listVavoo, resolve: resolveVavoo },
   xtream: { label: 'IPTV', list: listXtream, resolve: resolveXtream },
+  northlive: { label: 'NorthLive', list: listNorthlive, resolve: resolveNorthlive },
   m3u: { label: 'M3U', list: listExtra, resolve: async (entry) => entry.ref },
 };
 

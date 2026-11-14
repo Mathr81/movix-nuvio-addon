@@ -144,9 +144,8 @@ const config = {
   // --- TV en direct --------------------------------------------------------
   // Movix expose depuis peu un triplet manifest/catalog/stream deja au format Stremio
   // (`/api/livetv/...`), alimente par Vavoo (HLS gratuit), une playlist M3U locale, du
-  // Xtream reserve aux VIP, et des lecteurs en iframe (NorthLive, rencontres sportives)
-  // qu'aucun lecteur video ne sait ouvrir. L'addon relaie les premiers et ecarte les
-  // seconds. Ajoute le type `tv` au manifest: le desactiver le retire entierement.
+  // Xtream reserve aux VIP, NorthLive (iframe convertie en HLS) et des rencontres en
+  // iframe qu'aucun lecteur video ne sait ouvrir, ecartees. Ajoute le type `tv` au manifest: le desactiver le retire entierement.
   LIVETV_ENABLED: readBool('LIVETV_ENABLED', false),
   // Catalogues retenus, tels que Movix les nomme (`vavoo_france`, `northlive_sport`...).
   // Vide = tous ceux qu'il annonce -- ce qui fait beaucoup de rangees, une par pays.
@@ -179,7 +178,7 @@ const config = {
   // des virgules. Le prefixe (optionnel) filtre sur `group-title` ou sur le nom.
   IPTV_EXTRA_M3U: readList('IPTV_EXTRA_M3U', []),
   // Ordre de preference des sources.
-  IPTV_SOURCE_ORDER: readList('IPTV_SOURCE_ORDER', ['xtream', 'vavoo', 'm3u']),
+  IPTV_SOURCE_ORDER: readList('IPTV_SOURCE_ORDER', ['xtream', 'vavoo', 'northlive', 'm3u']),
   // Ce qui classe les flux d'une chaine: `source` = la source preferee d'abord (l'IPTV
   // VIP, plus stable, passe devant un Vavoo mieux defini), `quality` = la meilleure
   // definition d'abord, la source ne departageant que les ex aequo.

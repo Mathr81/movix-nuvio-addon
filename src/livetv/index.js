@@ -1,6 +1,7 @@
 const { mainApi } = require('../integrations/movixClient');
 const config = require('../core/config');
 const cache = require('../core/cache');
+const northlive = require('./northlive');
 
 /**
  * TV en direct.
@@ -13,9 +14,8 @@ const cache = require('../core/cache');
  *   vavoo_*      HLS brut, gratuit, sans cle. C'est la source jouable par defaut.
  *   tvmio-*      playlist M3U locale du serveur, jouable.
  *   iptv_*       Xtream, reserve aux VIP (403 sans cle).
- *   northlive_*  lecteur en IFRAME (`_isEmbed`). Injouable par Stremio/Nuvio: la reponse
- *                est une page HTML, pas un flux. On ne les propose qu'en "ouvrir dans le
- *                navigateur", et seulement si SHOW_UNPLAYABLE_EMBEDS est actif.
+ *   northlive_*  lecteur en IFRAME (`_isEmbed`), converti en HLS par northlive.js (la
+ *                page porte un jeton de lecture qu'une API echange contre la playlist).
  *   match_*      rencontres sportives FCTV, servies en playlist HLS par Mainapi: jouables.
  *   streamed_*   rencontres Streamed. Annoncees en embed `embed.st`, mais chaque lecteur
  *                porte une `_streamedKey` que `/api/livetv/streamed/native/...` convertit,
@@ -174,7 +174,7 @@ async function streams(id) {
       const { data } = await mainApi.get(`/api/livetv/stream/tv/${encodeURIComponent(raw)}`, { timeout: 15000 });
       const list = Array.isArray(data?.streams) ? data.streams : [];
       // Resolus dans le cache: un lecteur qui redemande la liste ne relance pas l'extraction.
-      return Promise.all(list.map((row) => resolveStreamed(raw, row)));
+      return Promise.all(list.map((row) => resolveStreamed(raw, row).then(resolveNorthlive)));
     });
 
     const out = [];
@@ -236,6 +236,18 @@ async function resolveStreamed(channelId, row) {
     return { ...row, url, _isEmbed: false };
   } catch (err) {
     console.warn(`[livetv] ${channelId}: lecteur Streamed "${row.title}" non resolu (${err.response?.status || err.message})`);
+    return row;
+  }
+}
+
+/** Lecteur NorthLive -> flux HLS (cf. northlive.js). En cas d'echec la ligne reste un embed. */
+async function resolveNorthlive(row) {
+  if (!row?._isEmbed || !northlive.isNorthlivePlayer(row.url)) return row;
+  try {
+    const url = await northlive.resolvePlayer(row.url);
+    return url ? { ...row, url, title: 'NorthLive', _isEmbed: false } : row;
+  } catch (err) {
+    console.warn(`[livetv] lecteur NorthLive non resolu (${err.response?.status || err.message})`);
     return row;
   }
 }
