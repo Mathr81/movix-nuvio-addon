@@ -54,7 +54,7 @@ async function reuse(key) {
   const now = Date.now();
   if (!held || now - held.usedAt > STICKY_IDLE_MS) return null;
   if (config.IPTV_CHECK_STREAMS && now - held.checkedAt > STICKY_RECHECK_MS) {
-    if (!(await health.responds(held.url))) {
+    if (!(await health.responds(held.url, health.timeoutFor(held.stream, 'zap')))) {
       sticky.delete(key);
       return null;
     }

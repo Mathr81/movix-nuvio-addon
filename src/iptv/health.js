@@ -157,8 +157,13 @@ function measure(url) {
  * -- et ferait perdre a l'IPTV la priorite qu'on lui donne. La ronde attend donc
  * franchement; au zap on attend moins (le lecteur a sa propre patience), quitte a
  * retomber sur un autre flux le temps que celui-ci demarre.
+ *
+ * NorthLive relaie chaque playlist par son tv_proxy.php: de 1,5 a plus de 12 s pour la
+ * meme chaine, en-tetes sans effet. Le premier appel la reveille, le delai commun (4 s)
+ * la declarait donc morte au premier zap. Meme patience a la ronde et au zap.
  */
 function timeoutFor(stream, mode) {
+  if (stream.source === 'northlive') return XTREAM_SWEEP_TIMEOUT_MS;
   if (stream.source !== 'xtream') return config.IPTV_CHECK_TIMEOUT_MS;
   return mode === 'sweep' ? XTREAM_SWEEP_TIMEOUT_MS : config.IPTV_XTREAM_WAIT_MS;
 }
