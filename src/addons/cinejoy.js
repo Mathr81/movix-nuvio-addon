@@ -211,6 +211,10 @@ async function fetchMaster(url, viaNas = false) {
     const res = await axios.get(url, {
       headers: { accept: '*/*', referer: `${config.CINEJOY_ORIGIN}/`, origin: config.CINEJOY_ORIGIN, 'user-agent': kit.BROWSER_UA },
       timeout: config.CINEJOY_TIMEOUT_MS,
+      // `timeout` ne coupe pas un corps qui arrive en continu: certains "masters" sont la
+      // video entiere (shegu.net), lue sans fin par le tunnel. Delai et taille plafonnes.
+      signal: AbortSignal.timeout(config.CINEJOY_TIMEOUT_MS),
+      maxContentLength: 2 * 1024 * 1024,
       responseType: 'text',
       validateStatus: () => true,
       ...streamProxy.playlistAgents({ v: 'MOVY_PROXY_URL' }),

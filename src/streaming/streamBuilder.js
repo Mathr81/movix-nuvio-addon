@@ -277,9 +277,21 @@ async function runtimeSeconds(type, tmdbId) {
   return Number(minutes) > 0 ? Number(minutes) * 60 : null;
 }
 
+// Une source qui ne rend jamais la main (requete pendue) figeait toute la fiche: passe ce
+// delai, elle est comptee en echec et les autres sont servies.
+const SOURCE_DEADLINE_MS = 45000;
+
+function withDeadline(promise, ms) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`pas de reponse en ${ms / 1000} s`)), ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
 async function collectRawLinks({ tmdbId, type, season, episode }) {
   const [settled, original] = await Promise.all([
-    Promise.allSettled(sources.map((s) => s.getStreams({ tmdbId, type, season, episode }))),
+    Promise.allSettled(sources.map((s) => withDeadline(s.getStreams({ tmdbId, type, season, episode }), SOURCE_DEADLINE_MS))),
     originalLanguage(type, tmdbId),
   ]);
 
