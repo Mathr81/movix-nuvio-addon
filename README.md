@@ -597,7 +597,8 @@ convertie (nombre de répliques), et les langues fournies par les sources.
 **Via Movix** — `PurStream` (liens directs), `Links` (liens communautaires Movix — les
 `.mp4` sont directement jouables), `Coflix`, `FrenchStream`, `FStream`, `Wiflix`,
 `Cpasmal`, `1jour1film`, `Voirdrama` (séries asiatiques), `KissKH` (dramas et films
-asiatiques, films **et** séries).
+asiatiques, films **et** séries), `SwiftFlux` (fichiers MP4 directs de SwiftFlow, servis
+par le proxy avec le Referer Movix qu'exige leur CDN).
 
 `KissKH` se distingue sur deux points : l'URL renvoyée est **déjà proxifiée** par le site
 et pointe sur un master HLS — rien à extraire — et la réponse porte **ses propres

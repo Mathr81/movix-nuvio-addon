@@ -9,4 +9,5 @@ module.exports = [
   require('./j1f'),
   require('./voirdrama'),
   require('./kisskh'),
+  require('./swiftflux'),
 ];
